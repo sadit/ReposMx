@@ -1,0 +1,9 @@
+[deps]
+Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
+Downloads = "f43a241f-c20a-4ad4-852c-f6b1247861c6"
+EzXML = "8f5d6c58-4d21-5cfd-889c-e3ad7ee6a615"
+Glob = "c27321d9-0574-5035-807b-f59d2c89b15c"
+JSON = "682c06a0-de6a-54ab-a142-c8b1cf79cde6"
+PDFIO = "4d0d745f-9d9a-592e-8d18-1ad8a0f42b92"
+Printf = "de0858da-6303-5e67-8744-51eddeeeb8d7"
+URIs = "5c2747f8-b7ea-4ff2-ba2e-563bfd36b1d4"
