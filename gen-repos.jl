@@ -1,9 +1,11 @@
-repo0(url, name) = string(url, "?verb=ListRecords&metadataPrefix=oai_dc") => name
+using JSON
+
+repo0(url, name) = name => string(url, "?verb=ListRecords&metadataPrefix=oai_dc")
 function resumption_url(url, token)
     replace(url, r"resumptionToken.+" => "resumptionToken=$token", "metadataPrefix=oai_dc" => "resumptionToken=$token")
 end
 
-repo1(name) = "https://$name.repositorioinstitucional.mx/oai/request?verb=ListRecords&metadataPrefix=oai_dc" => name
+repo1(name) = name => "https://$name.repositorioinstitucional.mx/oai/request?verb=ListRecords&metadataPrefix=oai_dc" 
 
 # http://catarina.udlap.mx/u_dl_a/tales/documentos/lis/cordova_b_jm/apendiceC.pdf
 repolist = [ # https://www.repositorionacionalcti.mx/directory
@@ -93,3 +95,8 @@ repolist = [ # https://www.repositorionacionalcti.mx/directory
          repo0("http://www.repositorio.unadmexico.mx:8080/oai/request", "unad"),
          ]
 
+R = Dict(repolist)
+@show length(repolist) length(R)
+open("repos.json", "w") do f
+    println(f, json(R, 2))
+end
