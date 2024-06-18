@@ -52,7 +52,6 @@ function fetch_repo(repourl, reponame, db; timeout)
     end
 end
 
-include("repos.jl")
 
 function main(repolist; envpath="repositorios/xmeta.lmdb", interval=Day(1), timeout=360.0)
     mkpath(envpath)
@@ -61,7 +60,7 @@ function main(repolist; envpath="repositorios/xmeta.lmdb", interval=Day(1), time
     
     Threads.@threads for i in eachindex(repolist)
         # for i in eachindex(repolist)
-        url, name = repolist[i]
+        name, url = repolist[i]
         #name != "umich" && continue
         k = "prev-harvest/$name"
         prev = get(db, k, nothing)
@@ -78,5 +77,7 @@ function main(repolist; envpath="repositorios/xmeta.lmdb", interval=Day(1), time
         end
     end
 end
+
+repolist = open(JSON.parse, "repos.json")
 
 main(repolist)

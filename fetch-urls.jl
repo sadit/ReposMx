@@ -32,6 +32,9 @@ function get_url(identifier, reponame, db, key; timeout::Float64, valid_extensio
     end
 
     url = identifier
+    if reponame in ("udlap", )
+        url = replace(url, "http:" => "https:")
+    end
     println(stderr, "LOOKING for paper's link in $url")
     output = IOBuffer()
     res = request(url; output, timeout, throw=false, headers=HEADERS)
@@ -98,7 +101,7 @@ function must_download(db, status_key, xml_key)
     end
 end
 
-function main(repolist;
+function main(;
         timeout=60.0*6,
         env="repositorios/xmeta.lmdb",
         repofiles="repositorios/files", 
@@ -169,5 +172,4 @@ function main(repolist;
     end
 end
 
-include("repos.jl")
-main(repolist)
+main()

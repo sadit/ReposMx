@@ -108,3 +108,4 @@ function main(; files=readlines("files.txt"), outdir="repositorios/text")
     end
 end
 
+main()
