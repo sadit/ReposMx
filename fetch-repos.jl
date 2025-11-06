@@ -1,11 +1,20 @@
 using Downloads, Printf, Dates, EzXML, JSON, Glob, LMDB
-using Downloads: download
+using Downloads: download, Curl
+
+
+Downloads.EASY_HOOK[] = (easy, info) -> begin
+    Curl.set_ssl_verify(easy, false)
+end
 
 
 const NS = ["oai" => "http://www.openarchives.org/OAI/2.0/", 
             "dc" => "http://www.openarchives.org/OAI/2.0/oai_dc/",
             "purl" => "http://purl.org/dc/elements/1.1/"
            ]
+
+function resumption_url(url, token)
+    replace(url, r"resumptionToken.+" => "resumptionToken=$token", r"metadataPrefix=oai_d\w+" => "resumptionToken=$token")
+end
 
 function parse_xml_repo(input::IO, repourl, reponame, db; timeout)
     f = try
@@ -61,10 +70,10 @@ function main(repolist; envpath="repositorios/xmeta.lmdb", interval=Day(1), time
     Threads.@threads for i in eachindex(repolist)
         # for i in eachindex(repolist)
         name, url = repolist[i]
-        #name != "umich" && continue
+        # name == "uson" && continue
         k = "prev-harvest/$name"
         prev = get(db, k, nothing)
-        if prev === nothing || DateTime(prev) + interval <= now()
+        if true # prev === nothing || DateTime(prev) + interval <= now()
             try
                 fetch_repo(url, name, db; timeout)
             catch e
@@ -80,4 +89,4 @@ end
 
 repolist = open(JSON.parse, "repos.json")
 
-main(repolist)
+main(collect(repolist))

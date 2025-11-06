@@ -29,13 +29,18 @@ function get_url(identifier, reponame, db, key; timeout::Float64, valid_extensio
         _, ext = splitext(identifier)
         lowercase(ext) in valid_extensions || return nothing
         return identifier
+    elseif reponame == "uson"
+        s = split(key, '/'; limit=2) |> last
+        _, url, code = split(s, ':') 
+        code = replace(code, "unison" => "20.500.12984")
+        url = "http://$url/handle/$code"
+    elseif reponame in ("udlap", )
+        url = replace(url, "http:" => "https:")
+    else
+        url = identifier
     end
 
-    url = identifier
-    if reponame in ("udlap", )
-        url = replace(url, "http:" => "https:")
-    end
-    println(stderr, "LOOKING for paper's link in $url")
+    println(stderr, "LOOKING for paper's link $identifier => $url")
     output = IOBuffer()
     res = request(url; output, timeout, throw=false, headers=HEADERS)
     seekstart(output)
@@ -89,6 +94,7 @@ function must_download(db, status_key, xml_key)
         isfile(get(db, string(xml_key, "/file"), "")) || return true
         return false
     elseif 400 <= s < 500 # some error in the client request
+        # return true
         if !(s ∈ (410, 404))
             print(stderr, "status $status_key has an status code of $s; ignoring but it should be inspected")
             @info :STATUS => status
@@ -117,14 +123,14 @@ function main(;
 
     Threads.@threads for i in eachindex(K)
         status_key = K[i]
-        match(r"(udlap|umich)", status_key) === nothing && continue
+        match(r"(unam-historicas|uqroo|uam|itesm|unam-icmyl)", status_key) === nothing && continue
         #=occursin("tecnm", status_key) || continue
         occursin("unam-educacion", status_key) || continue
         occursin("colef", status_key) || continue
         occursin("uady", status_key) || continue
         occursin("uam-cuaji", status_key) || continue
         =#
-        # occursin("ciesas", k1) || continue
+        #occursin("uson", k1) || continue
         _, reponame, id = split(status_key, '/'; limit=3)
         repopath = joinpath(repofiles, reponame)
         lock(iolock) do

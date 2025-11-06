@@ -98,7 +98,7 @@
   "ciatej": "https://ciatej.repositorioinstitucional.mx/oai/request?verb=ListRecords&metadataPrefix=oai_dc",
   "ipn-sinaloa": "http://www.cienciasinaloa.ipn.mx/oai/request?verb=ListRecords&metadataPrefix=oai_dc",
   "colmich": "https://colmich.repositorioinstitucional.mx/oai/request?verb=ListRecords&metadataPrefix=oai_dc",
-  "unam-icmyl": "http://metadata.icmyl.unam.mx/oai/request?verb=ListRecords&metadataPrefix=oai_dc",
+  "unam-icmyl": "https://metadata.icmyl.unam.mx/oai/request?verb=ListRecords&metadataPrefix=oai_datacite",
   "ciatec": "https://ciatec.repositorioinstitucional.mx/oai/request?verb=ListRecords&metadataPrefix=oai_dc",
   "colsan": "https://colsan.repositorioinstitucional.mx/oai/request?verb=ListRecords&metadataPrefix=oai_dc",
   "ipn-cideti": "http://mexculture.citedi.mx/oai/request?verb=ListRecords&metadataPrefix=oai_dc",
