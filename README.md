@@ -2,7 +2,7 @@
 
 > **Motor de búsqueda, minería y análisis multicapa para los Repositorios Institucionales y Académicos de México en Julia 1.12.**
 
-`ReposMx` es una plataforma integral diseñada para cosechar, estructurar, clasificar, indexar y explorar de forma ultra rápida (en sub-milisegundos) más de **446,000 registros académicos**, **100,000 documentos PDF**, **3.9 millones de referencias bibliográficas** y **302,000 perfiles de investigadores** provenientes de 93 repositorios institucionales de universidades y centros de investigación de México (CIMAT, ITESO, CIDETEQ, CICESE, CICY, CIDE, CINVESTAV, UNAM, UAM, IPN, etc.).
+`ReposMx` es una plataforma integral diseñada para cosechar, estructurar, clasificar, indexar y explorar de forma ultra rápida (en sub-milisegundos) más de **446,000 registros académicos**, **100,000 documentos PDF**, **3.9 millones de referencias bibliográficas** y **302,000 perfiles de investigadores** provenientes de 93 repositorios institucionales de universidades y centros de investigación de México (CIMAT, ITESO, CIDETEQ, CICESE, CICY, CIDE, CINVESTAV, UNAM, UAM, IPN, UMSNH, etc.).
 
 ---
 
@@ -13,6 +13,10 @@
   - **Corpus de Autores y Colaboradores:** Perfiles de investigadores, directores y asesores, análisis de redes de coautoría, filiación institucional y perfiles temáticos.
   - **Corpus de Citas y Referencias Bibliográficas:** Citas bibliográficas extraídas de los PDFs con trazabilidad completa de procedencia para análisis de co-citación (*¿quién cita a quién?*).
   - **Corpus de Texto Completo y Búsqueda por Párrafos (In-Depth):** Segmentación semántica de PDFs en párrafos para formular preguntas o búsquedas puntuales dentro de un documento específico mediante micro-índices BM25 al vuelo.
+- **Persistencia de Alto Rendimiento con RocksDB (`RocksDB.jl`):**
+  - Almacenamiento embebido organizado en **6 Column Families** aisladas (`default`, `authors`, `references`, `facets`, `fulltext`, `stats`).
+  - Consultas y filtrado facetado en sub-milisegundos mediante *Prefix Scans* en memoria y disco NVMe.
+  - Ingestión transaccional masiva por lotes con `WriteBatch`.
 - **Consultas Analíticas Avanzadas:**
   - Búsqueda de autores por **campo del conocimiento o disciplina** (`/topic-authors <tema>`).
   - Detección de autores afines mediante **Acoplamiento Bibliográfico / Bibliographic Coupling** (`/sim-authors <autor>`).
@@ -23,13 +27,13 @@
 - **Múltiples Interfaces de Acceso:**
   - **TUI Interactiva (Shell REPL con [`Term.jl`](https://github.com/FedeClaudi/Term.jl)):** Formato visual colorido con tablas, paneles y sistema de ayuda contextual (`/?` y `/? <cmd>`).
   - **Servidor Web y API REST (`HTTP.jl`):** Interfaz web moderna con pestañas de documentos, autores, citas y visor integrado de PDFs.
-  - **CLI Scriptable:** Subcomandos modulares y tuberías todo-en-uno (`update-all`, `update-db`, `prepare-index`, etc.).
+  - **CLI Scriptable:** Subcomandos modulares y tuberías todo-en-uno (`update-all`, `update-db`, `prepare-index`, `populate-db`, etc.).
 
 ---
 
 ## 🧱 Arquitectura del Sistema
 
-```
+```text
                                  ┌─────────────────────────────────┐
                                  │   Cosecha OAI-PMH & Archivos    │
                                  │ (Metadata XML + Descarga PDFs)  │
@@ -41,32 +45,93 @@
                                  │ (pdftotext, Dublin Core XML)    │
                                  └────────────────┬────────────────┘
                                                   │
-                ┌─────────────────────────────────┼─────────────────────────────────┐
-                │                                 │                                 │
-                ▼                                 ▼                                 ▼
-    ┌───────────────────────┐         ┌───────────────────────┐         ┌───────────────────────┐
-    │    CORPUS PRINCIPAL   │         │   CORPUS DE AUTORES   │         │    CORPUS DE CITAS    │
-    │ (Metadatos/Resúmenes) │         │   Y COLABORADORES     │         │ (Referencias Bibliog.)│
-    ├───────────────────────┤         ├───────────────────────┤         ├───────────────────────┤
-    │ • Title (peso 3.0)    │         │ • Nombre normalizado  │         │ • ref_id (único)      │
-    │ • Keywords/Disciplinas│         │ • Rol (Autor/Asesor)  │         │ • doc_id & doc_title  │
-    │ • Abstract/Resumen    │         │ • Perfil temático     │         │ • repo institucional  │
-    │ • Conclusiones PDF    │         │ • Citas bibliográficas│         │ • Cita íntegra y año  │
-    └───────────┬───────────┘         └───────────┬───────────┘         └───────────┬───────────┘
-                │                                 │                                 │
-                ▼                                 ▼                                 ▼
-    ┌───────────────────────┐         ┌───────────────────────┐         ┌───────────────────────┐
-    │  Índice BM25 Global   │         │  Índice Autores/Temas │         │    Índice de Citas    │
-    │      (`bm25.bin`)     │         │ (`authors_topics.bin`)│         │ (`references_bm25.bin`)
-    └───────────────────────┴─────────────────┬───┴─────────────────────────┴───────────────────┘
-                                              │
-                      ┌───────────────────────┴───────────────────────┐
-                      │                                               │
-                      ▼                                               ▼
-         ┌─────────────────────────┐                     ┌─────────────────────────┐
-         │ Shell Interactivo (TUI) │                     │   Servidor Web y API    │
-         │     (`Term.jl REPL`)    │                     │    (`reposmx-server`)   │
-         └─────────────────────────┘                     └─────────────────────────┘
+                 ┌────────────────────────────────┼─────────────────────────────────┐
+                 │                                │                                 │
+                 ▼                                ▼                                 ▼
+     ┌───────────────────────┐        ┌───────────────────────┐         ┌───────────────────────┐
+     │    CORPUS PRINCIPAL   │        │   CORPUS DE AUTORES   │         │    CORPUS DE CITAS    │
+     │ (Metadatos/Resúmenes) │        │   Y COLABORADORES     │         │ (Referencias Bibliog.)│
+     ├───────────────────────┤        ├───────────────────────┤         ├───────────────────────┤
+     │ • Title (peso 3.0)    │        │ • Nombre normalizado  │         │ • ref_id (único)      │
+     │ • Keywords/Disciplinas│        │ • Rol (Autor/Asesor)  │         │ • doc_id & doc_title  │
+     │ • Abstract/Resumen    │        │ • Perfil temático     │         │ • repo institucional  │
+     │ • Conclusiones PDF    │        │ • Citas bibliográficas│         │ • Cita íntegra y año  │
+     └───────────┬───────────┘        └───────────┬───────────┘         └───────────┬───────────┘
+                 │                                │                                 │
+                 ├────────────────────────────────┴─────────────────────────────────┤
+                 ▼                                                                  ▼
+     ┌───────────────────────┐                                          ┌───────────────────────┐
+     │   Índices BM25 / NLP  │                                          │ Base de Datos Embebida│
+     │ (Similarity / Text)   │                                          │      (`RocksDB.jl`)   │
+     ├───────────────────────┤                                          ├───────────────────────┤
+     │ • bm25.bin            │                                          │ • 6 Column Families   │
+     │ • authors_topics.bin  │                                          │ • Filtros y Facetas   │
+     │ • references_bm25.bin │                                          │ • Red de Coautoría    │
+     └───────────┬───────────┘                                          └───────────┬───────────┘
+                 │                                                                  │
+                 └────────────────────────────────┬─────────────────────────────────┘
+                                                  │
+                       ┌──────────────────────────┴──────────────────────────┐
+                       │                                                     │
+                       ▼                                                     ▼
+          ┌─────────────────────────┐                           ┌─────────────────────────┐
+          │ Shell Interactivo (TUI) │                           │   Servidor Web y API    │
+          │     (`Term.jl REPL`)    │                           │    (`reposmx-server`)   │
+          └─────────────────────────┘                           └─────────────────────────┘
+```
+
+---
+
+## 🗄️ Base de Datos Embebida (RocksDB)
+
+`ReposMx` incorpora persistencia estructurada mediante **RocksDB** (`src/DB.jl`), permitiendo realizar consultas puntuales, filtrado por rangos y exploración de relaciones en sub-milisegundos sin requerir servidores de bases de datos externos.
+
+### 🏛️ Column Families (Espacios de Nombres)
+
+```text
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                              ROCKSDB DATABASE                               │
+├──────────────┬──────────────┬──────────────┬──────────────┬─────────────────┤
+│   default    │   authors    │  references  │    facets    │    fulltext     │
+│ (Metadata/   │  (Perfiles y │ (Citas y     │  (Filtros y  │   (Párrafos y   │
+│  Documentos) │  Coautoría)  │  Grafos)     │   Rangos)    │  Texto Plano)   │
+└──────────────┴──────────────┴──────────────┴──────────────┴─────────────────┘
+```
+
+| Column Family | Llaves Principales | Valor (Payload) | Caso de Uso |
+| :--- | :--- | :--- | :--- |
+| **`default`** | `doc:<repo>:<doc_id>`<br>`xml:<repo>:<doc_id>` | JSON estructurado del documento<br>String XML original | Recuperación directa de la ficha del documento y preservación de metadatos OAI. |
+| **`authors`** | `auth:<norm_name>`<br>`auth_doc:<norm_name>:<repo>:<doc_id>`<br>`coauth:<norm_a>:<norm_b>` | JSON del Perfil<br>`{"role": "Autor"}`<br>`Int32` (conteo de coautorías) | Consulta de producción académica, directores de tesis y grafo de coautoría. |
+| **`references`**| `ref:<ref_id>`<br>`doc_refs:<repo>:<doc_id>`<br>`cited_auth:<norm_author>:<ref_id>` | JSON de la cita bibliográfica<br>`Vector{String}` (IDs de citas)<br>`<repo>:<doc_id>` | Trazabilidad de citas, bibliografía citada y grafo de acoplamiento bibliográfico. |
+| **`facets`** | `repo:<repo>:<doc_id>`<br>`year:<year>:<repo>:<doc_id>`<br>`type:<norm_type>:<repo>:<doc_id>`<br>`kw:<norm_kw>:<repo>:<doc_id>` | `""` (clave de índice) | **Prefix Scan instantáneo:** extrae todos los documentos de un año, tipo de publicación, materia o institución. |
+| **`fulltext`** | `text:<repo>:<doc_id>`<br>`para:<repo>:<doc_id>:<idx>` | Texto completo<br>String del párrafo | Acceso a textos extensos y soporte para fragmentos relevantes. |
+| **`stats`** | `stat:global`<br>`stat:repo:<repo>` | JSON consolidado de métricas | Panoramas estadísticos inmediatos (`reposmx info`). |
+
+### 🛠️ Ejemplo de Uso Programático en Julia
+
+```julia
+using ReposMx
+
+# Abrir base de datos embebida
+db = open_database()
+
+# 1. Recuperar documento por ID
+doc = get_document(db, "cimat", "1008/100")
+println(doc["title"])
+
+# 2. Filtrado instantáneo por facetas (Prefix Scans)
+theses_2023 = get_documents_by_year(db, "2023"; limit=10)
+theses = get_documents_by_type(db, "tesis"; limit=10)
+cimat_docs = get_documents_by_repo(db, "cimat"; limit=10)
+
+# 3. Consultar publicaciones de un autor y sus roles
+auth_docs = get_author_documents(db, "Alfinio Flores")
+
+# 4. Consultar referencias bibliográficas de un documento
+refs = get_document_references(db, "cimat", "1008/100")
+
+# Cerrar conexión limpia
+close_database(db)
 ```
 
 ---
@@ -107,7 +172,7 @@ Una vez instalado en tu entorno de Julia, puedes ejecutar `ReposMx` de tres form
 
 1. **Como comando ejecutable en tu terminal (Recomendado):**
    ```bash
-   # Instala el wrapper 'reposmx' en ~/.julia/bin o ~/.local/bin
+   # Instala el launcher 'reposmx' en ~/.julia/bin o ~/.local/bin
    julia --project=. -m ReposMx install-cli
    
    # Ahora puedes usar 'reposmx' desde cualquier terminal:
@@ -134,11 +199,11 @@ Una vez instalado en tu entorno de Julia, puedes ejecutar `ReposMx` de tres form
 
 ## 💻 Subcomandos del CLI (`reposmx`)
 
-El ejecutable `./bin/reposmx` incluye subcomandos para la gestión del ciclo de vida de los repositorios y la búsqueda.
+El ejecutable `reposmx` incluye subcomandos para la gestión del ciclo de vida de los repositorios, la base de datos y la búsqueda.
 
 ```bash
 # Ver ayuda general de subcomandos
-./bin/reposmx --help
+reposmx --help
 ```
 
 ### Subcomandos Principales de Flujo
@@ -148,30 +213,36 @@ El ejecutable `./bin/reposmx` incluye subcomandos para la gestión del ciclo de 
 | `reposmx` *(sin argumentos)* | Inicia directamente el **Shell Interactivo de Búsqueda (Term.jl)**. |
 | `reposmx update-db [repos...]` | **1.** Cosecha incremental OAI-PMH + **2.** Descarga de PDFs + **3.** Extracción de texto. |
 | `reposmx prepare-index [repos...]` | Construye el corpus estructurado y genera todos los índices bilingües y sub-corpus. |
+| `reposmx populate-db [repos...]` | Puebla la base de datos embebida **RocksDB** (documentos, autores, citas, facetas). |
 | `reposmx update-all [repos...]` | Tubería todo-en-uno: ejecuta `update-db` seguido de `prepare-index`. |
 | `reposmx serve [--port N]` | Lanza el servidor HTTP y la interfaz web interactiva. |
+| `reposmx info [repo]` | Muestra el informe estadístico detallado global o por repositorio. |
 | `reposmx status` | Muestra el tablero de cobertura (registros cosechados, archivos descargados y documentos en corpus). |
+| `reposmx install-cli` | Instala el script ejecutable `reposmx` en el `PATH` del usuario. |
 
 ### Subcomandos Modulares
 
 ```bash
 # Cosechar metadatos vía OAI-PMH de repositorios específicos
-./bin/reposmx harvest iteso cimat cideteq
+reposmx harvest cimat centrogeo infotec
 
 # Descargar PDFs enlazados
-./bin/reposmx download iteso
+reposmx download cimat
 
 # Extraer texto de los PDFs
-./bin/reposmx parse iteso
+reposmx parse cimat
 
 # Construir corpus estructurado (metadatos, conclusiones y referencias)
-./bin/reposmx build-corpus iteso
+reposmx build-corpus cimat
 
 # Generar índices invertidos BM25
-./bin/reposmx index iteso cimat
+reposmx index cimat centrogeo
+
+# Poblar la base de datos embebida RocksDB
+reposmx populate-db cimat centrogeo infotec
 
 # Búsqueda directa por terminal
-./bin/reposmx search "redes neuronales convolucionales" --top 5
+reposmx search "sistemas de información geográfica" --top 5
 ```
 
 ---
@@ -181,9 +252,9 @@ El ejecutable `./bin/reposmx` incluye subcomandos para la gestión del ciclo de 
 Inicia el shell de búsqueda en cualquier momento:
 
 ```bash
-./bin/reposmx
+reposmx
 # o
-./bin/reposmx shell
+reposmx shell
 ```
 
 El índice BM25 y las estructuras de datos permanecen cargados en memoria RAM, permitiendo realizar consultas instantáneas en **< 5 milisegundos**.
@@ -231,7 +302,7 @@ El índice BM25 y las estructuras de datos permanecen cargados en memoria RAM, p
 Para lanzar la aplicación web y el API:
 
 ```bash
-./bin/reposmx-server --port 8000
+reposmx serve --port 8000
 ```
 
 Accede desde tu navegador a `http://localhost:8000`.
@@ -271,9 +342,10 @@ Repositorios-Institucionales/
 │   ├── Storage.jl              # Gestión de almacenamiento por repositorio en disco
 │   ├── OAI.jl                  # Cosechador OAI-PMH incremental
 │   ├── Downloader.jl           # Descargador concurrente de PDFs y documentos
-│   ├── Parser.jl               # Extracción de texto estructurado (pdftotext, pandoc)
+│   ├── Parser.jl               # Extracción de texto estructurado (pdftotext, PDFIO)
 │   ├── Corpus.jl               # Construcción de sub-corpus (Metadatos, Autores, Citas, Párrafos)
 │   ├── TextModel.jl            # Modelo bilingüe 50/50 español-inglés (TextConfig)
+│   ├── DB.jl                   # Persistencia embebida RocksDB y Column Families
 │   ├── Wikipedia.jl            # Integración de resúmenes de Wikipedia (ES/EN)
 │   ├── Indexing.jl             # Generación de índices BM25 y micro-índices de párrafos
 │   ├── Search.jl               # Motor de búsqueda (BM25, autores, citas, acoplamiento)
@@ -282,7 +354,9 @@ Repositorios-Institucionales/
 │   └── CLI.jl                  # Despachador de subcomandos
 ├── data/
 │   ├── repos/                  # Un directorio por repositorio (metadata.jsonl, corpus.jsonl, files, text)
-│   └── index/                  # Índices serializados binarios (bm25.bin, authors.bin, references.bin)
+│   ├── index/                  # Índices serializados binarios (bm25.bin, authors.bin, references.bin)
+│   └── rocksdb/                # Base de datos embebida RocksDB (6 Column Families)
+├── repos.json                  # Catálogo oficial de repositorios institucionales
 ├── Project.toml                # Manifiesto de dependencias en Julia 1.12
 └── README.md                   # Documentación completa del proyecto
 ```
