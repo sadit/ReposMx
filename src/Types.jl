@@ -1,6 +1,9 @@
 module Types
 
-export Record, RepoInfo, SearchHit, SearchResponse, AuthorProfile, ParagraphHit, ReferenceRecord
+export Record, RepoInfo, SearchHit, SearchResponse, AuthorProfile, ParagraphHit, ReferenceRecord,
+       get_document_references
+
+function get_document_references end
 
 """
     Record

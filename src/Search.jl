@@ -2,6 +2,7 @@ module Search
 
 using TextSearch, SimilaritySearch, JSON, JSON3
 using ..Types: SearchHit, SearchResponse, AuthorProfile, ParagraphHit, ReferenceRecord
+import ..Types: get_document_references
 using ..Config: DEFAULT_INDEX_DIR
 using ..Indexing: load_search_index, load_authors_index, load_references_index, search_document_in_depth
 using ..Wikipedia: explain_concept

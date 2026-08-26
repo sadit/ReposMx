@@ -7,6 +7,7 @@ using ..Downloader: download_all_files, download_repository_files
 using ..Parser: parse_all_documents, parse_repository_documents
 using ..Corpus: build_all_corpus, build_repository_corpus
 using ..Indexing: build_search_index
+using ..DB: open_database, close_database, ingest_all_to_db!, get_stats, scan_facet
 using ..Search: SearchEngine, query_index, get_detailed_statistics
 using ..Server: start_server
 using ..TUI: launch_interactive_shell
@@ -28,6 +29,7 @@ MODO INTERACTIVO:
 SUBCOMANDOS PRINCIPALES DE FLUJO:
   update-db [repos...]       1. Cosecha OAI-PMH + 2. Descarga PDFs + 3. Extrae texto
   prepare-index [repos...]   Toma lo no indexado, construye corpus y genera índices bilingües
+  populate-db [repos...]     Puebla la base de datos embebida RocksDB (Documentos, Autores, Citas, Facetas)
   update-all [repos...]      Ejecuta 'update-db' seguido de 'prepare-index' (todo-en-uno)
   serve [--port N]           Lanza el servidor HTTP y la interfaz web interactiva
 
@@ -283,6 +285,13 @@ function main_cli(args=ARGS)
         update_db(; repos=target_repos)
     elseif cmd == "prepare-index"
         prepare_index(; repos=target_repos)
+    elseif cmd == "populate-db"
+        db_inst = open_database()
+        try
+            ingest_all_to_db!(db_inst; repos=target_repos)
+        finally
+            close_database(db_inst)
+        end
     elseif cmd == "update-all"
         update_all(; repos=target_repos)
     elseif cmd == "serve" || cmd == "server"

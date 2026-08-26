@@ -10,6 +10,7 @@ include("Corpus.jl")
 include("TextModel.jl")
 include("Wikipedia.jl")
 include("Indexing.jl")
+include("DB.jl")
 include("Search.jl")
 include("Server.jl")
 include("TUI.jl")
@@ -25,6 +26,7 @@ using .Corpus
 using .TextModel
 using .Wikipedia
 using .Indexing
+using .DB
 using .Search
 using .Server
 using .TUI
@@ -41,6 +43,10 @@ export Record, RepoInfo, SearchHit, SearchResponse, AuthorProfile, ParagraphHit,
        create_bilingual_textconfig, sample_bilingual_corpus, fit_bilingual_bm25,
        get_wikipedia_summary, explain_concept,
        build_search_index, load_search_index, load_authors_index, load_references_index,
+       Database, open_database, close_database, put_document!, get_document,
+       get_author_documents, get_coauthors, get_document_references, get_documents_citing_author,
+       scan_facet, get_documents_by_year, get_documents_by_type, get_documents_by_repo, get_documents_by_keyword,
+       get_fulltext, get_paragraphs, ingest_repository_to_db!, ingest_all_to_db!,
        SearchEngine, query_index, search_authors, search_references, get_document_references, search_document_paragraphs, get_detailed_statistics,
        start_server, launch_interactive_shell, main_cli, install_cli
 
