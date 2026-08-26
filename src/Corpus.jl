@@ -1,6 +1,6 @@
 module Corpus
 
-using EzXML, JSON
+using EzXML, JSON, SHA
 using ..Config: DEFAULT_DATA_DIR, DEFAULT_OAI_NS
 using ..Types: ReferenceRecord
 using ..Storage: get_repo_dir, load_metadata_records, save_corpus_records, list_repo_names
