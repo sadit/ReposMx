@@ -358,6 +358,7 @@ Repositorios-Institucionales/
 │   └── rocksdb/                # Base de datos embebida RocksDB (6 Column Families)
 ├── repos.json                  # Catálogo oficial de repositorios institucionales
 ├── Project.toml                # Manifiesto de dependencias en Julia 1.12
+├── LICENSE                     # Licencia MIT de código abierto
 └── README.md                   # Documentación completa del proyecto
 ```
 
@@ -365,4 +366,6 @@ Repositorios-Institucionales/
 
 ## 📄 Licencia
 
-Desarrollado bajo licencia de código abierto para la investigación y democratización del acceso a la producción académica y científica de México.
+Este proyecto está licenciado bajo los términos de la **[Licencia MIT](LICENSE)**.
+
+Copyright (c) 2024-2026 Eric S. Tellez <donsadit@gmail.com>
