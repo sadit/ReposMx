@@ -1,0 +1,14 @@
+# Data directories and large files
+/data/
+/repositorios/
+*.bin
+*.h5
+*.lmdb
+*.db
+*.jld2
+*.tar*
+
+# Temporary files
+*.tmp
+*.log
+.DS_Store
