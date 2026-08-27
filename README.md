@@ -307,23 +307,28 @@ reposmx serve --port 8000
 
 Accede desde tu navegador a `http://localhost:8000`.
 
-### Funcionalidades de la Web UI
-1. **Pestaña Documentos y Publicaciones:** Búsqueda facetada con filtros de repositorio, tipo de publicación (`Tesis`, `Artículo`, `Libro`) y tarjetas automáticas de conceptos Wikipedia.
-2. **Pestaña Autores e Investigadores:** Búsqueda de personas académicas, número de publicaciones y redes de coautoría.
-3. **Pestaña Corpus de Citas / Referencias:** Búsqueda bibliográfica con trazabilidad de origen.
-4. **Búsqueda en Párrafos (In-Depth):** Botón *🔍 Buscar en párrafos* en cada tarjeta para consultar fragmentos dentro de un PDF extenso.
-5. **Visor de Referencias:** Botón *📚 Referencias* para inspeccionar la bibliografía citada de cualquier trabajo.
-6. **Visor de PDFs:** Enlace directo para abrir o descargar el documento original.
+### Funcionalidades de la Web UI (Modo Solo Consulta)
+1. **📚 Pestaña Documentos y Publicaciones:** Búsqueda facetada BM25 con filtros de repositorio, tipo de publicación (`Tesis`, `Artículo`, `Libro`), tarjetas automáticas de conceptos Wikipedia, búsqueda profunda en párrafos de PDFs y visor de referencias bibliográficas.
+2. **👤 Pestaña Autores e Investigadores:**
+   - **Por Nombre:** Búsqueda de investigadores por coincidencia (`/author`).
+   - **Por Campo de Conocimiento / Disciplina:** Rankeo temático de autores (`/topic-authors`).
+   - **Por Acoplamiento Bibliográfico / Co-citación:** Recomendación de investigadores afines (`/sim-authors`).
+3. **📖 Pestaña Corpus de Citas / Referencias:** Búsqueda en el corpus de 3.9 millones de referencias con trazabilidad hacia el documento y repositorio de procedencia (`/cited`).
+4. **📊 Pestaña Inteligencia & Estadísticas (`/info`):** Panel analítico con selector de repositorio en tiempo real (métrica de PDFs, texto completo, citas, tipos documentales, top materias y top investigadores).
+5. **💻 Pestaña Consola Web (Shell TUI):** Emulador de terminal en el navegador que permite ejecutar interactivamente todos los comandos de consulta del TUI (`/?`, `/info`, `/author`, `/topic-authors`, `/sim-authors`, `/cited`, `/explain`, `/status`).
 
 ### Endpoints del API REST
 
 - `GET /api/search?q=...&repo=...&doc_type=...&top=10`
 - `GET /api/authors?q=...&top=10`
+- `GET /api/authors/topic?q=...&top=10`
+- `GET /api/authors/similar?q=...&top=10`
 - `GET /api/references?q=...&repo=...&top=10`
 - `GET /api/document/references?doc_idx=123`
 - `GET /api/document/paragraphs?doc_idx=123&q=...`
 - `GET /api/info?repo=...`
 - `GET /api/stats`
+- `GET /api/cli/execute?cmd=...`
 - `GET /file?path=...`
 
 ---
