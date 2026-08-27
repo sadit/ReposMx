@@ -1,5 +1,7 @@
 module TUI
 
+using REPL
+using REPL.LineEdit
 using Term
 using Term.Tables
 using ..Config: DEFAULT_DATA_DIR, DEFAULT_INDEX_DIR
@@ -703,10 +705,208 @@ $snippet
     tprintln("{dim}Tip: Escribe '/doc <N>' para abrir la ficha, '/refs' para ver bibliografía o '/find <tema>' para buscar en el texto.{/dim}\n")
 end
 
+const HISTORY_FILE = joinpath(homedir(), ".reposmx_history")
+
+function append_history(cmd::AbstractString)
+    clean = strip(cmd)
+    isempty(clean) && return
+    try
+        open(HISTORY_FILE, "a") do f
+            println(f, clean)
+        end
+    catch
+    end
+end
+
+"""
+    process_shell_input(state::ShellState, raw_input::AbstractString)::Bool
+
+Processes a single command line in the interactive shell. Returns `false` if exiting, `true` otherwise.
+"""
+function process_shell_input(state::ShellState, raw_input::AbstractString)::Bool
+    input = strip(raw_input)
+    isempty(input) && return true
+    
+    if input in ("/exit", "exit", "quit", ":q", "q")
+        tprintln("\n{bold cyan}¡Hasta luego!{/bold cyan}\n")
+        return false
+    elseif input in ("/?", "/help", "help", "?")
+        print_general_help()
+    elseif startswith(input, "/?") || startswith(input, "/help ")
+        parts = split(input; limit=2)
+        if length(parts) >= 2 && !isempty(strip(parts[2]))
+            print_specific_help(strip(parts[2]))
+        else
+            print_general_help()
+        end
+    elseif input in ("/clear", "clear", "cls")
+        print("\033c")
+        render_banner(state)
+    elseif startswith(input, "/info")
+        parts = split(input; limit=2)
+        if length(parts) >= 2 && !isempty(strip(parts[2]))
+            show_info_command(state, strip(parts[2]))
+        else
+            show_info_command(state, nothing)
+        end
+    elseif startswith(input, "/topic-authors") || startswith(input, "/author-topic")
+        parts = split(input; limit=2)
+        if length(parts) >= 2
+            show_topic_authors(state, strip(parts[2]))
+        else
+            tprintln("{bold red}Uso: /topic-authors <campo del conocimiento o tema>{/bold red}\n")
+        end
+    elseif startswith(input, "/sim-authors") || startswith(input, "/author-sim")
+        parts = split(input; limit=2)
+        if length(parts) >= 2
+            show_similar_authors(state, strip(parts[2]))
+        else
+            tprintln("{bold red}Uso: /sim-authors <nombre del autor>{/bold red}\n")
+        end
+    elseif startswith(input, "/author")
+        parts = split(input; limit=2)
+        if length(parts) >= 2
+            show_author_profile(state, strip(parts[2]))
+        else
+            tprintln("{bold red}Uso: /author <nombre_investigador>{/bold red}\n")
+        end
+    elseif startswith(input, "/cited")
+        parts = split(input; limit=2)
+        if length(parts) >= 2
+            show_cited_references(state, strip(parts[2]))
+        else
+            tprintln("{bold red}Uso: /cited <autor_o_publicacion_citada>{/bold red}\n")
+        end
+    elseif startswith(input, "/refs")
+        parts = split(input)
+        if length(parts) >= 2
+            idx = tryparse(Int, parts[2])
+            show_document_references_cli(state, idx)
+        else
+            show_document_references_cli(state, state.selected_doc_idx)
+        end
+    elseif startswith(input, "/find")
+        parts = split(input; limit=2)
+        if length(parts) >= 2
+            search_in_document_cli(state, strip(parts[2]))
+        else
+            tprintln("{bold red}Uso: /find <consulta_dentro_del_documento>{/bold red}\n")
+        end
+    elseif startswith(input, "/in")
+        parts = split(input; limit=3)
+        if length(parts) >= 3
+            idx = tryparse(Int, parts[2])
+            if idx !== nothing
+                search_in_document_cli(state, strip(parts[3]), idx)
+            else
+                tprintln("{bold red}Uso: /in <doc_num> <consulta>{/bold red}\n")
+            end
+        else
+            tprintln("{bold red}Uso: /in <doc_num> <consulta>{/bold red}\n")
+        end
+    elseif startswith(input, "/repo")
+        parts = split(input)
+        if length(parts) == 1 || parts[2] in ("all", "todos", "none", "*")
+            state.active_repo = nothing
+            tprintln("{bold green}Filtro de repositorio eliminado. Buscando en todos.{/bold green}\n")
+        else
+            state.active_repo = parts[2]
+            tprintln("{bold green}Filtro activo: repositorio '$(parts[2])'.{/bold green}\n")
+        end
+    elseif startswith(input, "/type")
+        parts = split(input; limit=2)
+        if length(parts) == 1 || parts[2] in ("all", "todos", "none", "*")
+            state.active_type = nothing
+            tprintln("{bold green}Filtro de tipo eliminado.{/bold green}\n")
+        else
+            state.active_type = strip(parts[2])
+            tprintln("{bold green}Filtro activo: tipo '$(parts[2])'.{/bold green}\n")
+        end
+    elseif startswith(input, "/tag")
+        parts = split(input; limit=2)
+        if length(parts) == 1 || parts[2] in ("all", "todos", "none", "*")
+            state.active_keyword = nothing
+            tprintln("{bold green}Filtro de keyword/tag eliminado.{/bold green}\n")
+        else
+            state.active_keyword = strip(parts[2])
+            tprintln("{bold green}Filtro activo: tag '$(parts[2])'.{/bold green}\n")
+        end
+    elseif startswith(input, "/top")
+        parts = split(input)
+        if length(parts) >= 2
+            val = tryparse(Int, parts[2])
+            if val !== nothing && val > 0
+                state.top_k = val
+                tprintln("{bold green}Cantidad de resultados configurada a $val.{/bold green}\n")
+            else
+                tprintln("{bold red}Número inválido para /top.{/bold red}\n")
+            end
+        end
+    elseif startswith(input, "/wiki")
+        parts = split(input)
+        if length(parts) >= 2
+            opt = lowercase(parts[2])
+            state.include_wiki = opt in ("on", "1", "true", "si", "sí")
+            status_str = state.include_wiki ? "activadas" : "desactivadas"
+            tprintln("{bold green}Explicaciones de Wikipedia $status_str.{/bold green}\n")
+        else
+            state.include_wiki = !state.include_wiki
+            status_str = state.include_wiki ? "activadas" : "desactivadas"
+            tprintln("{bold green}Explicaciones de Wikipedia $status_str.{/bold green}\n")
+        end
+    elseif startswith(input, "/doc")
+        parts = split(input)
+        if length(parts) >= 2
+            idx = tryparse(Int, parts[2])
+            if idx !== nothing
+                show_document_detail(state, idx)
+            else
+                tprintln("{bold red}Uso: /doc <número_resultado>{/bold red}\n")
+            end
+        else
+            tprintln("{bold red}Uso: /doc <número_resultado>{/bold red}\n")
+        end
+    elseif startswith(input, "/explain")
+        parts = split(input; limit=2)
+        if length(parts) >= 2
+            concept = parts[2]
+            tprintln("{dim}Consultando Wikipedia para '$concept'...{/dim}")
+            info = explain_concept(concept)
+            if info !== nothing
+                wiki_content = """
+{bold bright_white}$(info["title"]){/bold bright_white} {dim}(Wikipedia $(uppercase(info["lang"]))){/dim}
+
+$(info["extract"])
+
+🔗 {italic blue}$(info["url"]){/italic blue}
+"""
+                println(Panel(wiki_content, title="💡 Concepto Wikipedia", style="magenta", box=:ROUNDED))
+            else
+                tprintln("{yellow}No se encontró resumen en Wikipedia para '$concept'.{/yellow}\n")
+            end
+        end
+    elseif input in ("/status", "/repos", "status", "repos")
+        show_repos_table(state)
+    else
+        res = query_index(
+            state.engine,
+            input;
+            top=state.top_k,
+            repo=state.active_repo,
+            keyword=state.active_keyword,
+            doc_type=state.active_type,
+            include_wiki=state.include_wiki
+        )
+        render_search_results(state, res)
+    end
+    
+    return true
+end
+
 """
     launch_interactive_shell(; data_dir=DEFAULT_DATA_DIR, index_dir=DEFAULT_INDEX_DIR)
 
-Launches the interactive Term.jl search shell with full multi-corpus, citations and help system.
+Launches the interactive Term.jl search shell with full multi-corpus, citations, help system and command history.
 """
 function launch_interactive_shell(; data_dir=DEFAULT_DATA_DIR, index_dir=DEFAULT_INDEX_DIR)
     tprintln("{bold cyan}Cargando índices de búsqueda en memoria...{/bold cyan}")
@@ -733,13 +933,54 @@ function launch_interactive_shell(; data_dir=DEFAULT_DATA_DIR, index_dir=DEFAULT
     
     render_banner(state)
     
-    while true
-        # Construct prompt
+    get_prompt_str = function()
         repo_badge = state.active_repo === nothing ? "todos" : state.active_repo
         type_badge = state.active_type !== nothing ? " | $(state.active_type)" : ""
         tag_badge = state.active_keyword !== nothing ? " | tag:$(state.active_keyword)" : ""
-        prompt = Term.apply_style("{bold bright_blue}reposmx{/bold bright_blue} [{cyan}$repo_badge$type_badge$tag_badge{/cyan} | {dim}top:$(state.top_k){/dim}]> ")
-        
+        return "reposmx [$repo_badge$type_badge$tag_badge | top:$(state.top_k)]> "
+    end
+    
+    # Check if stdin is a TTY terminal with interactive line-editing support
+    if isa(stdin, Base.TTY) && isatty(stdin)
+        try
+            term = REPL.Terminals.TTYTerminal(get(ENV, "TERM", "xterm-256color"), stdin, stdout, stderr)
+            repl = REPL.LineEditREPL(term, true)
+            mirepl = REPL.setup_interface(repl)
+            main_mode = mirepl.modes[1]
+            main_mode.prompt = get_prompt_str
+            main_mode.prompt_prefix = "\e[1;34m"
+            main_mode.prompt_suffix = "\e[0m"
+            
+            # Setup persistent history
+            main_mode.hist.file_path = HISTORY_FILE
+            
+            main_mode.on_done = (s, buf, ok) -> begin
+                if !ok
+                    return LineEdit.transition(s, :abort)
+                end
+                line = String(take!(buf))
+                clean_line = strip(line)
+                if !isempty(clean_line)
+                    append_history(clean_line)
+                end
+                keep_running = process_shell_input(state, clean_line)
+                if keep_running
+                    return LineEdit.transition(s, main_mode)
+                else
+                    return LineEdit.transition(s, :abort)
+                end
+            end
+            
+            LineEdit.run_interface(term, mirepl)
+            return
+        catch err
+            # Graceful fallback to standard reader loop
+        end
+    end
+    
+    # Fallback standard loop
+    while true
+        prompt = Term.apply_style("{bold bright_blue}$(get_prompt_str()){/bold bright_blue}")
         print(prompt)
         flush(stdout)
         
@@ -748,179 +989,9 @@ function launch_interactive_shell(; data_dir=DEFAULT_DATA_DIR, index_dir=DEFAULT
         input = strip(line)
         isempty(input) && continue
         
-        # Handle commands
-        if input in ("/exit", "exit", "quit", ":q", "q")
-            tprintln("\n{bold cyan}¡Hasta luego!{/bold cyan}\n")
-            break
-        elseif input in ("/?", "/help", "help", "?")
-            print_general_help()
-        elseif startswith(input, "/?") || startswith(input, "/help ")
-            parts = split(input; limit=2)
-            if length(parts) >= 2 && !isempty(strip(parts[2]))
-                print_specific_help(strip(parts[2]))
-            else
-                print_general_help()
-            end
-        elseif input in ("/clear", "clear", "cls")
-            print("\033c")
-            render_banner(state)
-        elseif startswith(input, "/info")
-            parts = split(input; limit=2)
-            if length(parts) >= 2 && !isempty(strip(parts[2]))
-                show_info_command(state, strip(parts[2]))
-            else
-                show_info_command(state, nothing)
-            end
-        elseif startswith(input, "/topic-authors") || startswith(input, "/author-topic")
-            parts = split(input; limit=2)
-            if length(parts) >= 2
-                show_topic_authors(state, strip(parts[2]))
-            else
-                tprintln("{bold red}Uso: /topic-authors <campo del conocimiento o tema>{/bold red}\n")
-            end
-        elseif startswith(input, "/sim-authors") || startswith(input, "/author-sim")
-            parts = split(input; limit=2)
-            if length(parts) >= 2
-                show_similar_authors(state, strip(parts[2]))
-            else
-                tprintln("{bold red}Uso: /sim-authors <nombre del autor>{/bold red}\n")
-            end
-        elseif startswith(input, "/author")
-            parts = split(input; limit=2)
-            if length(parts) >= 2
-                show_author_profile(state, strip(parts[2]))
-            else
-                tprintln("{bold red}Uso: /author <nombre_investigador>{/bold red}\n")
-            end
-        elseif startswith(input, "/cited")
-            parts = split(input; limit=2)
-            if length(parts) >= 2
-                show_cited_references(state, strip(parts[2]))
-            else
-                tprintln("{bold red}Uso: /cited <autor_o_publicacion_citada>{/bold red}\n")
-            end
-        elseif startswith(input, "/refs")
-            parts = split(input)
-            if length(parts) >= 2
-                idx = tryparse(Int, parts[2])
-                show_document_references_cli(state, idx)
-            else
-                show_document_references_cli(state, state.selected_doc_idx)
-            end
-        elseif startswith(input, "/find")
-            parts = split(input; limit=2)
-            if length(parts) >= 2
-                search_in_document_cli(state, strip(parts[2]))
-            else
-                tprintln("{bold red}Uso: /find <consulta_dentro_del_documento>{/bold red}\n")
-            end
-        elseif startswith(input, "/in")
-            parts = split(input; limit=3)
-            if length(parts) >= 3
-                idx = tryparse(Int, parts[2])
-                if idx !== nothing
-                    search_in_document_cli(state, strip(parts[3]), idx)
-                else
-                    tprintln("{bold red}Uso: /in <doc_num> <consulta>{/bold red}\n")
-                end
-            else
-                tprintln("{bold red}Uso: /in <doc_num> <consulta>{/bold red}\n")
-            end
-        elseif startswith(input, "/repo")
-            parts = split(input)
-            if length(parts) == 1 || parts[2] in ("all", "todos", "none", "*")
-                state.active_repo = nothing
-                tprintln("{bold green}Filtro de repositorio eliminado. Buscando en todos.{/bold green}\n")
-            else
-                state.active_repo = parts[2]
-                tprintln("{bold green}Filtro activo: repositorio '$(parts[2])'.{/bold green}\n")
-            end
-        elseif startswith(input, "/type")
-            parts = split(input; limit=2)
-            if length(parts) == 1 || parts[2] in ("all", "todos", "none", "*")
-                state.active_type = nothing
-                tprintln("{bold green}Filtro de tipo eliminado.{/bold green}\n")
-            else
-                state.active_type = strip(parts[2])
-                tprintln("{bold green}Filtro activo: tipo '$(parts[2])'.{/bold green}\n")
-            end
-        elseif startswith(input, "/tag")
-            parts = split(input; limit=2)
-            if length(parts) == 1 || parts[2] in ("all", "todos", "none", "*")
-                state.active_keyword = nothing
-                tprintln("{bold green}Filtro de keyword/tag eliminado.{/bold green}\n")
-            else
-                state.active_keyword = strip(parts[2])
-                tprintln("{bold green}Filtro activo: tag '$(parts[2])'.{/bold green}\n")
-            end
-        elseif startswith(input, "/top")
-            parts = split(input)
-            if length(parts) >= 2
-                val = tryparse(Int, parts[2])
-                if val !== nothing && val > 0
-                    state.top_k = val
-                    tprintln("{bold green}Cantidad de resultados configurada a $val.{/bold green}\n")
-                else
-                    tprintln("{bold red}Número inválido para /top.{/bold red}\n")
-                end
-            end
-        elseif startswith(input, "/wiki")
-            parts = split(input)
-            if length(parts) >= 2
-                opt = lowercase(parts[2])
-                state.include_wiki = opt in ("on", "1", "true", "si", "sí")
-                status_str = state.include_wiki ? "activadas" : "desactivadas"
-                tprintln("{bold green}Explicaciones de Wikipedia $status_str.{/bold green}\n")
-            else
-                state.include_wiki = !state.include_wiki
-                status_str = state.include_wiki ? "activadas" : "desactivadas"
-                tprintln("{bold green}Explicaciones de Wikipedia $status_str.{/bold green}\n")
-            end
-        elseif startswith(input, "/doc")
-            parts = split(input)
-            if length(parts) >= 2
-                idx = tryparse(Int, parts[2])
-                if idx !== nothing
-                    show_document_detail(state, idx)
-                else
-                    tprintln("{bold red}Uso: /doc <número_resultado>{/bold red}\n")
-                end
-            else
-                tprintln("{bold red}Uso: /doc <número_resultado>{/bold red}\n")
-            end
-        elseif startswith(input, "/explain")
-            parts = split(input; limit=2)
-            if length(parts) >= 2
-                concept = parts[2]
-                tprintln("{dim}Consultando Wikipedia para '$concept'...{/dim}")
-                info = explain_concept(concept)
-                if info !== nothing
-                    wiki_content = """
-{bold bright_white}$(info["title"]){/bold bright_white} {dim}(Wikipedia $(uppercase(info["lang"]))){/dim}
-
-$(info["extract"])
-
-🔗 {italic blue}$(info["url"]){/italic blue}
-"""
-                    println(Panel(wiki_content, title="💡 Concepto Wikipedia", style="magenta", box=:ROUNDED))
-                else
-                    tprintln("{yellow}No se encontró resumen en Wikipedia para '$concept'.{/yellow}\n")
-                end
-            end
-        elseif input in ("/status", "/repos", "status", "repos")
-            show_repos_table(state)
-        else
-            res = query_index(
-                state.engine,
-                input;
-                top=state.top_k,
-                repo=state.active_repo,
-                keyword=state.active_keyword,
-                doc_type=state.active_type,
-                include_wiki=state.include_wiki
-            )
-            render_search_results(state, res)
-        end
+        append_history(input)
+        keep_running = process_shell_input(state, input)
+        !keep_running && break
     end
 end
 
