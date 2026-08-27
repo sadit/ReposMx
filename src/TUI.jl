@@ -867,23 +867,35 @@ function launch_interactive_shell(; data_dir=DEFAULT_DATA_DIR, index_dir=DEFAULT
                 get_prompt_str;
                 prompt_prefix = "\e[1;34m",
                 prompt_suffix = "\e[0m",
-                on_enter = REPL.LineEdit.default_enter
+                on_enter = REPL.LineEdit.default_enter_cb
             )
             
             hp = REPL.REPLHistoryProvider(Dict{Symbol, Any}(:reposmx => main_prompt))
             if isfile(HISTORY_FILE)
                 try
-                    REPL.hist_from_file(hp, HISTORY_FILE)
+                    for line in eachline(HISTORY_FILE)
+                        s = strip(line)
+                        if !isempty(s)
+                            push!(hp.history, s)
+                            push!(hp.modes, :reposmx)
+                        end
+                    end
+                    hp.start_idx = length(hp.history)
+                    hp.cur_idx = length(hp.history) + 1
                 catch
                 end
             end
             main_prompt.hist = hp
             
+            search_prompt, skeymap = REPL.LineEdit.setup_search_keymap(hp)
+            prefix_prompt, pkeymap = REPL.LineEdit.setup_prefix_keymap(hp, main_prompt)
+            
             main_prompt.keymap_dict = REPL.LineEdit.keymap([
-                REPL.LineEdit.default_keymap,
-                REPL.LineEdit.escape_defaults,
+                skeymap,
+                pkeymap,
                 REPL.LineEdit.history_keymap,
-                REPL.LineEdit.prefix_history_keymap
+                REPL.LineEdit.default_keymap,
+                REPL.LineEdit.escape_defaults
             ])
             
             main_prompt.on_done = (s, buf, ok) -> begin
@@ -894,6 +906,9 @@ function launch_interactive_shell(; data_dir=DEFAULT_DATA_DIR, index_dir=DEFAULT
                 REPL.LineEdit.reset_state(s)
                 if !isempty(line)
                     append_history(line)
+                    push!(hp.history, line)
+                    push!(hp.modes, :reposmx)
+                    hp.cur_idx = length(hp.history) + 1
                     keep_running = process_shell_input(state, line)
                     if !keep_running
                         return REPL.LineEdit.transition(s, :abort)
@@ -902,7 +917,7 @@ function launch_interactive_shell(; data_dir=DEFAULT_DATA_DIR, index_dir=DEFAULT
                 return REPL.LineEdit.transition(s, main_prompt)
             end
             
-            interface = REPL.LineEdit.ModalInterface([main_prompt])
+            interface = REPL.LineEdit.ModalInterface([main_prompt, search_prompt, prefix_prompt])
             REPL.LineEdit.run_interface(term, interface)
             close(engine)
             return
