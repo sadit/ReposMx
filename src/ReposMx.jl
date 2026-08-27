@@ -47,7 +47,8 @@ export Record, RepoInfo, SearchHit, SearchResponse, AuthorProfile, ParagraphHit,
        get_author_documents, get_coauthors, get_document_references, get_documents_citing_author,
        scan_facet, get_documents_by_year, get_documents_by_type, get_documents_by_repo, get_documents_by_keyword,
        get_fulltext, get_paragraphs, ingest_repository_to_db!, ingest_all_to_db!,
-       SearchEngine, query_index, search_authors, search_references, get_document_references, search_document_paragraphs, get_detailed_statistics,
+       SearchEngine, query_index, search_authors, search_authors_by_topic, find_similar_authors_by_references,
+       search_references, get_document_references, search_document_paragraphs, get_detailed_statistics,
        start_server, launch_interactive_shell, main_cli, install_cli
 
 """
