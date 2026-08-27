@@ -14,9 +14,29 @@ const DC_KEYS = ["title", "creator", "contributor", "date", "description", "subj
 const DC_QUERIES = ["//$k" for k in DC_KEYS]
 
 """
+    normalize_author_name(name::AbstractString)
+
+Normalizes author name format (e.g., 'Flores, Alfinio' -> 'Alfinio Flores').
+"""
+function normalize_author_name(name::AbstractString)
+    clean = strip(name)
+    if occursin(",", clean)
+        parts = split(clean, ","; limit=2)
+        if length(parts) == 2
+            last_part = strip(parts[1])
+            first_part = strip(parts[2])
+            if !isempty(last_part) && !isempty(first_part)
+                return "$first_part $last_part"
+            end
+        end
+    end
+    return clean
+end
+
+"""
     parse_author_names(author_str::AbstractString)
 
-Splits and cleans authors or contributors separated by ';' or commas.
+Splits and cleans authors or contributors separated by ';' or commas, extracting original and normalized names.
 """
 function parse_author_names(author_str::AbstractString)
     isempty(strip(author_str)) && return String[]
@@ -26,9 +46,15 @@ function parse_author_names(author_str::AbstractString)
         clean = strip(p)
         isempty(clean) && continue
         length(clean) < 3 && continue
-        clean = replace(clean, r"^(Dr\.|Dra\.|Mtro\.|Mtra\.|Lic\.|Ing\.|Director(a)?:|Asesor(a)?:)\s*"i => "")
+        clean = replace(clean, r"^(Dr\.|Dra\.|Mtro\.|Mtra\.|Lic\.|Ing\.|Director(a)?\s*:?|Asesor(a)?\s*:?)\s*"i => "")
         clean = strip(clean)
-        !isempty(clean) && push!(names, clean)
+        if !isempty(clean)
+            push!(names, clean)
+            norm = normalize_author_name(clean)
+            if norm != clean && !isempty(norm)
+                push!(names, norm)
+            end
+        end
     end
     return unique(names)
 end

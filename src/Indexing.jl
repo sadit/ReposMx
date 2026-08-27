@@ -27,7 +27,21 @@ function extract_index_text(doc::Dict)
         push!(parts, "$t . $t . $t")
     end
     
-    # 2. Keywords / Disciplines / Subject (boosted x2)
+    # 2. Authors and Creators (boosted x2)
+    creators = get(doc, "creators", String[])
+    creator_str = !isempty(creators) ? join(creators, " , ") : get(doc, "creator", "")
+    if !isempty(creator_str)
+        push!(parts, "$creator_str . $creator_str")
+    end
+    
+    # 3. Contributors / Advisors / Directors
+    contributors = get(doc, "contributors", String[])
+    contrib_str = !isempty(contributors) ? join(contributors, " , ") : get(doc, "contributor", "")
+    if !isempty(contrib_str)
+        push!(parts, contrib_str)
+    end
+    
+    # 4. Keywords / Disciplines / Subject (boosted x2)
     s = get(doc, "subject", "")
     kws = get(doc, "keywords", String[])
     kw_str = !isempty(kws) ? join(kws, " , ") : s
@@ -35,13 +49,13 @@ function extract_index_text(doc::Dict)
         push!(parts, "$kw_str . $kw_str")
     end
     
-    # 3. Abstract / Description
+    # 5. Abstract / Description
     d = get(doc, "description", "")
     if !isempty(d)
         push!(parts, d)
     end
     
-    # 4. Conclusions / Final remarks
+    # 6. Conclusions / Final remarks
     c = get(doc, "conclusions", "")
     if !isempty(c)
         push!(parts, c)
