@@ -1,6 +1,6 @@
 module Indexing
 
-using Serialization, JSON
+using JLD2, JSON
 using TextSearch, SimilaritySearch
 using ..Config: DEFAULT_DATA_DIR, DEFAULT_INDEX_DIR
 using ..Types: ParagraphHit, ReferenceRecord
@@ -8,9 +8,13 @@ using ..Storage: get_repo_dir, load_corpus_records, list_repo_names
 using ..Corpus: build_repository_corpus, build_authors_index_data, build_references_index_data, split_into_paragraphs
 using ..TextModel: TextProfile, create_bilingual_profile, get_or_create_bilingual_base_profile,
                     refit_bilingual_profile, create_bilingual_textconfig, save_profile, load_profile
+using ..DB: open_database, close_database, put_document!, put_author_profile!, put_topics!,
+            put_reference!, set_document_references!, link_author_document!, add_coauthor_link!,
+            normalize_author_name
 
-export build_search_index, build_authors_index, build_references_index,
-       load_search_index, load_authors_index, load_references_index,
+export build_search_index,
+       load_docs_content_index, load_docs_refs_index,
+       load_authors_name_index, load_authors_profile_index,
        search_document_in_depth, extract_index_text
 
 """
@@ -68,8 +72,8 @@ end
 """
     build_search_index(; data_dir=DEFAULT_DATA_DIR, index_dir=DEFAULT_INDEX_DIR, repos=nothing, max_docs=nothing)
 
-Builds the primary bilingual search index, authors index, and bibliographic references corpus index.
-All sub-corpora are cross-linked via `doc_id` and `repo`.
+Builds the 4 segregated homogeneous BM25 search indices in portable JLD2 format,
+and populates the RocksDB database with all metadata, author profiles, and references.
 """
 function build_search_index(;
     data_dir=DEFAULT_DATA_DIR,
@@ -83,8 +87,9 @@ function build_search_index(;
     println("Collecting structured documents from $(length(target_repos)) repositories...")
     
     all_docs = Dict{String, Any}[]
-    all_texts = String[]
-    refs_data = Dict{String, Any}[]
+    docs_content_texts = String[]
+    docs_refs_texts = String[]
+    doc_keys = Tuple{String, String}[]
     
     for r in target_repos
         corpus_path = joinpath(get_repo_dir(r; data_dir), "corpus.jsonl")
@@ -98,14 +103,16 @@ function build_search_index(;
             stext = extract_index_text(doc)
             isempty(strip(stext)) && continue
             
-            doc_refs = get(doc, "references", Dict{String, Any}[])
-            for ref_item in doc_refs
-                push!(refs_data, ref_item)
-            end
+            repo = get(doc, "repo", r)
+            doc_id = get(doc, "id", "")
+            isempty(doc_id) && continue
             
-            push!(all_docs, Dict(
-                "id" => get(doc, "id", ""),
-                "repo" => get(doc, "repo", r),
+            doc_refs = get(doc, "references", Dict{String, Any}[])
+            ref_texts = [get(ref, "text", "") for ref in doc_refs]
+            
+            clean_doc = Dict(
+                "id" => doc_id,
+                "repo" => repo,
                 "title" => get(doc, "title", ""),
                 "creator" => get(doc, "creator", ""),
                 "creators" => get(doc, "creators", String[]),
@@ -116,141 +123,188 @@ function build_search_index(;
                 "subject" => get(doc, "subject", ""),
                 "keywords" => get(doc, "keywords", String[]),
                 "type" => get(doc, "type", "Documento"),
+                "references" => doc_refs,
                 "reference_count" => length(doc_refs),
                 "file" => get(doc, "file", nothing),
                 "fulltext_file" => get(doc, "fulltext_file", nothing),
                 "has_fulltext" => get(doc, "has_fulltext", false)
-            ))
-            push!(all_texts, stext)
+            )
+            
+            push!(all_docs, clean_doc)
+            push!(docs_content_texts, stext)
+            push!(docs_refs_texts, join(ref_texts, " \n "))
+            push!(doc_keys, (repo, doc_id))
         end
         max_docs !== nothing && length(all_docs) >= max_docs && break
     end
     
-    println("Total documents ready for primary indexing: $(length(all_docs))")
+    println("Total documents ready for indexing: $(length(all_docs))")
     isempty(all_docs) && return nothing
     
-    # 1. Build Primary Search Index (Bilingual TextProfile & Refit BM25)
-    println("Loading/creating unified bilingual base profile (Spanish + English)...")
-    base_profile = get_or_create_bilingual_base_profile(; verbose=true)
+    # -------------------------------------------------------------
+    # 0. Ingest Documents, Authors, and References to RocksDB
+    # -------------------------------------------------------------
+    println("Populating RocksDB database backend...")
+    db_path = joinpath(data_dir, "rocksdb")
+    db = open_database(db_path; create_if_missing=true)
     
-    println("Refitting bilingual profile against $(length(all_texts)) academic documents...")
-    refitted_profile = refit_bilingual_profile(base_profile, all_texts; verbose=true)
-    
-    println("Building BM25 inverted index from refitted vocabulary ($(length(refitted_profile.model.voc)) tokens)...")
-    invfile = BM25InvertedFile(refitted_profile.model.voc)
-    ctx = InvertedFileContext()
-    append_items!(invfile, ctx, all_texts)
-    
-    index_file = joinpath(index_dir, "bm25.bin")
-    docs_file = joinpath(index_dir, "docs.bin")
-    profile_dir = joinpath(index_dir, "profile")
-    
-    println("Saving primary index and refitted profile to '$index_dir'...")
-    serialize(index_file, invfile)
-    serialize(docs_file, all_docs)
-    try
-        save_profile(profile_dir, refitted_profile)
-    catch e
-        @warn "Could not serialize refitted profile folder: $e"
-    end
-    
-    # 2. Build Authors & Contributors Indices (Name search & Topic/Field search)
-    println("Building authors and contributors indices (Name & Topic profiles)...")
     authors_data = build_authors_index_data(all_docs)
-    authors_names = [a["name"] for a in authors_data]
-    authors_topics = [get(a, "topic_text", a["name"]) for a in authors_data]
     
-    # 2a. Name index
-    auth_config = TextConfig(del_diac=true, del_punc=true, lc=true, nlist=[1])
-    auth_voc = Vocabulary(auth_config, authors_names)
-    auth_invfile = BM25InvertedFile(auth_voc)
-    auth_ctx = InvertedFileContext()
-    append_items!(auth_invfile, auth_ctx, authors_names)
-    
-    # 2b. Topic profile index
-    topic_voc = Vocabulary(refitted_profile.model.voc.textconfig, authors_topics)
-    topic_invfile = BM25InvertedFile(topic_voc)
-    topic_ctx = InvertedFileContext()
-    append_items!(topic_invfile, topic_ctx, authors_topics)
-    
-    serialize(joinpath(index_dir, "authors_bm25.bin"), auth_invfile)
-    serialize(joinpath(index_dir, "authors_topics_bm25.bin"), topic_invfile)
-    serialize(joinpath(index_dir, "authors.bin"), authors_data)
-    println("Saved $(length(authors_data)) author profiles with topic vectors.")
-    
-    # 3. Build Bibliographic References Corpus & Index
-    println("Building bibliographic references corpus and index...")
-    refs_texts = [get(r, "text", "") for r in refs_data]
-    
-    if !isempty(refs_texts)
-        ref_voc = Vocabulary(refitted_profile.model.voc.textconfig, refs_texts)
-        ref_invfile = BM25InvertedFile(ref_voc)
-        ref_ctx = InvertedFileContext()
-        append_items!(ref_invfile, ref_ctx, refs_texts)
+    try
+        # Ingest documents and topics into RocksDB
+        for doc in all_docs
+            repo = doc["repo"]
+            doc_id = doc["id"]
+            put_document!(db, repo, doc_id, doc)
+            put_topics!(db, doc)
+            
+            creators = get(doc, "creators", String[])
+            for a in creators
+                link_author_document!(db, a, repo, doc_id; role="Autor", year=get(doc, "date", ""))
+            end
+            contributors = get(doc, "contributors", String[])
+            for a in contributors
+                link_author_document!(db, a, repo, doc_id; role="Colaborador / Asesor", year=get(doc, "date", ""))
+            end
+            all_auths = vcat(creators, contributors)
+            for x in 1:length(all_auths), y in (x+1):length(all_auths)
+                add_coauthor_link!(db, all_auths[x], all_auths[y])
+            end
+            
+            doc_refs = get(doc, "references", Dict{String, Any}[])
+            if !isempty(doc_refs)
+                ref_ids = String[]
+                for ref in doc_refs
+                    ref_id = get(ref, "ref_id", "")
+                    if !isempty(ref_id)
+                        push!(ref_ids, ref_id)
+                        put_reference!(db, ref)
+                    end
+                end
+                set_document_references!(db, repo, doc_id, ref_ids)
+            end
+        end
         
-        serialize(joinpath(index_dir, "references_bm25.bin"), ref_invfile)
-        serialize(joinpath(index_dir, "references.bin"), refs_data)
-        println("Saved $(length(refs_data)) bibliographic reference entries with full origin traceability.")
+        # Ingest author profiles into RocksDB
+        for a in authors_data
+            norm_name = normalize_author_name(a["name"])
+            a["norm_name"] = norm_name
+            put_author_profile!(db, norm_name, a)
+        end
+    finally
+        close_database(db)
+    end
+    println("RocksDB populated with $(length(all_docs)) docs and $(length(authors_data)) author profiles.")
+    
+    # -------------------------------------------------------------
+    # 1. Index 1: Documents by Content (docs_content_bm25.jld2)
+    # -------------------------------------------------------------
+    println("Fitting bilingual TextProfile & refit for Document Content Index...")
+    base_profile = get_or_create_bilingual_base_profile(; verbose=true)
+    refitted_profile = refit_bilingual_profile(base_profile, docs_content_texts; verbose=true)
+    
+    println("Building BM25 for Documents by Content ($(length(refitted_profile.model.voc)) tokens)...")
+    docs_content_invfile = BM25InvertedFile(refitted_profile.model.voc)
+    ctx1 = InvertedFileContext()
+    append_items!(docs_content_invfile, ctx1, docs_content_texts)
+    
+    jldsave(joinpath(index_dir, "docs_content_bm25.jld2"); invfile=docs_content_invfile, doc_keys=doc_keys)
+    save_profile(joinpath(index_dir, "profile"), refitted_profile)
+    println("Saved Index 1: docs_content_bm25.jld2")
+    
+    # -------------------------------------------------------------
+    # 2. Index 2: Documents by References (docs_refs_bm25.jld2)
+    # -------------------------------------------------------------
+    println("Building BM25 for Documents by References...")
+    docs_refs_voc = Vocabulary(refitted_profile.model.voc.textconfig, docs_refs_texts)
+    docs_refs_invfile = BM25InvertedFile(docs_refs_voc)
+    ctx2 = InvertedFileContext()
+    append_items!(docs_refs_invfile, ctx2, docs_refs_texts)
+    
+    jldsave(joinpath(index_dir, "docs_refs_bm25.jld2"); invfile=docs_refs_invfile, doc_keys=doc_keys)
+    println("Saved Index 2: docs_refs_bm25.jld2")
+    
+    # -------------------------------------------------------------
+    # 3. Index 3: Authors by Name (authors_name_bm25.jld2)
+    # -------------------------------------------------------------
+    println("Building BM25 for Authors by Name...")
+    authors_names = [a["name"] for a in authors_data]
+    author_keys = [normalize_author_name(a["name"]) for a in authors_data]
+    
+    auth_name_config = TextConfig(del_diac=true, del_punc=true, lc=true, nlist=[1])
+    auth_name_voc = Vocabulary(auth_name_config, authors_names)
+    authors_name_invfile = BM25InvertedFile(auth_name_voc)
+    ctx3 = InvertedFileContext()
+    append_items!(authors_name_invfile, ctx3, authors_names)
+    
+    jldsave(joinpath(index_dir, "authors_name_bm25.jld2"); invfile=authors_name_invfile, author_keys=author_keys)
+    println("Saved Index 3: authors_name_bm25.jld2")
+    
+    # -------------------------------------------------------------
+    # 4. Index 4: Authors by Profile & Citations (authors_profile_bm25.jld2)
+    # -------------------------------------------------------------
+    println("Building BM25 for Authors by Semantic Profile & References...")
+    authors_profile_texts = [
+        "$(a["name"]) . $(join(get(a, "keywords", []), " , ")) . $(join(get(a, "topic_texts", []), " \n ")) . $(join(get(a, "cited_references", []), " \n "))"
+        for a in authors_data
+    ]
+    
+    authors_profile_voc = Vocabulary(refitted_profile.model.voc.textconfig, authors_profile_texts)
+    authors_profile_invfile = BM25InvertedFile(authors_profile_voc)
+    ctx4 = InvertedFileContext()
+    append_items!(authors_profile_invfile, ctx4, authors_profile_texts)
+    
+    jldsave(joinpath(index_dir, "authors_profile_bm25.jld2"); invfile=authors_profile_invfile, author_keys=author_keys)
+    println("Saved Index 4: authors_profile_bm25.jld2")
+    
+    # Clean up legacy .bin files if present
+    for bin_f in ["bm25.bin", "docs.bin", "authors.bin", "authors_bm25.bin", "authors_topics_bm25.bin", "references.bin", "references_bm25.bin"]
+        p = joinpath(index_dir, bin_f)
+        isfile(p) && rm(p; force=true)
     end
     
-    println("Search indices successfully built with $(length(invfile)) items.")
-    return (invfile, all_docs)
+    println("All 4 JLD2 indices and RocksDB backend successfully built.")
+    return docs_content_invfile
 end
 
 """
-    load_search_index(; index_dir=DEFAULT_INDEX_DIR)
-
-Loads the precomputed primary BM25 index and document metadata.
+    load_docs_content_index(; index_dir=DEFAULT_INDEX_DIR)
 """
-function load_search_index(; index_dir=DEFAULT_INDEX_DIR)
-    index_file = joinpath(index_dir, "bm25.bin")
-    docs_file = joinpath(index_dir, "docs.bin")
-    
-    if !isfile(index_file) || !isfile(docs_file)
-        return (nothing, nothing)
-    end
-    
-    invfile = deserialize(index_file)
-    docs = deserialize(docs_file)
-    return (invfile, docs)
+function load_docs_content_index(; index_dir=DEFAULT_INDEX_DIR)
+    f = joinpath(index_dir, "docs_content_bm25.jld2")
+    !isfile(f) && return (nothing, Tuple{String, String}[])
+    d = JLD2.load(f)
+    return (d["invfile"], d["doc_keys"])
 end
 
 """
-    load_authors_index(; index_dir=DEFAULT_INDEX_DIR)
-
-Loads author/contributor profiles and index.
+    load_docs_refs_index(; index_dir=DEFAULT_INDEX_DIR)
 """
-function load_authors_index(; index_dir=DEFAULT_INDEX_DIR)
-    auth_idx_file = joinpath(index_dir, "authors_bm25.bin")
-    auth_topic_file = joinpath(index_dir, "authors_topics_bm25.bin")
-    auth_data_file = joinpath(index_dir, "authors.bin")
-    
-    if !isfile(auth_idx_file) || !isfile(auth_data_file)
-        return (nothing, nothing, nothing)
-    end
-    
-    auth_inv = deserialize(auth_idx_file)
-    auth_topic_inv = isfile(auth_topic_file) ? deserialize(auth_topic_file) : nothing
-    auth_data = deserialize(auth_data_file)
-    return (auth_inv, auth_topic_inv, auth_data)
+function load_docs_refs_index(; index_dir=DEFAULT_INDEX_DIR)
+    f = joinpath(index_dir, "docs_refs_bm25.jld2")
+    !isfile(f) && return (nothing, Tuple{String, String}[])
+    d = JLD2.load(f)
+    return (d["invfile"], d["doc_keys"])
 end
 
 """
-    load_references_index(; index_dir=DEFAULT_INDEX_DIR)
-
-Loads bibliographic references corpus and index.
+    load_authors_name_index(; index_dir=DEFAULT_INDEX_DIR)
 """
-function load_references_index(; index_dir=DEFAULT_INDEX_DIR)
-    ref_idx_file = joinpath(index_dir, "references_bm25.bin")
-    ref_data_file = joinpath(index_dir, "references.bin")
-    
-    if !isfile(ref_idx_file) || !isfile(ref_data_file)
-        return (nothing, nothing)
-    end
-    
-    ref_inv = deserialize(ref_idx_file)
-    ref_data = deserialize(ref_data_file)
-    return (ref_inv, ref_data)
+function load_authors_name_index(; index_dir=DEFAULT_INDEX_DIR)
+    f = joinpath(index_dir, "authors_name_bm25.jld2")
+    !isfile(f) && return (nothing, String[])
+    d = JLD2.load(f)
+    return (d["invfile"], d["author_keys"])
+end
+
+"""
+    load_authors_profile_index(; index_dir=DEFAULT_INDEX_DIR)
+"""
+function load_authors_profile_index(; index_dir=DEFAULT_INDEX_DIR)
+    f = joinpath(index_dir, "authors_profile_bm25.jld2")
+    !isfile(f) && return (nothing, String[])
+    d = JLD2.load(f)
+    return (d["invfile"], d["author_keys"])
 end
 
 """

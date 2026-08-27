@@ -7,7 +7,7 @@ using ..Downloader: download_all_files, download_repository_files
 using ..Parser: parse_all_documents, parse_repository_documents
 using ..Corpus: build_all_corpus, build_repository_corpus
 using ..Indexing: build_search_index
-using ..DB: open_database, close_database, ingest_all_to_db!, get_stats, scan_facet
+using ..DB: open_database, close_database, ingest_all_to_db!, get_stats
 using ..Search: SearchEngine, query_index, get_detailed_statistics
 using ..Server: start_server
 using ..TUI: launch_interactive_shell
@@ -152,48 +152,47 @@ Displays rich summary statistics for global or repository level.
 """
 function show_info_cli(repo=nothing; index_dir=DEFAULT_INDEX_DIR)
     engine = SearchEngine(; index_dir)
-    stats = get_detailed_statistics(engine; repo)
-    
-    if haskey(stats, "error")
-        println(stderr, "Error: ", stats["error"])
-        return
-    end
-    
-    is_global = stats["is_global"]
-    header = is_global ? "PANORAMA GLOBAL DEL ACERVO ACADÉMICO NACIONAL" : "ESTADÍSTICAS DEL REPOSITORIO: $(stats["target_repo"])"
-    
-    println("\n=======================================================")
-    println("  📊 $header")
-    println("=======================================================")
-    println("  • Documentos y publicaciones indexadas: $(stats["total_docs"])")
-    println("  • Documentos con PDF descargado:        $(stats["total_files"])")
-    println("  • Documentos con texto completo:        $(stats["total_fulltext"])")
-    println("  • Citas bibliográficas extraídas:       $(stats["total_references"])")
-    println("  • Rango temporal de publicaciones:      $(stats["year_min"]) — $(stats["year_max"])")
-    println("=======================================================\n")
-    
-    println("📚 TIPOS DE PUBLICACIÓN:")
-    for t in stats["types_distribution"]
-        println("  • $(rpad(t["type"], 25)) $(lpad(t["count"], 6))")
-    end
-    
-    println("\n🏷️  DISCIPLINAS Y ÁREAS DE CONOCIMIENTO PRINCIPALES:")
-    for d in stats["top_disciplines"]
-        println("  • $(rpad(d["discipline"], 45)) $(lpad(d["count"], 5))")
-    end
-    
-    println("\n👤 INVESTIGADORES Y COLABORADORES PRINCIPALES:")
-    for a in stats["top_authors"]
-        println("  • $(rpad(a["name"], 35)) [$(a["role"])] - $(a["doc_count"]) publicaciones ($(join(a["repos"], ", ")))")
-    end
-    
-    if is_global
-        println("\n🏛️  DISTRIBUCIÓN POR REPOSITORIO:")
-        for r in stats["top_repositories"]
-            println("  • $(rpad(r["repo"], 25)) $(lpad(r["count"], 6)) publicaciones")
+    try
+        stats = get_detailed_statistics(engine; repo)
+        
+        if haskey(stats, "error")
+            println(stderr, "Error: ", stats["error"])
+            return
         end
+        
+        is_global = stats["is_global"]
+        header = is_global ? "PANORAMA GLOBAL DEL ACERVO ACADÉMICO NACIONAL" : "ESTADÍSTICAS DEL REPOSITORIO: $(stats["target_repo"])"
+        
+        println("\n=======================================================")
+        println("  📊 $header")
+        println("=======================================================")
+        println("  • Documentos y publicaciones indexadas: $(stats["total_docs"])")
+        println("  • Documentos con PDF descargado:        $(stats["total_files"])")
+        println("  • Documentos con texto completo:        $(stats["total_fulltext"])")
+        println("  • Citas bibliográficas extraídas:       $(stats["total_references"])")
+        println("  • Rango temporal de publicaciones:      $(stats["year_min"]) — $(stats["year_max"])")
+        println("=======================================================\n")
+        
+        println("📚 TIPOS DE PUBLICACIÓN:")
+        for t in stats["types_distribution"]
+            println("  • $(rpad(t["type"], 25)) $(lpad(t["count"], 6))")
+        end
+        
+        println("\n🏷️  DISCIPLINAS Y ÁREAS DE CONOCIMIENTO PRINCIPALES:")
+        for d in stats["top_disciplines"]
+            println("  • $(rpad(d["discipline"], 45)) $(lpad(d["count"], 5))")
+        end
+        
+        if is_global
+            println("\n🏛️  DISTRIBUCIÓN POR REPOSITORIO:")
+            for r in stats["top_repositories"]
+                println("  • $(rpad(r["repo"], 25)) $(lpad(r["count"], 6)) publicaciones")
+            end
+        end
+        println()
+    finally
+        close(engine)
     end
-    println()
 end
 
 """
@@ -203,29 +202,33 @@ Runs interactive terminal search.
 """
 function search_cli(query::AbstractString; top::Int=10, repo=nothing, index_dir=DEFAULT_INDEX_DIR)
     engine = SearchEngine(; index_dir)
-    res = query_index(engine, query; top, repo, include_wiki=true)
-    
-    println("\n=======================================================")
-    println("  🔍 RESULTADOS PARA: \"$query\" ($(res["total_hits"]) hits en $(res["time_ms"]) ms)")
-    println("=======================================================")
-    
-    if res["wiki_concept"] !== nothing
-        w = res["wiki_concept"]
-        println("\n📖 Concepto Wikipedia ($(uppercase(w["lang"]))): $(w["title"])")
-        println("   $(w["extract"])")
-        println("   URL: $(w["url"])")
-    end
-    
-    println("\n--- Documentos Encontrados ---")
-    for (i, h) in enumerate(res["hits"])
-        println("\n[$i] $(h["title"])")
-        println("    🏛️  Repo: $(h["repo"]) | 📅 $(h["date"]) | 👤 $(h["creator"]) | Score: $(round(h["score"], digits=2))")
-        println("    📝 $(h["snippet"])")
-        if h["file"] !== nothing
-            println("    📄 Archivo: $(h["file"])")
+    try
+        res = query_index(engine, query; top, repo, include_wiki=true)
+        
+        println("\n=======================================================")
+        println("  🔍 RESULTADOS PARA: \"$query\" ($(res["total_hits"]) hits en $(res["time_ms"]) ms)")
+        println("=======================================================")
+        
+        if res["wiki_concept"] !== nothing
+            w = res["wiki_concept"]
+            println("\n📖 Concepto Wikipedia ($(uppercase(w["lang"]))): $(w["title"])")
+            println("   $(w["extract"])")
+            println("   URL: $(w["url"])")
         end
+        
+        println("\n--- Documentos Encontrados ---")
+        for (i, h) in enumerate(res["hits"])
+            println("\n[$i] $(h["title"])")
+            println("    🏛️  Repo: $(h["repo"]) | 📅 $(h["date"]) | 👤 $(h["creator"]) | Score: $(round(h["score"], digits=2))")
+            println("    📝 $(h["snippet"])")
+            if h["file"] !== nothing
+                println("    📄 Archivo: $(h["file"])")
+            end
+        end
+        println()
+    finally
+        close(engine)
     end
-    println()
 end
 
 """

@@ -9,8 +9,8 @@ include("Parser.jl")
 include("Corpus.jl")
 include("TextModel.jl")
 include("Wikipedia.jl")
-include("Indexing.jl")
 include("DB.jl")
+include("Indexing.jl")
 include("Search.jl")
 include("Server.jl")
 include("TUI.jl")
@@ -25,8 +25,8 @@ using .Parser
 using .Corpus
 using .TextModel
 using .Wikipedia
-using .Indexing
 using .DB
+using .Indexing
 using .Search
 using .Server
 using .TUI
@@ -43,13 +43,14 @@ export Record, RepoInfo, SearchHit, SearchResponse, AuthorProfile, ParagraphHit,
        build_repository_corpus, build_all_corpus,
        TextProfile, create_bilingual_profile, get_or_create_bilingual_base_profile, refit_bilingual_profile, create_bilingual_textconfig,
        get_wikipedia_summary, explain_concept,
-       build_search_index, load_search_index, load_authors_index, load_references_index,
+       build_search_index, load_docs_content_index, load_docs_refs_index, load_authors_name_index, load_authors_profile_index,
        Database, open_database, close_database, put_document!, get_document,
-       get_author_documents, get_coauthors, get_document_references, get_documents_citing_author,
-       scan_facet, get_documents_by_year, get_documents_by_type, get_documents_by_repo, get_documents_by_keyword,
+       put_author_profile!, get_author_profile, get_author_documents, get_coauthors, normalize_author_name,
+       put_reference!, get_reference, get_document_references, get_documents_citing_author,
+       put_topics!, get_topic_docs, get_topic_authors, intersect_topic_repo_docs, intersect_topic_repo_authors,
        get_fulltext, get_paragraphs, ingest_repository_to_db!, ingest_all_to_db!,
-       SearchEngine, query_index, search_authors, search_authors_by_topic, find_similar_authors_by_references,
-       search_references, get_document_references, search_document_paragraphs, get_detailed_statistics,
+       SearchEngine, query_index, search_authors, find_similar_authors_by_profile, find_similar_documents_by_references,
+       search_references, search_document_paragraphs, get_detailed_statistics, get_topic_elements,
        start_server, launch_interactive_shell, main_cli, install_cli
 
 """

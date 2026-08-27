@@ -3,9 +3,10 @@ module Server
 using HTTP, JSON, URIs
 using ..Config: DEFAULT_DATA_DIR, DEFAULT_INDEX_DIR
 using ..Storage: get_repo_stats, list_repo_names, get_repo_dir
-using ..Search: SearchEngine, query_index, search_authors, search_authors_by_topic,
-                find_similar_authors_by_references, search_references,
-                get_document_references, search_document_paragraphs, get_detailed_statistics
+using ..Search: SearchEngine, query_index, search_authors, find_similar_authors_by_profile,
+                find_similar_documents_by_references, search_references,
+                get_document_references, get_author_documents, get_coauthors,
+                get_topic_elements, search_document_paragraphs, get_detailed_statistics
 using ..Wikipedia: explain_concept
 
 export start_server
@@ -744,10 +745,12 @@ function start_server(; port::Int=8000, host::String="0.0.0.0", data_dir=DEFAULT
         uri = URI(req.target)
         params = queryparams(uri)
         q = get(params, "q", "")
+        repo = get(params, "repo", nothing)
+        repo = (repo !== nothing && !isempty(repo)) ? repo : nothing
         top = tryparse(Int, get(params, "top", "10"))
         top = top === nothing ? 10 : top
         
-        res = search_authors_by_topic(engine, q; top)
+        res = get_topic_elements(engine, q; repo, limit=top)
         return HTTP.Response(200, ["Content-Type" => "application/json; charset=utf-8"], JSON.json(res))
     end)
     
@@ -755,10 +758,23 @@ function start_server(; port::Int=8000, host::String="0.0.0.0", data_dir=DEFAULT
         uri = URI(req.target)
         params = queryparams(uri)
         q = get(params, "q", "")
+        repo = get(params, "repo", nothing)
+        repo = (repo !== nothing && !isempty(repo)) ? repo : nothing
         top = tryparse(Int, get(params, "top", "10"))
         top = top === nothing ? 10 : top
         
-        res = find_similar_authors_by_references(engine, q; top)
+        res = find_similar_authors_by_profile(engine, q; top, repo)
+        return HTTP.Response(200, ["Content-Type" => "application/json; charset=utf-8"], JSON.json(res))
+    end)
+    
+    HTTP.register!(router, "GET", "/api/authors/docs", function(req)
+        uri = URI(req.target)
+        params = queryparams(uri)
+        q = get(params, "q", "")
+        top = tryparse(Int, get(params, "top", "50"))
+        top = top === nothing ? 50 : top
+        
+        res = get_author_documents(engine, q; limit=top)
         return HTTP.Response(200, ["Content-Type" => "application/json; charset=utf-8"], JSON.json(res))
     end)
     
@@ -778,14 +794,30 @@ function start_server(; port::Int=8000, host::String="0.0.0.0", data_dir=DEFAULT
     HTTP.register!(router, "GET", "/api/document/references", function(req)
         uri = URI(req.target)
         params = queryparams(uri)
-        doc_idx_str = get(params, "doc_idx", "")
-        doc_idx = tryparse(Int, doc_idx_str)
+        repo = get(params, "repo", "")
+        doc_id = get(params, "doc_id", "")
         
-        if doc_idx === nothing
-            return HTTP.Response(400, ["Content-Type" => "application/json"], JSON.json(Dict("error" => "Parámetro doc_idx requerido")))
+        if isempty(repo) || isempty(doc_id)
+            return HTTP.Response(400, ["Content-Type" => "application/json"], JSON.json(Dict("error" => "Parámetros repo y doc_id requeridos")))
         end
         
-        res = get_document_references(engine, doc_idx)
+        res = get_document_references(engine, repo, doc_id)
+        return HTTP.Response(200, ["Content-Type" => "application/json; charset=utf-8"], JSON.json(res))
+    end)
+    
+    HTTP.register!(router, "GET", "/api/document/similar_refs", function(req)
+        uri = URI(req.target)
+        params = queryparams(uri)
+        repo = get(params, "repo", "")
+        doc_id = get(params, "doc_id", "")
+        top = tryparse(Int, get(params, "top", "10"))
+        top = top === nothing ? 10 : top
+        
+        if isempty(repo) || isempty(doc_id)
+            return HTTP.Response(400, ["Content-Type" => "application/json"], JSON.json(Dict("error" => "Parámetros repo y doc_id requeridos")))
+        end
+        
+        res = find_similar_documents_by_references(engine, repo, doc_id; top)
         return HTTP.Response(200, ["Content-Type" => "application/json; charset=utf-8"], JSON.json(res))
     end)
     
@@ -793,14 +825,14 @@ function start_server(; port::Int=8000, host::String="0.0.0.0", data_dir=DEFAULT
         uri = URI(req.target)
         params = queryparams(uri)
         q = get(params, "q", "")
-        doc_idx_str = get(params, "doc_idx", "")
-        doc_idx = tryparse(Int, doc_idx_str)
+        repo = get(params, "repo", "")
+        doc_id = get(params, "doc_id", "")
         
-        if doc_idx === nothing
-            return HTTP.Response(400, ["Content-Type" => "application/json"], JSON.json(Dict("error" => "Parámetro doc_idx requerido")))
+        if isempty(repo) || isempty(doc_id)
+            return HTTP.Response(400, ["Content-Type" => "application/json"], JSON.json(Dict("error" => "Parámetros repo y doc_id requeridos")))
         end
         
-        res = search_document_paragraphs(engine, doc_idx, q; top=5)
+        res = search_document_paragraphs(engine, repo, doc_id, q; top=5)
         return HTTP.Response(200, ["Content-Type" => "application/json; charset=utf-8"], JSON.json(res))
     end)
     

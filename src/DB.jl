@@ -7,8 +7,9 @@ using ..Storage: load_metadata_records, load_corpus_records, list_repo_names, ge
 
 export Database, open_database, close_database,
        put_document!, get_document, put_xml!, get_xml,
-       put_author_profile!, get_author_profile, get_author_documents, get_coauthors,
+       put_author_profile!, get_author_profile, get_author_documents, get_coauthors, normalize_author_name,
        put_reference!, get_reference, get_document_references, get_documents_citing_author,
+       put_topics!, get_topic_docs, get_topic_authors, intersect_topic_repo_docs, intersect_topic_repo_authors,
        put_facets!, scan_facet, get_documents_by_year, get_documents_by_type, get_documents_by_repo, get_documents_by_keyword,
        put_fulltext!, get_fulltext, put_paragraphs!, get_paragraphs,
        put_stats!, get_stats,
@@ -16,7 +17,7 @@ export Database, open_database, close_database,
        DEFAULT_ROCKSDB_DIR
 
 const DEFAULT_ROCKSDB_DIR = joinpath(DEFAULT_DATA_DIR, "rocksdb")
-const COLUMN_FAMILIES = ["default", "authors", "references", "facets", "fulltext", "stats"]
+const COLUMN_FAMILIES = ["default", "authors", "references", "topics", "stats"]
 
 """
     Database
@@ -35,6 +36,28 @@ function Base.show(io::IO, d::Database)
 end
 
 """
+    list_existing_column_families(path::AbstractString)
+
+Lists all column family names present in an existing RocksDB database directory.
+"""
+function list_existing_column_families(path::AbstractString)
+    !isfile(joinpath(path, "CURRENT")) && return String[]
+    opts = RocksDB.Options()
+    len_ref = Ref{Csize_t}(0)
+    list_ptr = RocksDB.checked() do errptr
+        RocksDB.Lib.rocksdb_list_column_families(opts.ptr, path, len_ref, errptr)
+    end
+    n = Int(len_ref[])
+    cf_names = String[]
+    for i in 1:n
+        cf_ptr = unsafe_load(list_ptr, i)
+        push!(cf_names, unsafe_string(cf_ptr))
+    end
+    RocksDB.Lib.rocksdb_list_column_families_destroy(list_ptr, len_ref[])
+    return cf_names
+end
+
+"""
     open_database(path=DEFAULT_ROCKSDB_DIR; create_if_missing=true, read_only=false)
 
 Opens or creates a RocksDB database configured with all required Column Families.
@@ -42,7 +65,6 @@ Opens or creates a RocksDB database configured with all required Column Families
 function open_database(path::AbstractString=DEFAULT_ROCKSDB_DIR; create_if_missing::Bool=true, read_only::Bool=false)
     mkpath(path)
     
-    # Check if DB directory has existing CURRENT file (meaning CFs exist)
     current_file = joinpath(path, "CURRENT")
     
     if !isfile(current_file)
@@ -56,10 +78,22 @@ function open_database(path::AbstractString=DEFAULT_ROCKSDB_DIR; create_if_missi
             create_column_family(init_db, cf)
         end
         close(init_db)
+        existing_cfs = COLUMN_FAMILIES
+    else
+        existing_cfs = list_existing_column_families(path)
+        missing_cfs = setdiff(COLUMN_FAMILIES, existing_cfs)
+        if !isempty(missing_cfs) && !read_only
+            temp_db = opendb(path; column_families=existing_cfs, read_only=false)
+            for mcf in missing_cfs
+                create_column_family(temp_db, mcf)
+            end
+            close(temp_db)
+            existing_cfs = union(existing_cfs, COLUMN_FAMILIES)
+        end
     end
     
-    # Open DB with all column families
-    db_inst = opendb(path; column_families=COLUMN_FAMILIES, read_only)
+    open_cfs = union(existing_cfs, COLUMN_FAMILIES)
+    db_inst = opendb(path; column_families=open_cfs, read_only)
     cf_map = db_inst.column_families
     
     return Database(db_inst, String(path), cf_map, true)
@@ -156,7 +190,14 @@ end
 # ====================================================================
 
 function normalize_author_name(name::AbstractString)
-    return replace(lowercase(strip(name)), r"[^\p{L}\p{N}]+" => "_")
+    s = strip(name)
+    if occursin(",", s)
+        parts = split(s, ","; limit=2)
+        if length(parts) == 2 && !isempty(strip(parts[1])) && !isempty(strip(parts[2]))
+            s = strip(parts[2]) * " " * strip(parts[1])
+        end
+    end
+    return replace(lowercase(strip(s)), r"[^\p{L}\p{N}]+" => "_")
 end
 
 """
@@ -384,7 +425,7 @@ function get_documents_citing_author(d::Database, norm_author::AbstractString; l
 end
 
 # ====================================================================
-# 4. Facets & Secondary Index Operations (CF: facets)
+# 4. Topics & Facet Operations (CF: topics)
 # ====================================================================
 
 function normalize_tag(tag::AbstractString)
@@ -392,86 +433,148 @@ function normalize_tag(tag::AbstractString)
 end
 
 """
-    put_facets!(db::Database, doc_dict; batch=nothing)
+    put_topics!(db::Database, doc_dict; batch=nothing)
 
-Indexes document secondary keys in the `facets` column family for fast prefix/range scans.
+Indexes document topics, disciplines, authors, and repos in the `topics` column family.
 """
-function put_facets!(d::Database, doc::AbstractDict; batch=nothing)
+function put_topics!(d::Database, doc::AbstractDict; batch=nothing)
     repo = strip(get(doc, "repo", ""))
     doc_id = normalize_id(get(doc, "id", ""))
-    isempty(repo) || isempty(doc_id) && return
+    (isempty(repo) || isempty(doc_id)) && return
     
-    cf_facets = d.cfs["facets"]
+    cf_topics = d.cfs["topics"]
     
-    # 1. By Repo: repo:<repo>:<doc_id>
-    k_repo = "repo:$repo:$doc_id"
-    batch !== nothing ? put!(batch, k_repo, ""; cf=cf_facets) : put!(d.db, k_repo, ""; cf="facets")
+    # 1. By Repo: repo_docs:<repo>:<doc_id>
+    k_repo_doc = "repo_docs:$repo:$doc_id"
+    batch !== nothing ? put!(batch, k_repo_doc, ""; cf=cf_topics) : put!(d.db, k_repo_doc, ""; cf="topics")
     
-    # 2. By Year: year:<year>:<repo>:<doc_id>
-    date_str = get(doc, "date", "")
-    m_year = match(r"\b(19\d\d|20\d\d)\b", date_str)
-    if m_year !== nothing
-        year = m_year.match
-        k_year = "year:$year:$repo:$doc_id"
-        batch !== nothing ? put!(batch, k_year, ""; cf=cf_facets) : put!(d.db, k_year, ""; cf="facets")
-    end
-    
-    # 3. By Document Type: type:<norm_type>:<repo>:<doc_id>
-    raw_type = get(doc, "type", "Documento")
-    norm_type = normalize_tag(raw_type)
-    if !isempty(norm_type)
-        k_type = "type:$norm_type:$repo:$doc_id"
-        batch !== nothing ? put!(batch, k_type, ""; cf=cf_facets) : put!(d.db, k_type, ""; cf="facets")
-    end
-    
-    # 4. By Keywords / Disciplines: kw:<norm_kw>:<repo>:<doc_id>
+    # 2. By Keywords / Topics: topic_doc:<norm_kw>:<repo>:<doc_id>
     kws = get(doc, "keywords", String[])
+    creators = get(doc, "creators", String[])
+    contributors = get(doc, "contributors", String[])
+    all_auths = vcat(creators, contributors)
+    
     for kw in kws
         nkw = normalize_tag(kw)
-        !isempty(nkw) && length(nkw) >= 3 || continue
-        k_kw = "kw:$nkw:$repo:$doc_id"
-        batch !== nothing ? put!(batch, k_kw, ""; cf=cf_facets) : put!(d.db, k_kw, ""; cf="facets")
+        (!isempty(nkw) && length(nkw) >= 3) || continue
+        k_topic_doc = "topic_doc:$nkw:$repo:$doc_id"
+        batch !== nothing ? put!(batch, k_topic_doc, ""; cf=cf_topics) : put!(d.db, k_topic_doc, ""; cf="topics")
+        
+        for a in all_auths
+            na = normalize_author_name(a)
+            !isempty(na) || continue
+            k_topic_auth = "topic_auth:$nkw:$na"
+            batch !== nothing ? put!(batch, k_topic_auth, a; cf=cf_topics) : put!(d.db, k_topic_auth, a; cf="topics")
+        end
+    end
+    
+    # 3. Authors in Repo: repo_auth:<repo>:<norm_author>
+    for a in all_auths
+        na = normalize_author_name(a)
+        !isempty(na) || continue
+        k_repo_auth = "repo_auth:$repo:$na"
+        batch !== nothing ? put!(batch, k_repo_auth, a; cf=cf_topics) : put!(d.db, k_repo_auth, a; cf="topics")
     end
 end
 
 """
-    scan_facet(db::Database, prefix; limit=100)
+    get_topic_docs(db::Database, topic; limit=100)
 
-Scans a facet prefix and returns matching `(repo, doc_id)` pairs.
+Returns `(repo, doc_id)` pairs associated with a topic/keyword.
 """
-function scan_facet(d::Database, prefix::AbstractString; limit::Int=100)
-    pref = endswith(prefix, ":") ? prefix : "$prefix:"
+function get_topic_docs(d::Database, topic::AbstractString; limit::Int=100)
+    ntopic = normalize_tag(topic)
+    prefix = "topic_doc:$ntopic:"
     matches = Pair{String, String}[]
     
-    iter = DBIterator(d.db; cf="facets")
-    seek!(iter, pref)
+    iter = DBIterator(d.db; cf="topics")
+    seek!(iter, prefix)
     
     while valid(iter) && length(matches) < limit
         k = String(key(iter))
-        !startswith(k, pref) && break
+        !startswith(k, prefix) && break
         
-        tail = k[length(pref)+1:end]
-        if startswith(pref, "repo:")
-            parts_pref = split(pref, ":")
-            repo = parts_pref[2]
-            doc_id = tail
-            push!(matches, repo => doc_id)
-        else
-            parts = split(tail, ":"; limit=2)
-            if length(parts) == 2
-                push!(matches, parts[1] => parts[2])
-            end
+        tail = k[length(prefix)+1:end]
+        parts = split(tail, ":"; limit=2)
+        if length(parts) == 2
+            push!(matches, parts[1] => parts[2])
         end
         advance!(iter)
     end
-    
     return matches
 end
 
-get_documents_by_year(d::Database, year::Union{Int, AbstractString}; limit=100) = scan_facet(d, "year:$year:"; limit)
-get_documents_by_type(d::Database, doc_type::AbstractString; limit=100) = scan_facet(d, "type:$(normalize_tag(doc_type)):"; limit)
-get_documents_by_repo(d::Database, repo::AbstractString; limit=100) = scan_facet(d, "repo:$repo:"; limit)
-get_documents_by_keyword(d::Database, kw::AbstractString; limit=100) = scan_facet(d, "kw:$(normalize_tag(kw)):"; limit)
+"""
+    get_topic_authors(db::Database, topic; limit=100)
+
+Returns author names associated with a topic/keyword.
+"""
+function get_topic_authors(d::Database, topic::AbstractString; limit::Int=100)
+    ntopic = normalize_tag(topic)
+    prefix = "topic_auth:$ntopic:"
+    authors = String[]
+    
+    iter = DBIterator(d.db; cf="topics")
+    seek!(iter, prefix)
+    
+    while valid(iter) && length(authors) < limit
+        k = String(key(iter))
+        !startswith(k, prefix) && break
+        auth_name = String(value(iter))
+        !isempty(auth_name) && push!(authors, auth_name)
+        advance!(iter)
+    end
+    return unique(authors)
+end
+
+"""
+    intersect_topic_repo_docs(db::Database, topic, repo; limit=100)
+
+Intersects documents tagged with `topic` that belong to `repo`.
+"""
+function intersect_topic_repo_docs(d::Database, topic::AbstractString, repo::AbstractString; limit::Int=100)
+    ntopic = normalize_tag(topic)
+    s_repo = strip(repo)
+    prefix = "topic_doc:$ntopic:$s_repo:"
+    matches = Pair{String, String}[]
+    
+    iter = DBIterator(d.db; cf="topics")
+    seek!(iter, prefix)
+    
+    while valid(iter) && length(matches) < limit
+        k = String(key(iter))
+        !startswith(k, prefix) && break
+        doc_id = k[length(prefix)+1:end]
+        push!(matches, s_repo => doc_id)
+        advance!(iter)
+    end
+    return matches
+end
+
+"""
+    intersect_topic_repo_authors(db::Database, topic, repo; limit=100)
+
+Intersects authors active in `topic` who have published in `repo`.
+"""
+function intersect_topic_repo_authors(d::Database, topic::AbstractString, repo::AbstractString; limit::Int=100)
+    topic_auths = get_topic_authors(d, topic; limit=limit*2)
+    s_repo = strip(repo)
+    results = String[]
+    
+    for a in topic_auths
+        na = normalize_author_name(a)
+        k = "repo_auth:$s_repo:$na"
+        val = get(d.db, k; cf="topics")
+        if val !== nothing
+            push!(results, a)
+            length(results) >= limit && break
+        end
+    end
+    return results
+end
+
+put_facets!(d::Database, doc::AbstractDict; batch=nothing) = put_topics!(d, doc; batch=batch)
+get_documents_by_keyword(d::Database, kw::AbstractString; limit=100) = get_topic_docs(d, kw; limit=limit)
 
 # ====================================================================
 # 5. Fulltext & Paragraph Operations (CF: fulltext)

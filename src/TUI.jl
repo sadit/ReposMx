@@ -6,9 +6,11 @@ using Term
 using Term.Tables
 using ..Config: DEFAULT_DATA_DIR, DEFAULT_INDEX_DIR
 using ..Storage: get_repo_stats, list_repo_names
-using ..Search: SearchEngine, query_index, search_authors, search_authors_by_topic,
-               find_similar_authors_by_references, search_references,
-               get_document_references, search_document_paragraphs, get_detailed_statistics
+using ..Search: SearchEngine, query_index, search_authors, find_similar_authors_by_profile,
+               find_similar_documents_by_references, search_references,
+               get_document_references, get_author_documents, get_coauthors,
+               get_topic_elements, search_document_paragraphs, get_detailed_statistics
+using ..DB: normalize_author_name
 using ..Wikipedia: explain_concept
 
 export launch_interactive_shell
@@ -21,7 +23,9 @@ mutable struct ShellState
     top_k::Int
     include_wiki::Bool
     last_hits::Vector{Dict{String, Any}}
-    selected_doc_idx::Union{Int, Nothing}
+    last_authors::Vector{Dict{String, Any}}
+    context_doc::Union{Tuple{String, String}, Nothing} # (repo, doc_id)
+    context_author::Union{String, Nothing}            # norm_name or canonical name
     data_dir::String
     index_dir::String
 end
@@ -31,29 +35,32 @@ function tprintln(str)
 end
 
 function render_banner(state::ShellState)
-    n_docs = state.engine.docs !== nothing ? length(state.engine.docs) : 0
+    n_docs = length(state.engine.doc_keys)
     n_repos = length(list_repo_names(; data_dir=state.data_dir))
-    n_authors = state.engine.authors_data !== nothing ? length(state.engine.authors_data) : 0
-    n_refs = state.engine.references_data !== nothing ? length(state.engine.references_data) : 0
+    n_authors = length(state.engine.author_keys)
     
     content = """
 {bold bright_cyan}ReposMx - Buscador Interactivo de Repositorios de México{/bold bright_cyan}
-{dim}Búsqueda Multicapa: Metadatos, Autores por Tema, Citas Bibliográficas y Párrafos en PDFs{/dim}
+{dim}Búsqueda Homogénea en RocksDB: Contenido, Redes de Autores, Citas Bibliográficas y Párrafos{/dim}
 
-• {bold green}Documentos indexados:{/bold green} $(string(n_docs))
+• {bold green}Documentos en acervo:{/bold green} $(string(n_docs))
 • {bold green}Autores e investigadores:{/bold green} $(string(n_authors))
-• {bold green}Citas / Referencias bibliográficas:{/bold green} $(string(n_refs))
 • {bold green}Repositorios institucionales:{/bold green} $(string(n_repos))
 
 {bold yellow}Comandos principales:{/bold yellow}
-  {cyan}/?{/cyan} o {cyan}/? <comando>{/cyan}       Ayuda general o específica para cualquier comando
-  {cyan}/info [repo]{/cyan}          Estadísticas globales o por repositorio (tipos, disciplinas, autores)
-  {cyan}/topic-authors <tema>{/cyan}  Investigadores expertos en un campo del conocimiento
-  {cyan}/sim-authors <autor>{/cyan}   Autores con bibliografía similar (acoplamiento bibliográfico)
-  {cyan}/author <nombre>{/cyan}       Busca perfil de un autor / colaborador
-  {cyan}/cited <autor|obra>{/cyan}     ¿Quién cita a este autor/obra en el repositorio?
-  {cyan}/find <consulta>{/cyan}       Busca párrafos dentro del documento actual
-  {cyan}/type <tipo>{/cyan} | {cyan}/repo <nombre>{/cyan} Filtra por tipo o repositorio
+  {cyan}/?{/cyan} o {cyan}/? <cmd>{/cyan}           Ayuda interactiva general o de un comando
+  {cyan}<consulta>{/cyan}             Búsqueda general de publicaciones por contenido
+  {cyan}/author <nombre>{/cyan}       Búsqueda de investigadores por nombre
+  {cyan}/set-author <N|nombre>{/cyan} Fija el autor en contexto para operaciones derivadas
+  {cyan}/author-docs{/cyan}           Lista publicaciones del autor en contexto
+  {cyan}/author-coauth{/cyan}         Muestra la red de coautores del autor en contexto
+  {cyan}/author-similar{/cyan}        Investigadores afines por perfil y referencias
+  {cyan}/doc <N>{/cyan}               Abre ficha de un documento y lo fija en contexto
+  {cyan}/doc-refs{/cyan}              Referencias bibliográficas del documento en contexto
+  {cyan}/doc-similar-refs{/cyan}     Documentos similares por referencias citadas
+  {cyan}/doc-find <query>{/cyan}      Búsqueda profunda en párrafos del documento en contexto
+  {cyan}/topic <tema>{/cyan}          Operaciones de conjuntos (autores y docs por tema/centro)
+  {cyan}/repo <nombre|all>{/cyan}     Filtro post-processing por centro institucional
 """
     p = Panel(
         content,
@@ -68,35 +75,33 @@ end
 
 function print_general_help()
     content = """
-{bold cyan}GUÍA DE COMANDOS DE REPOSMX (Usa '/? <comando>' para ayuda detallada):{/bold cyan}
+{bold cyan}GUÍA DE COMANDOS DE REPOSMX:{/bold cyan}
 
-  {bold bright_yellow}BÚSQUEDA GENERAL:{/bold bright_yellow}
-    {yellow}<texto>{/yellow}                       Búsqueda global sobre títulos, abstracts, conclusiones y keywords
-    {yellow}/doc <N>{/yellow}                     Abre ficha detallada y abstract del resultado #N
-    {yellow}/find <consulta>{/yellow}              Busca párrafos relevantes dentro del documento actual
-    {yellow}/in <N> <consulta>{/yellow}            Busca párrafos dentro del documento resultado #N
+  {bold bright_yellow}1. BÚSQUEDA Y CONTEXTO DE DOCUMENTOS:{/bold bright_yellow}
+    {yellow}<texto>{/yellow}                       Búsqueda de publicaciones por título, abstract, conclusiones y temas
+    {yellow}/doc <N>{/yellow}                     Abre ficha completa y establece el documento como {bold}Contexto Activo{/bold}
+    {yellow}/doc-refs{/yellow} o {yellow}/refs{/yellow}             Lista las citas bibliográficas del documento en contexto
+    {yellow}/doc-similar-refs{/yellow} o {yellow}/sim-refs{/yellow}  Busca artículos/tesis con bibliografía afín al documento en contexto
+    {yellow}/doc-find <texto>{/yellow} o {yellow}/find{/yellow}     Búsqueda profunda de pasajes/párrafos dentro del documento en contexto
 
-  {bold bright_yellow}ESTADÍSTICAS Y PANORAMA ACADÉMICO:{/bold bright_yellow}
-    {yellow}/info [repo]{/yellow}                  Estadísticas detalladas de publicaciones, disciplinas y autores
-    {yellow}/status{/yellow} o {yellow}/repos{/yellow}             Tabla de estado de cosecha y archivos por repositorio
+  {bold bright_yellow}2. BÚSQUEDA Y CONTEXTO DE AUTORES:{/bold bright_yellow}
+    {yellow}/author <nombre>{/yellow}              Búsqueda de investigadores por coincidencia léxica de nombre
+    {yellow}/set-author <N|nombre>{/yellow}        Establece un autor como {bold}Contexto Activo{/bold}
+    {yellow}/author-docs{/yellow}                  Lista todas las publicaciones del autor en contexto
+    {yellow}/author-coauth{/yellow}                Muestra la red de coautoría y pesos del autor en contexto
+    {yellow}/author-similar{/yellow} o {yellow}/sim-authors{/yellow} Autores afines por acoplamiento bibliográfico y perfil temático
 
-  {bold bright_yellow}INVESTIGADORES Y REDES CIENTÍFICAS:{/bold bright_yellow}
-    {yellow}/author <nombre>{/yellow}              Busca investigadores por nombre, coautores e instituciones
-    {yellow}/topic-authors <tema>{/yellow}         Rankea autores expertos según un campo o disciplina
-    {yellow}/sim-authors <nombre>{/yellow}         Encuentra autores similares por referencias y citas compartidas
+  {bold bright_yellow}3. TÓPICOS Y OPERACIONES DE CONJUNTOS:{/bold bright_yellow}
+    {yellow}/topic <tema>{/yellow}                 Lista documentos y autores en el tema (intersecta con /repo si está activo)
 
-  {bold bright_yellow}CITAS Y REFERENCIAS BIBLIOGRÁFICAS:{/bold bright_yellow}
-    {yellow}/cited <autor|obra>{/yellow}           Busca en el corpus de referencias quién cita a ese autor/obra
-    {yellow}/refs [N]{/yellow}                     Muestra la bibliografía del resultado #N o del /doc actual
-
-  {bold bright_yellow}FILTROS Y CONFIGURACIÓN:{/bold bright_yellow}
-    {yellow}/repo <nombre|all>{/yellow}            Filtra por repositorio (ej. {italic}/repo cimat{/italic})
-    {yellow}/type <tesis|articulo|all>{/yellow}    Filtra por tipo de publicación
-    {yellow}/tag <keyword|all>{/yellow}            Filtra por palabra clave
-    {yellow}/top <número>{/yellow}                 Cantidad de resultados devueltos (ej. {italic}/top 5{/italic})
-    {yellow}/wiki <on|off>{/yellow}                Alterna explicaciones de conceptos con Wikipedia
-    {yellow}/explain <concepto>{/yellow}           Consulta directa de un concepto en Wikipedia
-    {yellow}/clear{/yellow} | {yellow}/exit{/yellow}              Limpia la terminal o sale del shell
+  {bold bright_yellow}4. FILTROS Y ESTADÍSTICAS:{/bold bright_yellow}
+    {yellow}/repo <nombre|all>{/yellow}            Filtro de repositorio institucional (post-processing)
+    {yellow}/type <tipo|all>{/yellow}              Filtro por tipo de documento (Tesis, Artículo, etc.)
+    {yellow}/tag <keyword|all>{/yellow}            Filtro por disciplina / keyword
+    {yellow}/top <número>{/yellow}                 Resultados devueltos por página (ej. /top 10)
+    {yellow}/info [repo]{/yellow}                  Estadísticas detalladas del repositorio o acervo global
+    {yellow}/clear-context{/yellow}                Limpia los contextos activos de documento y autor
+    {yellow}/clear{/yellow} | {yellow}/exit{/yellow}              Limpia la pantalla o sale del shell
 """
     println(Panel(content, title="Guía de Comandos Generales", style="cyan", box=:ROUNDED, width=min(105, displaysize(stdout)[2] - 4)))
 end
@@ -105,122 +110,78 @@ function print_specific_help(cmd::AbstractString)
     c = lowercase(strip(replace(cmd, r"^/+" => "")))
     
     docs = Dict(
-        "info" => ("Estadísticas Globales y por Repositorio",
-            """
-{bold}Sintaxis:{/bold} {cyan}/info [nombre_repositorio]{/cyan}
-
-{bold}Descripción:{/bold}
-Genera un informe analítico completo del acervo académico:
-• Si se ejecuta sin argumentos (o {italic}/info all{/italic}), despliega el panorama global de todos los repositorios: total de documentos, PDFs, textos procesados, citas extraídas, distribución por tipo de publicación (Tesis, Artículos, Libros), principales disciplinas científicas, investigadores más prolíficos y distribución por repositorio.
-• Si se especifica un repositorio (o hay uno activo con {italic}/repo{/italic}), desglosa las estadísticas focalizadas exclusivamente en esa institución.
-
-{bold}Ejemplos:{/bold}
-  • {italic}/info{/italic}
-  • {italic}/info cimat{/italic}
-  • {italic}/info iteso{/italic}
-"""),
-        "topic-authors" => ("Búsqueda de Investigadores por Campo de Conocimiento",
-            """
-{bold}Sintaxis:{/bold} {cyan}/topic-authors <campo del conocimiento o tema>{/cyan}
-
-{bold}Descripción:{/bold}
-Analiza los perfiles temáticos de todos los autores (títulos de sus obras, palabras clave y resúmenes) y rankea a los investigadores que más han publicado y contribuido en esa disciplina específica.
-
-{bold}Ejemplos:{/bold}
-  • {italic}/topic-authors optimización combinatoria{/italic}
-  • {italic}/topic-authors electroquímica y corrosión{/italic}
-  • {italic}/topic-authors redes neuronales convolucionales{/italic}
-"""),
-        "sim-authors" => ("Autores Similares por Referencias (Bibliographic Coupling)",
-            """
-{bold}Sintaxis:{/bold} {cyan}/sim-authors <nombre del autor>{/cyan}
-
-{bold}Descripción:{/bold}
-Calcula el acoplamiento bibliográfico (Bibliographic Coupling) entre investigadores. Encuentra qué otros autores citan la misma literatura, marcos teóricos y metodologías, revelando conexiones científicas e investigativas directas o interdisciplinarias.
-
-{bold}Ejemplos:{/bold}
-  • {italic}/sim-authors Samaniego{/italic}
-  • {italic}/sim-authors Tellez{/italic}
-"""),
-        "author" => ("Búsqueda de Perfil de Autor / Colaborador",
+        "author" => ("Búsqueda de Autores por Nombre",
             """
 {bold}Sintaxis:{/bold} {cyan}/author <nombre o apellido>{/cyan}
 
 {bold}Descripción:{/bold}
-Busca en el índice de personas académicas (autores y asesores/colaboradores), mostrando su rol, total de publicaciones, repositorios asociados, red de coautores y principales áreas de investigación.
-
-{bold}Ejemplos:{/bold}
-  • {italic}/author Eric Tellez{/italic}
-  • {italic}/author Carlos González{/italic}
+Busca perfiles de investigadores y colaboradores por coincidencia de nombre.
+Para realizar operaciones sobre un autor (ver publicaciones, coautores o autores similares), usa {italic}/set-author <N>{/italic}.
 """),
-        "cited" => ("Búsqueda en el Corpus de Referencias Citadas",
+        "set-author" => ("Fijar Autor en Contexto",
             """
-{bold}Sintaxis:{/bold} {cyan}/cited <autor, libro, revista o teoría citada>{/cyan}
+{bold}Sintaxis:{/bold} {cyan}/set-author <número_resultado | nombre>{/cyan}
 
 {bold}Descripción:{/bold}
-Busca en el corpus de todas las referencias bibliográficas extraídas de los PDFs para identificar qué documentos y autores dentro del repositorio institucional han citado a una obra o autor específico.
-
-{bold}Ejemplos:{/bold}
-  • {italic}/cited Goodfellow{/italic}
-  • {italic}/cited Knuth The Art of Computer Programming{/italic}
-  • {italic}/cited IEEE Transactions on Pattern Analysis{/italic}
+Fija el autor indicado como contexto activo del shell.
+Permite ejecutar {italic}/author-docs{/italic}, {italic}/author-coauth{/italic}, y {italic}/author-similar{/italic}.
 """),
-        "refs" => ("Exploración Bibliográfica del Documento",
+        "author-docs" => ("Publicaciones del Autor en Contexto",
             """
-{bold}Sintaxis:{/bold} {cyan}/refs [número_resultado]{/cyan}
+{bold}Sintaxis:{/bold} {cyan}/author-docs{/cyan}
 
 {bold}Descripción:{/bold}
-Muestra la lista estructurada de todas las referencias bibliográficas citadas por el documento seleccionado.
-
-{bold}Ejemplos:{/bold}
-  • {italic}/refs{/italic} (para el documento actualmente abierto con /doc)
-  • {italic}/refs 3{/italic} (para el resultado #3 de la última búsqueda)
+Recupera directamente de RocksDB todas las obras, tesis y artículos registrados para el autor en contexto activo.
 """),
-        "find" => ("Búsqueda Profunda de Párrafos en PDF",
+        "author-coauth" => ("Red de Coautores del Autor en Contexto",
             """
-{bold}Sintaxis:{/bold} {cyan}/find <término o pregunta>{/cyan}
-{bold}Sintaxis alternativa:{/bold} {cyan}/in <N> <término>{/cyan}
+{bold}Sintaxis:{/bold} {cyan}/author-coauth{/cyan}
 
 {bold}Descripción:{/bold}
-Segmenta el texto completo del documento seleccionado en párrafos, crea un índice BM25 dinámico al vuelo y recupera los pasajes más relevantes con su número de párrafo y sección identificada.
-
-{bold}Ejemplos:{/bold}
-  • {italic}/find función de costo y regularización{/italic}
-  • {italic}/in 2 límites de detección electroquímica{/italic}
+Muestra los colaboradores y coautores más frecuentes del autor en contexto activo.
 """),
-        "repo" => ("Filtro de Repositorio Institucional",
+        "author-similar" => ("Similitud de Autores por Perfil y Citas",
             """
-{bold}Sintaxis:{/bold} {cyan}/repo <nombre_repo | all>{/cyan}
+{bold}Sintaxis:{/bold} {cyan}/author-similar{/cyan} o {cyan}/sim-authors [nombre]{/cyan}
 
 {bold}Descripción:{/bold}
-Limita todas las búsquedas subsiguientes al repositorio seleccionado (ej. iteso, cimat, cideteq) o restablece a todos con 'all'.
-
-{bold}Ejemplos:{/bold}
-  • {italic}/repo cimat{/italic}
-  • {italic}/repo all{/italic}
+Evalúa el índice semántico de autores (`authors_profile_bm25.jld2`) para descubrir investigadores que comparten marco conceptual, tópicos y literatura citada con el autor en contexto.
 """),
-        "type" => ("Filtro por Tipo de Publicación",
-            """
-{bold}Sintaxis:{/bold} {cyan}/type <tesis | articulo | libro | reporte | all>{/cyan}
-
-{bold}Descripción:{/bold}
-Filtra las búsquedas por la tipología del documento académico.
-
-{bold}Ejemplos:{/bold}
-  • {italic}/type Tesis{/italic}
-  • {italic}/type Artículo{/italic}
-  • {italic}/type all{/italic}
-"""),
-        "doc" => ("Visualizador Detallado del Documento",
+        "doc" => ("Fijar Documento en Contexto y Ver Ficha",
             """
 {bold}Sintaxis:{/bold} {cyan}/doc <número_resultado>{/cyan}
 
 {bold}Descripción:{/bold}
-Abre la ficha completa de metadatos, abstract, autores, colaboradores, materias, ruta al PDF y número de referencias bibliográficas.
+Abre la ficha técnica completa del documento desde RocksDB y lo fija como contexto activo.
+Permite ejecutar {italic}/doc-refs{/italic}, {italic}/doc-similar-refs{/italic}, y {italic}/doc-find{/italic}.
+"""),
+        "doc-refs" => ("Referencias Bibliográficas del Documento",
+            """
+{bold}Sintaxis:{/bold} {cyan}/doc-refs{/cyan} o {cyan}/refs [N]{/cyan}
 
-{bold}Ejemplos:{/bold}
-  • {italic}/doc 1{/italic}
-  • {italic}/doc 4{/italic}
+{bold}Descripción:{/bold}
+Muestra las citas bibliográficas extraídas del documento en contexto activo.
+"""),
+        "doc-similar-refs" => ("Documentos con Bibliografía Similar",
+            """
+{bold}Sintaxis:{/bold} {cyan}/doc-similar-refs{/cyan} o {cyan}/sim-refs{/cyan}
+
+{bold}Descripción:{/bold}
+Toma las referencias citadas por el documento en contexto y consulta el índice bibliográfico (`docs_refs_bm25.jld2`) para descubrir publicaciones con acoplamiento bibliográfico afín.
+"""),
+        "doc-find" => ("Búsqueda Profunda en Párrafos",
+            """
+{bold}Sintaxis:{/bold} {cyan}/doc-find <consulta>{/cyan} o {cyan}/find <consulta>{/cyan}
+
+{bold}Descripción:{/bold}
+Realiza una búsqueda de párrafos y pasajes relevantes dentro del texto completo del documento en contexto activo.
+"""),
+        "topic" => ("Operaciones de Conjuntos por Tópico",
+            """
+{bold}Sintaxis:{/bold} {cyan}/topic <nombre_tema>{/cyan}
+
+{bold}Descripción:{/bold}
+Lista los documentos y autores asociados a un tópico. Si hay un filtro de repositorio activo ({italic}/repo cimat{/italic}), realiza la intersección de conjuntos en RocksDB.
 """)
     )
     
@@ -242,129 +203,91 @@ function show_info_command(state::ShellState, repo_arg::Union{AbstractString, No
     end
     
     is_global = stats["is_global"]
-    title_str = is_global ? "🇲🇽 Panorama General: Estadísticas Globales del Acervo Académico Nacional" : "🏛️ Estadísticas del Repositorio: $(stats["target_repo"])"
+    title_str = is_global ? "🇲🇽 Panorama General: Estadísticas del Acervo" : "🏛️ Estadísticas: $(stats["target_repo"])"
     
     docs_cnt = string(stats["total_docs"])
     files_cnt = string(stats["total_files"])
     fulltext_cnt = string(stats["total_fulltext"])
     refs_cnt = string(stats["total_references"])
     auth_cnt = string(stats["total_authors"])
-    yr_min = stats["year_min"]
-    yr_max = stats["year_max"]
     
-    summary_box = """
-• {bold green}Documentos y publicaciones indexadas:{/bold green} $docs_cnt
-• {bold green}Documentos con PDF descargado:{/bold green} $files_cnt
-• {bold green}Documentos con texto completo procesado:{/bold green} $fulltext_cnt
-• {bold green}Citas y referencias bibliográficas extraídas:{/bold green} $refs_cnt
-• {bold green}Autores e investigadores registrados:{/bold green} $auth_cnt
-• {bold green}Rango temporal de publicaciones:{/bold green} $yr_min — $yr_max
+    summary_text = """
+📚 {bold}Documentos Totales:{/bold}    $docs_cnt
+📄 {bold}PDFs Descargados:{/bold}      $files_cnt
+📖 {bold}Textos Procesados:{/bold}     $fulltext_cnt
+👥 {bold}Investigadores:{/bold}        $auth_cnt
+🔗 {bold}Citas Bibliográficas:{/bold}  $refs_cnt
+📅 {bold}Rango de Años:{/bold}         $(stats["year_min"]) - $(stats["year_max"])
 """
-    println(Panel(summary_box, title="{bold bright_cyan}$title_str{/bold bright_cyan}", style="bright_cyan", box=:ROUNDED, width=min(105, displaysize(stdout)[2] - 4)))
+    p_summary = Panel(summary_text, title=title_str, style="bright_cyan", box=:ROUNDED, width=min(105, displaysize(stdout)[2] - 4))
+    println(p_summary)
     
-    # 1. Publication types table
-    types = stats["types_distribution"]
-    if !isempty(types)
-        t_names = [t["type"] for t in types]
-        t_counts = [t["count"] for t in types]
-        t_pcts = [string(round((t["count"] / max(1, stats["total_docs"])) * 100, digits=1), " %") for t in types]
-        println(Table(Dict("Tipo de Publicación" => t_names, "Cantidad" => t_counts, "Porcentaje" => t_pcts); style="yellow", box=:ROUNDED))
+    disciplines = get(stats, "top_disciplines", Dict{String, Any}[])
+    if !isempty(disciplines)
+        d_rows = [[d["discipline"], string(d["count"])] for d in first(disciplines, 10)]
+        d_tab = Table(d_rows; header=["Área / Disciplina", "Publicaciones"], box=:ROUNDED, style="magenta")
+        println(Panel(string(d_tab), title="🏷️ Principales Disciplinas", style="magenta", box=:ROUNDED, width=min(105, displaysize(stdout)[2] - 4)))
     end
-    
-    # 2. Top disciplines / keywords
-    discs = stats["top_disciplines"]
-    if !isempty(discs)
-        d_sub = discs[1:min(10, length(discs))]
-        d_names = [d["discipline"] for d in d_sub]
-        d_counts = [d["count"] for d in d_sub]
-        println(Table(Dict("Área de Conocimiento / Disciplina" => d_names, "Frecuencia" => d_counts); style="cyan", box=:ROUNDED))
-    end
-    
-    # 3. Top authors
-    auths = stats["top_authors"]
-    if !isempty(auths)
-        a_sub = auths[1:min(8, length(auths))]
-        a_names = [a["name"] for a in a_sub]
-        a_roles = [a["role"] for a in a_sub]
-        a_counts = [a["doc_count"] for a in a_sub]
-        a_insts = [join(a["repos"], ", ") for a in a_sub]
-        println(Table(Dict("Investigador / Colaborador" => a_names, "Rol" => a_roles, "Publicaciones" => a_counts, "Institución" => a_insts); style="green", box=:ROUNDED))
-    end
-    
-    # 4. If global, top repositories
-    if is_global
-        repos = stats["top_repositories"]
-        if !isempty(repos)
-            r_sub = repos[1:min(8, length(repos))]
-            r_names = [r["repo"] for r in r_sub]
-            r_counts = [r["count"] for r in r_sub]
-            println(Table(Dict("Repositorio Institucional" => r_names, "Total Documentos" => r_counts); style="blue", box=:ROUNDED))
-        end
-    end
-    
     println()
 end
 
 function show_repos_table(state::ShellState)
-    stats = get_repo_stats(; data_dir=state.data_dir)
-    repos_data = stats["repos"]
+    repos = list_repo_names(; data_dir=state.data_dir)
+    rows = Any[]
     
-    headers = ["Repositorio", "Registros DB", "Archivos", "En Corpus", "Última Cosecha"]
-    rows = []
-    
-    for r in repos_data
-        rname = r["repo"]
-        tot = string(r["total_records"])
-        fil = string(r["files_downloaded"])
-        cor = string(r["corpus_records"])
-        harv = r["last_harvest"] === nothing ? "Nunca" : first(r["last_harvest"], min(10, length(r["last_harvest"])))
-        push!(rows, [rname, tot, fil, cor, harv])
+    for r in sort(repos)
+        st = get_repo_stats(r; data_dir=state.data_dir)
+        n_xml = st["xml_records"]
+        n_corpus = st["corpus_records"]
+        n_pdf = st["pdf_files"]
+        n_txt = st["txt_files"]
+        has_corpus = st["has_corpus"] ? "{green}✓{/green}" : "{dim}✗{/dim}"
+        has_idx = isfile(joinpath(state.index_dir, "docs_content_bm25.jld2")) ? "{green}✓{/green}" : "{dim}✗{/dim}"
+        
+        push!(rows, [r, string(n_xml), string(n_corpus), string(n_pdf), string(n_txt), has_corpus, has_idx])
     end
     
-    sort!(rows, by=x->parse(Int, x[2]), rev=true)
-    display_rows = rows[1:min(35, length(rows))]
-    
     tab = Table(
-        display_rows;
-        header=headers,
+        rows;
+        header=["Repositorio", "XML Cosechados", "Corpus JSONL", "PDFs", "TXT Fulltext", "Corpus Listo", "Indexado"],
         box=:ROUNDED,
         style="blue"
     )
-    
     println(tab)
-    tprintln("{dim}Mostrando $(length(display_rows)) de $(length(rows)) repositorios. Usa '/repo <nombre>' para filtrar.{/dim}\n")
+    tprintln("{dim}Total: $(length(rows)) repositorios. Usa '/repo <nombre>' para filtrar.{/dim}\n")
 end
 
-function show_author_profile(state::ShellState, author_query::AbstractString)
-    res = search_authors(state.engine, author_query; top=state.top_k)
+function show_author_search(state::ShellState, author_query::AbstractString)
+    res = search_authors(state.engine, author_query; top=state.top_k, repo=state.active_repo)
     authors = get(res, "authors", [])
+    state.last_authors = authors
     
     if isempty(authors)
-        tprintln("{yellow}No se encontraron autores o colaboradores que coincidan con '$author_query'.{/yellow}\n")
+        tprintln("{yellow}No se encontraron autores que coincidan con '$author_query'.{/yellow}\n")
         return
     end
     
-    tprintln("\n{bold green}✓{/bold green} Encontrados {bold bright_cyan}$(length(authors)) autores/colaboradores{/bold bright_cyan} para \"{bold bright_white}$author_query{/bold bright_white}\" en {dim}$(res["time_ms"]) ms{/dim}:\n")
+    tprintln("\n{bold green}✓{/bold green} Encontrados {bold bright_cyan}$(length(authors)) autores{/bold bright_cyan} para \"{bold bright_white}$author_query{/bold bright_white}\" en {dim}$(res["time_ms"]) ms{/dim}:\n")
     
     for (i, a) in enumerate(authors)
         name = a["name"]
         role = a["role"]
         cnt = a["doc_count"]
         repos = join(a["repos"], ", ")
-        coauth = !isempty(a["coauthors"]) ? join(first(a["coauthors"], 5), " ; ") : "N/A"
-        kws = !isempty(a["keywords"]) ? join(first(a["keywords"], 8), " , ") : "N/A"
+        coauth = !isempty(a["coauthors"]) ? join(first(a["coauthors"], 4), " ; ") : "N/A"
+        kws = !isempty(a["keywords"]) ? join(first(a["keywords"], 6), " , ") : "N/A"
         
         content = """
 👤 {bold bright_white}$name{/bold bright_white}  {cyan}[$role]{/cyan}
 
-🏛️  {bold}Repositorios:{/bold} $repos
+🏛️  {bold}Institución(es):{/bold} $repos
 📚 {bold}Publicaciones registradas:{/bold} $cnt
-👥 {bold}Coautores / Colaboradores:{/bold} $coauth
+👥 {bold}Coautores:{/bold} $coauth
 🏷️  {bold}Áreas / Keywords:{/bold} $kws
 """
         p = Panel(
             content,
-            title="[#$i] Perfil de Investigador",
+            title="[Autor #$i]",
             style="bright_cyan",
             box=:ROUNDED,
             width=min(100, displaysize(stdout)[2] - 4)
@@ -372,149 +295,108 @@ function show_author_profile(state::ShellState, author_query::AbstractString)
         println(p)
     end
     
-    tprintln("{dim}Tip: Escribe '/sim-authors $author_query' para encontrar autores similares por citas.{/dim}\n")
+    tprintln("{dim}Tip: Escribe '/set-author <N>' para fijar un autor en contexto y explorar sus obras, coautores y afinidad.{/dim}\n")
 end
 
-function show_topic_authors(state::ShellState, topic_query::AbstractString)
-    res = search_authors_by_topic(state.engine, topic_query; top=state.top_k)
-    authors = get(res, "authors", [])
-    
-    if isempty(authors)
-        tprintln("{yellow}No se encontraron autores asociados al tema '$topic_query'.{/yellow}\n")
+function set_author_context(state::ShellState, target::AbstractString)
+    idx = tryparse(Int, target)
+    if idx !== nothing
+        if isempty(state.last_authors) || idx < 1 || idx > length(state.last_authors)
+            tprintln("{bold red}Número de autor inválido. Primero busca con '/author <nombre>'.{/bold red}\n")
+            return
+        end
+        auth = state.last_authors[idx]
+        state.context_author = auth["name"]
+        tprintln("{bold green}✓ Autor en contexto fijado:{/bold green} {bold bright_white}$(auth["name"]){/bold bright_white} ({cyan}$(auth["role"]){/cyan})\n")
+    else
+        clean_name = strip(target)
+        if !isempty(clean_name)
+            state.context_author = clean_name
+            tprintln("{bold green}✓ Autor en contexto fijado:{/bold green} {bold bright_white}$clean_name{/bold bright_white}\n")
+        end
+    end
+end
+
+function show_author_docs(state::ShellState)
+    if state.context_author === nothing
+        tprintln("{bold red}No hay un autor en contexto activo. Usa '/author <nombre>' y '/set-author <N>'.{/bold red}\n")
         return
     end
     
-    tprintln("\n{bold green}✓{/bold green} Autores especializados en \"{bold bright_white}$topic_query{/bold bright_white}\" ({bold bright_cyan}$(length(authors)) encontrados{/bold bright_cyan} en {dim}$(res["time_ms"]) ms{/dim}):\n")
+    res = get_author_documents(state.engine, state.context_author; limit=state.top_k*2)
+    docs = get(res, "documents", Dict{String, Any}[])
     
-    for (i, a) in enumerate(authors)
-        name = a["name"]
-        role = a["role"]
-        cnt = a["doc_count"]
-        repos = join(a["repos"], ", ")
-        kws = !isempty(a["keywords"]) ? join(first(a["keywords"], 6), " , ") : "N/A"
+    if isempty(docs)
+        tprintln("{yellow}No se encontraron documentos en RocksDB para el autor '$(state.context_author)'.{/yellow}\n")
+        return
+    end
+    
+    tprintln("\n{bold green}✓{/bold green} Publicaciones de {bold bright_white}$(res["author"]){/bold bright_white} ({bold bright_cyan}$(length(docs)) registros{/bold bright_cyan}):\n")
+    
+    for (i, d) in enumerate(first(docs, state.top_k))
+        title = get(d, "title", "Sin título")
+        repo = get(d, "repo", "")
+        date = get(d, "date", "")
+        dtype = get(d, "type", "Doc")
+        role = get(d, "author_role", "Autor")
         
-        content = """
-👤 {bold bright_white}$name{/bold bright_white}  {cyan}[$role]{/cyan}  {green}(Score Relevancia: $(round(a["score"], digits=1))){/green}
-
-🏛️  {bold}Institución(es):{/bold} $repos
-📚 {bold}Publicaciones en el área:{/bold} $cnt
-🏷️  {bold}Temas afines:{/bold} $kws
+        card_content = """
+{bold bright_white}$title{/bold bright_white}
+🏛️  {cyan}$repo{/cyan} | {yellow}📑 $dtype{/yellow} | {dim}📅 $date{/dim} | {green}Rol: $role{/green}
 """
-        p = Panel(
-            content,
-            title="[Especialista #$i]",
-            style="bright_cyan",
-            box=:ROUNDED,
-            width=min(100, displaysize(stdout)[2] - 4)
-        )
-        println(p)
+        println(Panel(card_content, title="[#$i]", style="blue", box=:SQUARE, width=min(100, displaysize(stdout)[2] - 4)))
     end
     println()
 end
 
-function show_similar_authors(state::ShellState, author_name::AbstractString)
-    res = find_similar_authors_by_references(state.engine, author_name; top=state.top_k)
-    sims = get(res, "similar_authors", [])
-    
-    if isempty(sims)
-        tprintln("{yellow}No se encontraron autores con acoplamiento bibliográfico similar para '$author_name'.{/yellow}\n")
+function show_author_coauthors(state::ShellState)
+    if state.context_author === nothing
+        tprintln("{bold red}No hay un autor en contexto activo. Usa '/author <nombre>' y '/set-author <N>'.{/bold red}\n")
         return
     end
     
-    target = get(res, "target_author", author_name)
-    tprintln("\n{bold green}✓{/bold green} Autores similares por referencias y citas compartidas con \"{bold bright_white}$target{/bold bright_white}\" ({dim}$(res["time_ms"]) ms{/dim}):\n")
+    coauths = get_coauthors(state.engine, state.context_author; limit=state.top_k*2)
+    if isempty(coauths)
+        tprintln("{yellow}No se registraron coautorías para el autor '$(state.context_author)'.{/yellow}\n")
+        return
+    end
+    
+    tprintln("\n{bold green}✓{/bold green} Red de coautoría para {bold bright_white}$(state.context_author){/bold bright_white}:\n")
+    rows = [[c.first, string(c.second)] for c in coauths]
+    tab = Table(rows; header=["Coautor / Colaborador", "Trabajos Conjuntos"], box=:ROUNDED, style="cyan")
+    println(tab)
+    println()
+end
+
+function show_similar_authors(state::ShellState, target_author_opt::Union{AbstractString, Nothing}=nothing)
+    target = target_author_opt !== nothing && !isempty(strip(target_author_opt)) ? strip(target_author_opt) : state.context_author
+    if target === nothing
+        tprintln("{bold red}Indica un autor o fija uno en contexto con '/set-author <N>'.{/bold red}\n")
+        return
+    end
+    
+    res = find_similar_authors_by_profile(state.engine, target; top=state.top_k, repo=state.active_repo)
+    sims = get(res, "similar_authors", [])
+    
+    if isempty(sims)
+        tprintln("{yellow}No se encontraron investigadores afines para '$target'.{/yellow}\n")
+        return
+    end
+    
+    tprintln("\n{bold green}✓{/bold green} Autores afines por acoplamiento bibliográfico y perfil semántico con \"{bold bright_white}$(res["target_author"]){/bold bright_white}\" ({dim}$(res["time_ms"]) ms{/dim}):\n")
     
     for (i, a) in enumerate(sims)
         name = a["name"]
-        shared = a["shared_citation_matches"]
-        score = a["similarity_score"]
+        score = a["score"]
         repos = join(a["repos"], ", ")
         kws = !isempty(a["keywords"]) ? join(first(a["keywords"], 5), " , ") : "N/A"
         
         content = """
-👤 {bold bright_white}$name{/bold bright_white}
+👤 {bold bright_white}$name{/bold bright_white}  {green}(Afinidad BM25: $(round(score, digits=1))){/green}
 🏛️  {bold}Institución:{/bold} $repos
-🔗 {bold cyan}Coincidencias en literatura citada:{/bold cyan} {bold green}$shared referencias compartidas{/bold green} (Score: $score)
-🏷️  {bold}Áreas de investigación:{/bold} $kws
+🏷️  {bold}Áreas de coincidencia:{/bold} $kws
 """
-        p = Panel(
-            content,
-            title="[Autor Similar #$i]",
-            style="magenta",
-            box=:ROUNDED,
-            width=min(100, displaysize(stdout)[2] - 4)
-        )
-        println(p)
-    end
-    println()
-end
-
-function show_cited_references(state::ShellState, query::AbstractString)
-    res = search_references(state.engine, query; top=state.top_k, repo=state.active_repo)
-    refs = get(res, "references", [])
-    
-    if isempty(refs)
-        tprintln("{yellow}No se encontraron citas o referencias bibliográficas que coincidan con '$query'.{/yellow}\n")
-        return
-    end
-    
-    tprintln("\n{bold green}✓{/bold green} Encontradas {bold bright_cyan}$(length(refs)) referencias citadas{/bold bright_cyan} para \"{bold bright_white}$query{/bold bright_white}\" en {dim}$(res["time_ms"]) ms{/dim}:\n")
-    
-    for (i, r) in enumerate(refs)
-        ref_text = r["text"]
-        repo = r["repo"]
-        doc_title = r["doc_title"]
-        doc_id = r["doc_id"]
-        ref_num = r["ref_num"]
-        
-        content = """
-📖 {italic bright_white}\"$ref_text\"{/italic bright_white}
-
-🏛️  {bold cyan}Citado en documento:{/bold cyan} $doc_title
-📍 {bold cyan}Origen / Proveniencia:{/bold cyan} $repo (Ref #$ref_num) [ID: $doc_id]
-"""
-        p = Panel(
-            content,
-            title="[Cita #$i - $repo]",
-            style="green",
-            box=:ROUNDED,
-            width=min(100, displaysize(stdout)[2] - 4)
-        )
-        println(p)
-    end
-    println()
-end
-
-function show_document_references_cli(state::ShellState, doc_idx::Union{Int, Nothing}=nothing)
-    target_idx = doc_idx !== nothing ? doc_idx : state.selected_doc_idx
-    if target_idx === nothing || isempty(state.last_hits) || target_idx < 1 || target_idx > length(state.last_hits)
-        tprintln("{bold red}Primero selecciona un documento con '/doc <N>' o usa '/refs <N>'.{/bold red}\n")
-        return
-    end
-    
-    doc = state.last_hits[target_idx]
-    actual_doc_id = get(doc, "doc_idx", target_idx)
-    
-    res = get_document_references(state.engine, actual_doc_id)
-    refs = get(res, "references", [])
-    
-    if isempty(refs)
-        tprintln("{yellow}No se extrajeron referencias bibliográficas estructuradas para este documento.{/yellow}\n")
-        return
-    end
-    
-    tprintln("\n{bold green}✓{/bold green} Bibliografía de \"{bold bright_white}$(res["doc_title"]){/bold bright_white}\" ({bold bright_cyan}$(length(refs)) referencias{/bold bright_cyan}):\n")
-    
-    for (i, r) in enumerate(refs)
-        txt = get(r, "text", "")
-        p = Panel(
-            txt,
-            title="[Ref #$i]",
-            style="blue",
-            box=:SQUARE,
-            padding=(1, 1, 0, 0),
-            width=min(100, displaysize(stdout)[2] - 4)
-        )
+        p = Panel(content, title="[Autor Afín #$i]", style="magenta", box=:ROUNDED, width=min(100, displaysize(stdout)[2] - 4))
         println(p)
     end
     println()
@@ -526,11 +408,12 @@ function show_document_detail(state::ShellState, idx::Int)
         return
     end
     
-    state.selected_doc_idx = idx
     doc = state.last_hits[idx]
+    repo = get(doc, "repo", "")
+    doc_id = get(doc, "id", "")
+    state.context_doc = (repo, doc_id)
     
     title = get(doc, "title", "Sin título")
-    repo = get(doc, "repo", "")
     date = get(doc, "date", "N/A")
     creator = get(doc, "creator", "N/A")
     contrib = get(doc, "contributor", "")
@@ -554,38 +437,106 @@ $(!isempty(contrib) ? "🤝 {bold cyan}Colaborador(es):{/bold cyan} $contrib\n" 
 🏷️  {bold cyan}Keywords:{/bold cyan}         $kw_str
 🎯 {bold cyan}Score BM25:{/bold cyan}       $(round(score, digits=2))
 📄 {bold cyan}PDF / Archivo:{/bold cyan}    $(file !== nothing ? file : "{dim}No descargado{/dim}")
-📖 {bold cyan}Texto Completo:{/bold cyan}   $(has_fulltext ? "{bold green}Disponible para búsqueda por párrafos{/bold green}" : "{dim}No disponible{/dim}")
-📚 {bold cyan}Referencias:{/bold cyan}      $(ref_cnt > 0 ? "{bold cyan}$ref_cnt citas bibliográficas extraídas{/bold cyan} (Usa {bold yellow}/refs{/bold yellow} para verlas)" : "{dim}No extraídas{/dim}")
+📖 {bold cyan}Texto Completo:{/bold cyan}   $(has_fulltext ? "{bold green}Disponible para búsqueda por párrafos (/doc-find){/bold green}" : "{dim}No disponible{/dim}")
+📚 {bold cyan}Referencias:{/bold cyan}      $(ref_cnt > 0 ? "{bold cyan}$ref_cnt citas extraídas (/doc-refs o /doc-similar-refs){/bold cyan}" : "{dim}No extraídas{/dim}")
 
 {bold yellow}Resumen / Abstract:{/bold yellow}
 $desc
 """
     p = Panel(
         content,
-        title="[#$idx] Ficha Detallada del Documento",
+        title="[#$idx | Contexto Doc: $repo:$doc_id]",
         style="bright_yellow",
         box=:DOUBLE,
         width=min(105, displaysize(stdout)[2] - 4)
     )
     println(p)
-    
-    if has_fulltext
-        tprintln("{bold bright_green}💡 Búsqueda profunda:{/bold bright_green} Escribe {cyan}/find <consulta>{/cyan} para buscar párrafos dentro de este documento.\n")
-    end
+    tprintln("{bold green}✓ Contexto de documento fijado:{/bold green} {cyan}$repo:$doc_id{/cyan}. Usa {yellow}/doc-refs{/yellow}, {yellow}/doc-similar-refs{/yellow} o {yellow}/doc-find <query>{/yellow}.\n")
 end
 
-function search_in_document_cli(state::ShellState, query::AbstractString, doc_idx::Union{Int, Nothing}=nothing)
-    target_idx = doc_idx !== nothing ? doc_idx : state.selected_doc_idx
-    if target_idx === nothing || isempty(state.last_hits) || target_idx < 1 || target_idx > length(state.last_hits)
-        tprintln("{bold red}Primero selecciona un documento con '/doc <N>' o usa '/in <N> <consulta>'.{/bold red}\n")
+function show_document_references_cli(state::ShellState, doc_idx_opt::Union{Int, Nothing}=nothing)
+    target_repo, target_id = if doc_idx_opt !== nothing
+        if isempty(state.last_hits) || doc_idx_opt < 1 || doc_idx_opt > length(state.last_hits)
+            tprintln("{bold red}Número de documento inválido.{/bold red}\n")
+            return
+        end
+        d = state.last_hits[doc_idx_opt]
+        (d["repo"], d["id"])
+    elseif state.context_doc !== nothing
+        state.context_doc
+    else
+        tprintln("{bold red}Primero selecciona un documento con '/doc <N>'.{/bold red}\n")
         return
     end
     
-    doc = state.last_hits[target_idx]
-    actual_doc_id = get(doc, "doc_idx", target_idx)
+    res = get_document_references(state.engine, target_repo, target_id)
+    refs = get(res, "references", [])
     
-    tprintln("{dim}Buscando párrafos en: '$(get(doc, "title", ""))'...{/dim}")
-    res = search_document_paragraphs(state.engine, actual_doc_id, query; top=5)
+    if isempty(refs)
+        tprintln("{yellow}No se encontraron referencias estructuradas para el documento '$target_repo:$target_id'.{/yellow}\n")
+        return
+    end
+    
+    tprintln("\n{bold green}✓{/bold green} Bibliografía de \"{bold bright_white}$(res["doc_title"]){/bold bright_white}\" ({bold bright_cyan}$(length(refs)) referencias{/bold bright_cyan}):\n")
+    
+    for (i, r) in enumerate(refs)
+        txt = r isa AbstractDict ? get(r, "text", "") : string(r)
+        p = Panel(txt, title="[Ref #$i]", style="blue", box=:SQUARE, width=min(100, displaysize(stdout)[2] - 4))
+        println(p)
+    end
+    println()
+end
+
+function show_similar_documents_by_refs(state::ShellState)
+    if state.context_doc === nothing
+        tprintln("{bold red}No hay un documento en contexto activo. Usa '/doc <N>' para seleccionar uno.{/bold red}\n")
+        return
+    end
+    
+    repo, doc_id = state.context_doc
+    res = find_similar_documents_by_references(state.engine, repo, doc_id; top=state.top_k)
+    docs = get(res, "similar_documents", Dict{String, Any}[])
+    
+    if isempty(docs)
+        tprintln("{yellow}No se encontraron documentos con referencias afines para '$repo:$doc_id'.{/yellow}\n")
+        return
+    end
+    
+    tprintln("\n{bold green}✓{/bold green} Documentos con acoplamiento bibliográfico similar a {bold bright_white}$repo:$doc_id{/bold bright_white} ({dim}$(res["time_ms"]) ms{/dim}):\n")
+    
+    for (i, d) in enumerate(docs)
+        title = get(d, "title", "Sin título")
+        d_repo = get(d, "repo", "")
+        creator = get(d, "creator", "")
+        dtype = get(d, "type", "Doc")
+        score = get(d, "score", 0.0)
+        
+        card_content = """
+{bold bright_white}$title{/bold bright_white}
+🏛️  {cyan}$d_repo{/cyan} | {yellow}📑 $dtype{/yellow} | {dim}👤 $creator{/dim} | {green}Afinidad Bibliográfica BM25: $(round(score, digits=1)){/green}
+"""
+        println(Panel(card_content, title="[Doc Afín #$i]", style="green", box=:ROUNDED, width=min(100, displaysize(stdout)[2] - 4)))
+    end
+    println()
+end
+
+function search_in_document_cli(state::ShellState, query::AbstractString, doc_idx_opt::Union{Int, Nothing}=nothing)
+    target_repo, target_id = if doc_idx_opt !== nothing
+        if isempty(state.last_hits) || doc_idx_opt < 1 || doc_idx_opt > length(state.last_hits)
+            tprintln("{bold red}Número de documento inválido.{/bold red}\n")
+            return
+        end
+        d = state.last_hits[doc_idx_opt]
+        (d["repo"], d["id"])
+    elseif state.context_doc !== nothing
+        state.context_doc
+    else
+        tprintln("{bold red}Primero selecciona un documento con '/doc <N>'.{/bold red}\n")
+        return
+    end
+    
+    tprintln("{dim}Buscando pasajes en: $target_repo:$target_id...{/dim}")
+    res = search_document_paragraphs(state.engine, target_repo, target_id, query; top=5)
     
     if haskey(res, "error")
         tprintln("{bold red}$(res["error"]){/bold red}\n")
@@ -594,11 +545,11 @@ function search_in_document_cli(state::ShellState, query::AbstractString, doc_id
     
     hits = get(res, "hits", [])
     if isempty(hits)
-        tprintln("{yellow}No se encontraron párrafos en este documento que coincidan con '$query'.{/yellow}\n")
+        tprintln("{yellow}No se encontraron párrafos que coincidan con '$query'.{/yellow}\n")
         return
     end
     
-    tprintln("\n{bold green}✓{/bold green} Encontrados {bold bright_cyan}$(length(hits)) párrafos relevantes{/bold bright_cyan} para \"{bold bright_white}$query{/bold bright_white}\" dentro del documento:\n")
+    tprintln("\n{bold green}✓{/bold green} Encontrados {bold bright_cyan}$(length(hits)) párrafos relevantes{/bold bright_cyan} para \"{bold bright_white}$query{/bold bright_white}\":\n")
     
     for (i, ph) in enumerate(hits)
         pnum = ph["paragraph_num"]
@@ -612,7 +563,6 @@ function search_in_document_cli(state::ShellState, query::AbstractString, doc_id
             title_style="bold bright_cyan",
             style="cyan",
             box=:ROUNDED,
-            padding=(1, 1, 0, 0),
             width=min(100, displaysize(stdout)[2] - 4)
         )
         println(p_card)
@@ -620,32 +570,49 @@ function search_in_document_cli(state::ShellState, query::AbstractString, doc_id
     println()
 end
 
+function show_topic_elements_cli(state::ShellState, topic_str::AbstractString)
+    res = get_topic_elements(state.engine, topic_str; repo=state.active_repo, limit=state.top_k)
+    docs = get(res, "documents", Dict{String, Any}[])
+    authors = get(res, "authors", String[])
+    
+    repo_filter = res["repo_filter"] !== nothing ? " en centro: $(res["repo_filter"])" : ""
+    tprintln("\n{bold green}✓{/bold green} Operación de conjuntos para tópico \"{bold bright_white}$topic_str{/bold bright_white}\"$repo_filter ({dim}$(res["time_ms"]) ms{/dim}):\n")
+    
+    if !isempty(authors)
+        tprintln("👥 {bold bright_cyan}Investigadores en esta área ($(length(authors))):{/bold bright_cyan}")
+        tprintln(join(["  • " * a for a in first(authors, 10)], "\n"))
+        println()
+    end
+    
+    if !isempty(docs)
+        tprintln("📚 {bold bright_cyan}Publicaciones asociadas ($(length(docs))):{/bold bright_cyan}")
+        for (i, d) in enumerate(first(docs, 6))
+            println("  [#$i] {bold bright_white}$(d["title"]){/bold bright_white} {cyan}($(d["repo"])){/cyan}")
+        end
+        println()
+    end
+    
+    if isempty(authors) && isempty(docs)
+        tprintln("{yellow}No se encontraron autores o documentos para este tópico con los filtros activos.{/yellow}\n")
+    end
+end
+
 function render_search_results(state::ShellState, res::Dict)
     hits = get(res, "hits", [])
     state.last_hits = hits
-    state.selected_doc_idx = !isempty(hits) ? 1 : nothing
     
-    # 1. Wikipedia summary card if present
     if haskey(res, "wiki_concept") && res["wiki_concept"] !== nothing
         w = res["wiki_concept"]
         wiki_content = """
-{bold bright_white}$(w["title"]){/bold bright_white} {dim}(Wikipedia $(uppercase(w["lang"])) - Concepto Simplificado){/dim}
+{bold bright_white}$(w["title"]){/bold bright_white} {dim}(Wikipedia $(uppercase(w["lang"])) - Concepto){/dim}
 
 $(w["extract"])
 
 🔗 {italic blue}$(w["url"]){/italic blue}
 """
-        p_wiki = Panel(
-            wiki_content,
-            title="💡 Explicación de Concepto (Wikipedia)",
-            style="magenta",
-            box=:ROUNDED,
-            width=min(100, displaysize(stdout)[2] - 4)
-        )
-        println(p_wiki)
+        println(Panel(wiki_content, title="💡 Concepto Wikipedia", style="magenta", box=:ROUNDED, width=min(100, displaysize(stdout)[2] - 4)))
     end
     
-    # 2. Results header
     q = get(res, "query", "")
     total = get(res, "total_hits", 0)
     t_ms = get(res, "time_ms", 0.0)
@@ -663,7 +630,6 @@ $(w["extract"])
         return
     end
     
-    # 3. Render result cards
     for (i, h) in enumerate(hits)
         title = get(h, "title", "Sin título")
         repo = get(h, "repo", "")
@@ -672,17 +638,11 @@ $(w["extract"])
         dtype = get(h, "type", "Doc")
         score = get(h, "score", 0.0)
         snippet = get(h, "snippet", "")
-        has_file = get(h, "file", nothing) !== nothing
-        has_text = get(h, "has_fulltext", false)
-        ref_cnt = get(h, "reference_count", 0)
         
         meta_line = "{cyan}🏛️  $repo{/cyan} | {yellow}📑 $dtype{/yellow}"
-        !isempty(date) && (meta_line *= " | {dim}📅 $(first(date, min(10, length(date)))){/dim}")
-        !isempty(creator) && (meta_line *= " | {dim}👤 $(first(creator, min(40, length(creator)))){/dim}")
+        !isempty(date) && (meta_line *= " | {dim}📅 $(first(date, 10)){/dim}")
+        !isempty(creator) && (meta_line *= " | {dim}👤 $(first(creator, 30)){/dim}")
         meta_line *= " | {green}Score: $(round(score, digits=1)){/green}"
-        ref_cnt > 0 && (meta_line *= " | {cyan}📚 $ref_cnt refs{/cyan}")
-        has_text && (meta_line *= " | {bold bright_green}🔍 Texto{/bold bright_green}")
-        has_file && (meta_line *= " | {bold magenta}📄 PDF{/bold magenta}")
         
         card_content = """
 {bold bright_white}$title{/bold bright_white}
@@ -690,19 +650,11 @@ $meta_line
 
 $snippet
 """
-        card = Panel(
-            card_content,
-            title="[#$i]",
-            title_style="bold bright_blue",
-            style="blue",
-            box=:SQUARE,
-            padding=(1, 1, 0, 0),
-            width=min(100, displaysize(stdout)[2] - 4)
-        )
+        card = Panel(card_content, title="[#$i]", style="blue", box=:SQUARE, width=min(100, displaysize(stdout)[2] - 4))
         println(card)
     end
     
-    tprintln("{dim}Tip: Escribe '/doc <N>' para abrir la ficha, '/refs' para ver bibliografía o '/find <tema>' para buscar en el texto.{/dim}\n")
+    tprintln("{dim}Tip: Escribe '/doc <N>' para abrir la ficha y fijar el contexto.{/dim}\n")
 end
 
 const HISTORY_FILE = joinpath(homedir(), ".reposmx_history")
@@ -720,8 +672,6 @@ end
 
 """
     process_shell_input(state::ShellState, raw_input::AbstractString)::Bool
-
-Processes a single command line in the interactive shell. Returns `false` if exiting, `true` otherwise.
 """
 function process_shell_input(state::ShellState, raw_input::AbstractString)::Bool
     input = strip(raw_input)
@@ -742,6 +692,10 @@ function process_shell_input(state::ShellState, raw_input::AbstractString)::Bool
     elseif input in ("/clear", "clear", "cls")
         print("\033c")
         render_banner(state)
+    elseif input in ("/clear-context", "clear-context")
+        state.context_doc = nothing
+        state.context_author = nothing
+        tprintln("{bold green}Contextos activos de documento y autor restablecidos.{/bold green}\n")
     elseif startswith(input, "/info")
         parts = split(input; limit=2)
         if length(parts) >= 2 && !isempty(strip(parts[2]))
@@ -749,60 +703,49 @@ function process_shell_input(state::ShellState, raw_input::AbstractString)::Bool
         else
             show_info_command(state, nothing)
         end
-    elseif startswith(input, "/topic-authors") || startswith(input, "/author-topic")
+    elseif startswith(input, "/set-author")
         parts = split(input; limit=2)
         if length(parts) >= 2
-            show_topic_authors(state, strip(parts[2]))
+            set_author_context(state, strip(parts[2]))
         else
-            tprintln("{bold red}Uso: /topic-authors <campo del conocimiento o tema>{/bold red}\n")
+            tprintln("{bold red}Uso: /set-author <número_resultado | nombre_autor>{/bold red}\n")
         end
-    elseif startswith(input, "/sim-authors") || startswith(input, "/author-sim")
+    elseif input in ("/author-docs", "author-docs")
+        show_author_docs(state)
+    elseif input in ("/author-coauth", "author-coauth", "/coauth")
+        show_author_coauthors(state)
+    elseif startswith(input, "/author-similar") || startswith(input, "/sim-authors")
         parts = split(input; limit=2)
-        if length(parts) >= 2
-            show_similar_authors(state, strip(parts[2]))
-        else
-            tprintln("{bold red}Uso: /sim-authors <nombre del autor>{/bold red}\n")
-        end
+        opt_arg = length(parts) >= 2 ? strip(parts[2]) : nothing
+        show_similar_authors(state, opt_arg)
     elseif startswith(input, "/author")
         parts = split(input; limit=2)
         if length(parts) >= 2
-            show_author_profile(state, strip(parts[2]))
+            show_author_search(state, strip(parts[2]))
         else
             tprintln("{bold red}Uso: /author <nombre_investigador>{/bold red}\n")
         end
-    elseif startswith(input, "/cited")
+    elseif startswith(input, "/topic")
         parts = split(input; limit=2)
         if length(parts) >= 2
-            show_cited_references(state, strip(parts[2]))
+            show_topic_elements_cli(state, strip(parts[2]))
         else
-            tprintln("{bold red}Uso: /cited <autor_o_publicacion_citada>{/bold red}\n")
+            tprintln("{bold red}Uso: /topic <nombre_tema_o_disciplina>{/bold red}\n")
         end
+    elseif input in ("/doc-similar-refs", "doc-similar-refs", "/sim-refs")
+        show_similar_documents_by_refs(state)
+    elseif input in ("/doc-refs", "doc-refs")
+        show_document_references_cli(state, nothing)
     elseif startswith(input, "/refs")
         parts = split(input)
-        if length(parts) >= 2
-            idx = tryparse(Int, parts[2])
-            show_document_references_cli(state, idx)
-        else
-            show_document_references_cli(state, state.selected_doc_idx)
-        end
-    elseif startswith(input, "/find")
+        idx = length(parts) >= 2 ? tryparse(Int, parts[2]) : nothing
+        show_document_references_cli(state, idx)
+    elseif startswith(input, "/doc-find") || startswith(input, "/find")
         parts = split(input; limit=2)
         if length(parts) >= 2
             search_in_document_cli(state, strip(parts[2]))
         else
-            tprintln("{bold red}Uso: /find <consulta_dentro_del_documento>{/bold red}\n")
-        end
-    elseif startswith(input, "/in")
-        parts = split(input; limit=3)
-        if length(parts) >= 3
-            idx = tryparse(Int, parts[2])
-            if idx !== nothing
-                search_in_document_cli(state, strip(parts[3]), idx)
-            else
-                tprintln("{bold red}Uso: /in <doc_num> <consulta>{/bold red}\n")
-            end
-        else
-            tprintln("{bold red}Uso: /in <doc_num> <consulta>{/bold red}\n")
+            tprintln("{bold red}Uso: /doc-find <consulta_dentro_del_documento>{/bold red}\n")
         end
     elseif startswith(input, "/repo")
         parts = split(input)
@@ -842,18 +785,6 @@ function process_shell_input(state::ShellState, raw_input::AbstractString)::Bool
                 tprintln("{bold red}Número inválido para /top.{/bold red}\n")
             end
         end
-    elseif startswith(input, "/wiki")
-        parts = split(input)
-        if length(parts) >= 2
-            opt = lowercase(parts[2])
-            state.include_wiki = opt in ("on", "1", "true", "si", "sí")
-            status_str = state.include_wiki ? "activadas" : "desactivadas"
-            tprintln("{bold green}Explicaciones de Wikipedia $status_str.{/bold green}\n")
-        else
-            state.include_wiki = !state.include_wiki
-            status_str = state.include_wiki ? "activadas" : "desactivadas"
-            tprintln("{bold green}Explicaciones de Wikipedia $status_str.{/bold green}\n")
-        end
     elseif startswith(input, "/doc")
         parts = split(input)
         if length(parts) >= 2
@@ -865,25 +796,6 @@ function process_shell_input(state::ShellState, raw_input::AbstractString)::Bool
             end
         else
             tprintln("{bold red}Uso: /doc <número_resultado>{/bold red}\n")
-        end
-    elseif startswith(input, "/explain")
-        parts = split(input; limit=2)
-        if length(parts) >= 2
-            concept = parts[2]
-            tprintln("{dim}Consultando Wikipedia para '$concept'...{/dim}")
-            info = explain_concept(concept)
-            if info !== nothing
-                wiki_content = """
-{bold bright_white}$(info["title"]){/bold bright_white} {dim}(Wikipedia $(uppercase(info["lang"]))){/dim}
-
-$(info["extract"])
-
-🔗 {italic blue}$(info["url"]){/italic blue}
-"""
-                println(Panel(wiki_content, title="💡 Concepto Wikipedia", style="magenta", box=:ROUNDED))
-            else
-                tprintln("{yellow}No se encontró resumen en Wikipedia para '$concept'.{/yellow}\n")
-            end
         end
     elseif input in ("/status", "/repos", "status", "repos")
         show_repos_table(state)
@@ -905,14 +817,12 @@ end
 
 """
     launch_interactive_shell(; data_dir=DEFAULT_DATA_DIR, index_dir=DEFAULT_INDEX_DIR)
-
-Launches the interactive Term.jl search shell with full multi-corpus, citations, help system and command history.
 """
 function launch_interactive_shell(; data_dir=DEFAULT_DATA_DIR, index_dir=DEFAULT_INDEX_DIR)
-    tprintln("{bold cyan}Cargando índices de búsqueda en memoria...{/bold cyan}")
-    engine = SearchEngine(; index_dir)
+    tprintln("{bold cyan}Cargando índices JLD2 y conectando a RocksDB...{/bold cyan}")
+    engine = SearchEngine(; index_dir, data_dir)
     
-    if engine.invfile === nothing
+    if engine.docs_content_invfile === nothing
         tprintln("{bold red}No se encontró el índice de búsqueda en '$index_dir'.{/bold red}")
         tprintln("{yellow}Ejecuta primero 'reposmx prepare-index' para generar los índices.{/yellow}")
         return
@@ -926,7 +836,9 @@ function launch_interactive_shell(; data_dir=DEFAULT_DATA_DIR, index_dir=DEFAULT
         10,       # top_k
         true,     # include_wiki
         Dict{String, Any}[],
-        nothing,  # selected_doc_idx
+        Dict{String, Any}[],
+        nothing,  # context_doc
+        nothing,  # context_author
         data_dir,
         index_dir
     )
@@ -937,10 +849,11 @@ function launch_interactive_shell(; data_dir=DEFAULT_DATA_DIR, index_dir=DEFAULT
         repo_badge = state.active_repo === nothing ? "todos" : state.active_repo
         type_badge = state.active_type !== nothing ? " | $(state.active_type)" : ""
         tag_badge = state.active_keyword !== nothing ? " | tag:$(state.active_keyword)" : ""
-        return "reposmx [$repo_badge$type_badge$tag_badge | top:$(state.top_k)]> "
+        doc_badge = state.context_doc !== nothing ? " | Doc: $(state.context_doc[1]):$(state.context_doc[2])" : ""
+        auth_badge = state.context_author !== nothing ? " | Autor: $(state.context_author)" : ""
+        return "reposmx [$repo_badge$type_badge$tag_badge$doc_badge$auth_badge | top:$(state.top_k)]> "
     end
     
-    # Check if stdin is a TTY terminal with interactive line-editing support
     if isa(stdin, Base.TTY)
         try
             term = REPL.Terminals.TTYTerminal(get(ENV, "TERM", "xterm-256color"), stdin, stdout, stderr)
@@ -948,51 +861,60 @@ function launch_interactive_shell(; data_dir=DEFAULT_DATA_DIR, index_dir=DEFAULT
             mirepl = REPL.setup_interface(repl)
             main_mode = mirepl.modes[1]
             main_mode.prompt = get_prompt_str
-            main_mode.prompt_prefix = "\e[1;34m"
-            main_mode.prompt_suffix = "\e[0m"
             
-            # Setup persistent history
-            main_mode.hist.file_path = HISTORY_FILE
-            
-            main_mode.on_done = (s, buf, ok) -> begin
-                if !ok
-                    return LineEdit.transition(s, :abort)
-                end
-                line = String(take!(buf))
-                clean_line = strip(line)
-                if !isempty(clean_line)
-                    append_history(clean_line)
-                end
-                keep_running = process_shell_input(state, clean_line)
-                if keep_running
-                    return LineEdit.transition(s, main_mode)
-                else
-                    return LineEdit.transition(s, :abort)
+            # Load history
+            if isfile(HISTORY_FILE)
+                try
+                    for line in eachline(HISTORY_FILE)
+                        s = strip(line)
+                        !isempty(s) && push!(main_mode.hist.history, s)
+                    end
+                    main_mode.hist.cur_idx = length(main_mode.hist.history) + 1
+                catch
                 end
             end
             
-            LineEdit.run_interface(term, mirepl)
+            main_mode.on_done = (s, buf, ok) -> begin
+                if !ok
+                    return REPL.LineEdit.transition(s, :abort)
+                end
+                line = strip(String(take!(buf)))
+                REPL.LineEdit.reset_state(s)
+                if !isempty(line)
+                    append_history(line)
+                    keep_running = process_shell_input(state, line)
+                    if !keep_running
+                        return REPL.LineEdit.transition(s, :abort)
+                    end
+                end
+                REPL.LineEdit.refresh_multi_line(s)
+            end
+            
+            REPL.run_repl(repl)
+            close(engine)
             return
-        catch err
-            # Graceful fallback to standard reader loop
+        catch e
+            # Fallback
         end
     end
     
-    # Fallback standard loop
+    # Non-TTY / Fallback Loop
     while true
-        prompt = Term.apply_style("{bold bright_blue}$(get_prompt_str()){/bold bright_blue}")
-        print(prompt)
+        print(get_prompt_str())
         flush(stdout)
-        
         line = readline(stdin)
-        line === nothing && break
-        input = strip(line)
-        isempty(input) && continue
-        
-        append_history(input)
-        keep_running = process_shell_input(state, input)
+        if eof(stdin)
+            println()
+            break
+        end
+        clean_line = strip(line)
+        isempty(clean_line) && continue
+        append_history(clean_line)
+        keep_running = process_shell_input(state, clean_line)
         !keep_running && break
     end
+    
+    close(engine)
 end
 
 end # module TUI
