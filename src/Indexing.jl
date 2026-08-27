@@ -6,7 +6,8 @@ using ..Config: DEFAULT_DATA_DIR, DEFAULT_INDEX_DIR
 using ..Types: ParagraphHit, ReferenceRecord
 using ..Storage: get_repo_dir, load_corpus_records, list_repo_names
 using ..Corpus: build_repository_corpus, build_authors_index_data, build_references_index_data, split_into_paragraphs
-using ..TextModel: create_bilingual_textconfig, sample_bilingual_corpus, fit_bilingual_bm25
+using ..TextModel: TextProfile, create_bilingual_profile, get_or_create_bilingual_base_profile,
+                    refit_bilingual_profile, create_bilingual_textconfig, save_profile, load_profile
 
 export build_search_index, build_authors_index, build_references_index,
        load_search_index, load_authors_index, load_references_index,
@@ -128,20 +129,30 @@ function build_search_index(;
     println("Total documents ready for primary indexing: $(length(all_docs))")
     isempty(all_docs) && return nothing
     
-    # 1. Build Primary Search Index (BM25 bilingüe)
-    println("Fitting bilingual TextConfig & BM25 primary index with TextSearch 1.1+...")
-    config = create_bilingual_textconfig(nlist=[1, 2])
-    voc = Vocabulary(config, all_texts)
-    invfile = BM25InvertedFile(voc)
+    # 1. Build Primary Search Index (Bilingual TextProfile & Refit BM25)
+    println("Loading/creating unified bilingual base profile (Spanish + English)...")
+    base_profile = get_or_create_bilingual_base_profile(; verbose=true)
+    
+    println("Refitting bilingual profile against $(length(all_texts)) academic documents...")
+    refitted_profile = refit_bilingual_profile(base_profile, all_texts; verbose=true)
+    
+    println("Building BM25 inverted index from refitted vocabulary ($(length(refitted_profile.model.voc)) tokens)...")
+    invfile = BM25InvertedFile(refitted_profile.model.voc)
     ctx = InvertedFileContext()
     append_items!(invfile, ctx, all_texts)
     
     index_file = joinpath(index_dir, "bm25.bin")
     docs_file = joinpath(index_dir, "docs.bin")
+    profile_dir = joinpath(index_dir, "profile")
     
-    println("Saving primary index to '$index_file'...")
+    println("Saving primary index and refitted profile to '$index_dir'...")
     serialize(index_file, invfile)
     serialize(docs_file, all_docs)
+    try
+        save_profile(profile_dir, refitted_profile)
+    catch e
+        @warn "Could not serialize refitted profile folder: $e"
+    end
     
     # 2. Build Authors & Contributors Indices (Name search & Topic/Field search)
     println("Building authors and contributors indices (Name & Topic profiles)...")
@@ -157,8 +168,7 @@ function build_search_index(;
     append_items!(auth_invfile, auth_ctx, authors_names)
     
     # 2b. Topic profile index
-    topic_config = create_bilingual_textconfig(nlist=[1, 2])
-    topic_voc = Vocabulary(topic_config, authors_topics)
+    topic_voc = Vocabulary(refitted_profile.model.voc.textconfig, authors_topics)
     topic_invfile = BM25InvertedFile(topic_voc)
     topic_ctx = InvertedFileContext()
     append_items!(topic_invfile, topic_ctx, authors_topics)
@@ -173,8 +183,7 @@ function build_search_index(;
     refs_texts = [get(r, "text", "") for r in refs_data]
     
     if !isempty(refs_texts)
-        ref_config = create_bilingual_textconfig(nlist=[1, 2])
-        ref_voc = Vocabulary(ref_config, refs_texts)
+        ref_voc = Vocabulary(refitted_profile.model.voc.textconfig, refs_texts)
         ref_invfile = BM25InvertedFile(ref_voc)
         ref_ctx = InvertedFileContext()
         append_items!(ref_invfile, ref_ctx, refs_texts)
