@@ -224,8 +224,11 @@ function show_info_command(state::ShellState, repo_arg::Union{AbstractString, No
     
     disciplines = get(stats, "top_disciplines", Dict{String, Any}[])
     if !isempty(disciplines)
-        d_rows = [[d["discipline"], string(d["count"])] for d in first(disciplines, 10)]
-        d_tab = Table(d_rows; header=["Área / Disciplina", "Publicaciones"], box=:ROUNDED, style="magenta")
+        d_sub = first(disciplines, 10)
+        d_tab = Table(Dict(
+            "Área / Disciplina" => [d["discipline"] for d in d_sub],
+            "Publicaciones" => [string(d["count"]) for d in d_sub]
+        ); style="magenta", box=:ROUNDED)
         println(Panel(string(d_tab), title="🏷️ Principales Disciplinas", style="magenta", box=:ROUNDED, width=min(105, displaysize(stdout)[2] - 4)))
     end
     println()
@@ -362,8 +365,10 @@ function show_author_coauthors(state::ShellState)
     end
     
     tprintln("\n{bold green}✓{/bold green} Red de coautoría para {bold bright_white}$(state.context_author){/bold bright_white}:\n")
-    rows = [[c.first, string(c.second)] for c in coauths]
-    tab = Table(rows; header=["Coautor / Colaborador", "Trabajos Conjuntos"], box=:ROUNDED, style="cyan")
+    tab = Table(Dict(
+        "Coautor / Colaborador" => [c.first for c in coauths],
+        "Trabajos Conjuntos" => [string(c.second) for c in coauths]
+    ); box=:ROUNDED, style="cyan")
     println(tab)
     println()
 end
@@ -857,24 +862,31 @@ function launch_interactive_shell(; data_dir=DEFAULT_DATA_DIR, index_dir=DEFAULT
     if isa(stdin, Base.TTY)
         try
             term = REPL.Terminals.TTYTerminal(get(ENV, "TERM", "xterm-256color"), stdin, stdout, stderr)
-            repl = REPL.LineEditREPL(term, true)
-            mirepl = REPL.setup_interface(repl)
-            main_mode = mirepl.modes[1]
-            main_mode.prompt = get_prompt_str
             
-            # Load history
+            main_prompt = REPL.LineEdit.Prompt(
+                get_prompt_str;
+                prompt_prefix = "\e[1;34m",
+                prompt_suffix = "\e[0m",
+                on_enter = REPL.LineEdit.default_enter
+            )
+            
+            hp = REPL.REPLHistoryProvider(Dict{Symbol, Any}(:reposmx => main_prompt))
             if isfile(HISTORY_FILE)
                 try
-                    for line in eachline(HISTORY_FILE)
-                        s = strip(line)
-                        !isempty(s) && push!(main_mode.hist.history, s)
-                    end
-                    main_mode.hist.cur_idx = length(main_mode.hist.history) + 1
+                    REPL.hist_from_file(hp, HISTORY_FILE)
                 catch
                 end
             end
+            main_prompt.hist = hp
             
-            main_mode.on_done = (s, buf, ok) -> begin
+            main_prompt.keymap_dict = REPL.LineEdit.keymap([
+                REPL.LineEdit.default_keymap,
+                REPL.LineEdit.escape_defaults,
+                REPL.LineEdit.history_keymap,
+                REPL.LineEdit.prefix_history_keymap
+            ])
+            
+            main_prompt.on_done = (s, buf, ok) -> begin
                 if !ok
                     return REPL.LineEdit.transition(s, :abort)
                 end
@@ -887,14 +899,15 @@ function launch_interactive_shell(; data_dir=DEFAULT_DATA_DIR, index_dir=DEFAULT
                         return REPL.LineEdit.transition(s, :abort)
                     end
                 end
-                REPL.LineEdit.refresh_multi_line(s)
+                return REPL.LineEdit.transition(s, main_prompt)
             end
             
-            REPL.run_repl(repl)
+            interface = REPL.LineEdit.ModalInterface([main_prompt])
+            REPL.LineEdit.run_interface(term, interface)
             close(engine)
             return
         catch e
-            # Fallback
+            # Fallback to standard readline loop if TTY initialization fails
         end
     end
     
