@@ -83,6 +83,7 @@ function build_search_index(;
     
     all_docs = Dict{String, Any}[]
     all_texts = String[]
+    refs_data = Dict{String, Any}[]
     
     for r in target_repos
         corpus_path = joinpath(get_repo_dir(r; data_dir), "corpus.jsonl")
@@ -95,6 +96,11 @@ function build_search_index(;
             max_docs !== nothing && length(all_docs) >= max_docs && break
             stext = extract_index_text(doc)
             isempty(strip(stext)) && continue
+            
+            doc_refs = get(doc, "references", Dict{String, Any}[])
+            for ref_item in doc_refs
+                push!(refs_data, ref_item)
+            end
             
             push!(all_docs, Dict(
                 "id" => get(doc, "id", ""),
@@ -109,8 +115,7 @@ function build_search_index(;
                 "subject" => get(doc, "subject", ""),
                 "keywords" => get(doc, "keywords", String[]),
                 "type" => get(doc, "type", "Documento"),
-                "references" => get(doc, "references", Dict{String, Any}[]),
-                "reference_count" => get(doc, "reference_count", 0),
+                "reference_count" => length(doc_refs),
                 "file" => get(doc, "file", nothing),
                 "fulltext_file" => get(doc, "fulltext_file", nothing),
                 "has_fulltext" => get(doc, "has_fulltext", false)
@@ -165,7 +170,6 @@ function build_search_index(;
     
     # 3. Build Bibliographic References Corpus & Index
     println("Building bibliographic references corpus and index...")
-    refs_data = build_references_index_data(all_docs)
     refs_texts = [get(r, "text", "") for r in refs_data]
     
     if !isempty(refs_texts)

@@ -411,10 +411,16 @@ function build_authors_index_data(all_docs::Vector{Dict{String, Any}})
             entry["doc_count"] += 1
             push!(entry["doc_ids"], doc_id)
             push!(entry["repos"], repo)
-            push!(entry["topic_texts"], doc_summary)
-            for kw in doc_keywords; push!(entry["keywords"], kw); end
-            for co in creators; co != c && push!(entry["coauthors"], co); end
-            for rt in ref_texts; !isempty(rt) && push!(entry["cited_references"], rt); end
+            length(entry["topic_texts"]) < 10 && push!(entry["topic_texts"], doc_summary)
+            for kw in doc_keywords
+                length(entry["keywords"]) < 30 && push!(entry["keywords"], kw)
+            end
+            for co in creators
+                co != c && length(entry["coauthors"]) < 25 && push!(entry["coauthors"], co)
+            end
+            for rt in ref_texts
+                !isempty(rt) && length(entry["cited_references"]) < 30 && push!(entry["cited_references"], rt)
+            end
         end
         
         for c in contributors
@@ -432,10 +438,16 @@ function build_authors_index_data(all_docs::Vector{Dict{String, Any}})
             entry["doc_count"] += 1
             push!(entry["doc_ids"], doc_id)
             push!(entry["repos"], repo)
-            push!(entry["topic_texts"], doc_summary)
-            for kw in doc_keywords; push!(entry["keywords"], kw); end
-            for co in creators; push!(entry["coauthors"], co); end
-            for rt in ref_texts; !isempty(rt) && push!(entry["cited_references"], rt); end
+            length(entry["topic_texts"]) < 10 && push!(entry["topic_texts"], doc_summary)
+            for kw in doc_keywords
+                length(entry["keywords"]) < 30 && push!(entry["keywords"], kw)
+            end
+            for co in creators
+                length(entry["coauthors"]) < 25 && push!(entry["coauthors"], co)
+            end
+            for rt in ref_texts
+                !isempty(rt) && length(entry["cited_references"]) < 30 && push!(entry["cited_references"], rt)
+            end
         end
     end
     

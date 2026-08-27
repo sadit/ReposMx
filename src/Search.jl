@@ -24,9 +24,21 @@ mutable struct SearchEngine
     
     function SearchEngine(; index_dir=DEFAULT_INDEX_DIR)
         invfile, docs = load_search_index(; index_dir)
-        docs_by_id = docs !== nothing ? Dict{String, Dict{String, Any}}(get(d, "id", "") => d for d in docs) : nothing
-        new(invfile, docs, docs_by_id, nothing, nothing, nothing, nothing, nothing, String(index_dir), InvertedFileContext())
+        new(invfile, docs, nothing, nothing, nothing, nothing, nothing, nothing, String(index_dir), InvertedFileContext())
     end
+end
+
+function get_doc_by_id(engine::SearchEngine, doc_id::AbstractString)
+    if engine.docs_by_id === nothing && engine.docs !== nothing
+        d_map = Dict{String, Dict{String, Any}}()
+        sizehint!(d_map, length(engine.docs))
+        for d in engine.docs
+            id = get(d, "id", "")
+            !isempty(id) && (d_map[id] = d)
+        end
+        engine.docs_by_id = d_map
+    end
+    return engine.docs_by_id !== nothing ? get(engine.docs_by_id, doc_id, nothing) : nothing
 end
 
 function ensure_authors_loaded!(engine::SearchEngine)
@@ -276,7 +288,7 @@ function find_similar_authors_by_references(engine::SearchEngine, author_name::A
         ref = engine.references_data[r_idx]
         doc_id = get(ref, "doc_id", "")
         
-        doc = engine.docs_by_id !== nothing ? get(engine.docs_by_id, doc_id, nothing) : nothing
+        doc = get_doc_by_id(engine, doc_id)
         doc === nothing && continue
         
         doc_creators = get(doc, "creators", String[])
