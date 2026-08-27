@@ -2,7 +2,7 @@
 
 julia_version = "1.12.7"
 manifest_format = "2.0"
-project_hash = "8e260747f825f39b2647352d1d6e4718c9c55ab2"
+project_hash = "dc6fa5825ff42583c5e5812851d4d315a796ef9f"
 
 [[deps.AbstractFFTs]]
 deps = ["LinearAlgebra"]
@@ -645,7 +645,7 @@ uuid = "189a3867-3050-52da-a836-e630ba90ab69"
 version = "1.2.2"
 
 [[deps.ReposMx]]
-deps = ["Dates", "Downloads", "EzXML", "HTTP", "JSON", "JSON3", "PDFIO", "REPL", "RocksDB", "SHA", "Serialization", "SimilaritySearch", "Term", "TextSearch", "URIs"]
+deps = ["Dates", "Downloads", "EzXML", "HTTP", "JSON", "JSON3", "PDFIO", "Pkg", "REPL", "RocksDB", "SHA", "Serialization", "SimilaritySearch", "Term", "TextSearch", "URIs"]
 path = "."
 uuid = "b7f9d8a1-4321-4f12-9876-123456789abc"
 version = "0.2.0"

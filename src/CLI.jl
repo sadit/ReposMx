@@ -12,6 +12,7 @@ using ..Search: SearchEngine, query_index, get_detailed_statistics
 using ..Server: start_server
 using ..TUI: launch_interactive_shell
 using ..Wikipedia: explain_concept
+import Pkg
 
 export main_cli
 
@@ -325,25 +326,13 @@ function main_cli(args=ARGS)
                 bin_dir_arg = subargs[j+1]
             end
         end
-        target_dir = if bin_dir_arg !== nothing
-            bin_dir_arg
-        else
-            j_bin = joinpath(homedir(), ".julia", "bin")
-            l_bin = joinpath(homedir(), ".local", "bin")
-            isdir(j_bin) ? j_bin : l_bin
-        end
-        mkpath(target_dir)
-        target_file = joinpath(target_dir, "reposmx")
-        script_content = """#!/usr/bin/env bash
-# ReposMx Launcher
-exec julia -m ReposMx "\$@"
-"""
-        write(target_file, script_content)
-        chmod(target_file, 0o755)
-        println("✅ ReposMx CLI instalado exitosamente en: $(target_file)")
-        if !occursin(target_dir, get(ENV, "PATH", ""))
-            println("ℹ️  Asegúrate de que '$(target_dir)' esté en tu variable de entorno PATH:")
-            println("    export PATH=\"$(target_dir):\$PATH\"")
+        pkg_dir = dirname(@__DIR__)
+        Pkg.Apps.develop(path=pkg_dir)
+        j_bin = joinpath(homedir(), ".julia", "bin")
+        println("✅ ReposMx instalado como Julia App en: $(joinpath(j_bin, "reposmx"))")
+        if !occursin(j_bin, get(ENV, "PATH", ""))
+            println("ℹ️  Asegúrate de que '$(j_bin)' esté en tu variable de entorno PATH:")
+            println("    export PATH=\"$(j_bin):\$PATH\"")
         end
     else
         println(stderr, "Subcomando desconocido: '$cmd'")

@@ -144,56 +144,54 @@ close_database(db)
 
 ---
 
-### 📦 Instalación como Paquete / Aplicación Julia
+### 📦 Instalación como Julia App ([Pkg.jl Apps](https://pkgdocs.julialang.org/v1/apps/))
 
-`ReposMx` es un paquete y aplicación ejecutable estándar de Julia. Puedes instalarlo en tu entorno global o de desarrollo mediante el gestor de paquetes de Julia (`Pkg`):
+`ReposMx` es una **aplicación ejecutable oficial de Julia** (especificación `[apps]` en `Project.toml`). Puedes instalarla globalmente como un comando de terminal independiente:
 
-#### Opción 1: Modo Desarrollo (`Pkg.develop`)
+#### Opción 1: Desde el gestor de paquetes de Julia (`Pkg` REPL)
+Presiona `]` en el REPL de Julia:
+
 ```julia
-using Pkg
-Pkg.develop(path="/ruta/a/Repositorios-Institucionales")
-```
-o desde el REPL de Julia presionando `]` :
-```julia
-pkg> dev /ruta/a/Repositorios-Institucionales
+# Instalación remota:
+pkg> app add https://github.com/sadit/Repositorios-Institucionales
+
+# O en modo desarrollo desde el repositorio local clonado:
+pkg> app dev /ruta/a/Repositorios-Institucionales
 ```
 
-#### Opción 2: Instalación Directa (`Pkg.add`)
-```julia
-using Pkg
-Pkg.add(url="https://github.com/sadit/Repositorios-Institucionales")
+#### Opción 2: Desde la terminal bash con una sola línea
+```bash
+julia -e 'using Pkg; Pkg.Apps.develop(path=".")'
 ```
+
+> [!TIP]
+> `Pkg.Apps` genera el ejecutable `reposmx` en `~/.julia/bin/reposmx`. Asegúrate de que `~/.julia/bin` esté en tu variable `PATH` (e.g. `export PATH="$HOME/.julia/bin:$PATH"` en tu `~/.bashrc` o `~/.zshrc`).
 
 ---
 
 ### 🖥️ Ejecución de la Aplicación
 
-Una vez instalado en tu entorno de Julia, puedes ejecutar `ReposMx` de tres formas:
+Una vez instalado como Julia App, puedes invocar `reposmx` directamente desde cualquier directorio de tu sistema:
 
-1. **Como comando ejecutable en tu terminal (Recomendado):**
-   ```bash
-   # Instala el launcher 'reposmx' en ~/.julia/bin o ~/.local/bin
-   julia --project=. -m ReposMx install-cli
-   
-   # Ahora puedes usar 'reposmx' desde cualquier terminal:
-   reposmx
-   reposmx search "redes neuronales"
-   reposmx info cimat
-   ```
+```bash
+# 1. Abre el buscador interactivo (TUI)
+reposmx
 
-2. **Como módulo ejecutable de Julia 1.12 (`julia -m`):**
-   ```bash
-   julia -m ReposMx
-   julia -m ReposMx search "inteligencia artificial"
-   julia -m ReposMx info
-   julia -m ReposMx serve --port 8000
-   ```
+# 2. Búsqueda directa desde la terminal
+reposmx search "redes neuronales"
 
-3. **Desde el script local del repositorio:**
-   ```bash
-   ./bin/reposmx
-   ./bin/reposmx search "inteligencia artificial"
-   ```
+# 3. Consulta de estadísticas globales o por repositorio
+reposmx info
+reposmx info cimat
+
+# 4. Iniciar el servidor web y API REST
+reposmx serve --port 8000
+```
+
+También puedes ejecutarlo como módulo de Julia:
+```bash
+julia --project=. -m ReposMx [subcomando] [argumentos...]
+```
 
 ---
 

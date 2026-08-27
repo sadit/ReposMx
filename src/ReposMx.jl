@@ -31,6 +31,7 @@ using .Search
 using .Server
 using .TUI
 using .CLI
+import Pkg
 
 export Record, RepoInfo, SearchHit, SearchResponse, AuthorProfile, ParagraphHit, ReferenceRecord,
        DEFAULT_DATA_DIR, DEFAULT_INDEX_DIR, get_repositories,
@@ -52,34 +53,25 @@ export Record, RepoInfo, SearchHit, SearchResponse, AuthorProfile, ParagraphHit,
        start_server, launch_interactive_shell, main_cli, install_cli
 
 """
-    install_cli(; bin_dir=nothing)
+    install_cli(; dev::Bool=true)
 
-Installs the `reposmx` executable wrapper script into `~/.julia/bin` (or `~/.local/bin`),
-making `reposmx` available directly in the user's terminal.
+Registers and installs the `reposmx` executable application into `~/.julia/bin`
+via official Julia Pkg.Apps specification.
 """
-function install_cli(; bin_dir::Union{String, Nothing}=nothing)
-    target_dir = if bin_dir !== nothing
-        bin_dir
+function install_cli(; dev::Bool=true)
+    pkg_dir = dirname(@__DIR__)
+    if dev
+        Pkg.Apps.develop(path=pkg_dir)
     else
-        j_bin = joinpath(homedir(), ".julia", "bin")
-        l_bin = joinpath(homedir(), ".local", "bin")
-        isdir(j_bin) ? j_bin : l_bin
+        Pkg.Apps.add(path=pkg_dir)
     end
-    mkpath(target_dir)
-    target_file = joinpath(target_dir, "reposmx")
-    
-    script_content = """#!/usr/bin/env bash
-# ReposMx Launcher
-exec julia -m ReposMx "\$@"
-"""
-    write(target_file, script_content)
-    chmod(target_file, 0o755)
-    println("✅ ReposMx CLI instalado exitosamente en: $(target_file)")
-    if !occursin(target_dir, get(ENV, "PATH", ""))
-        println("ℹ️  Asegúrate de que '$(target_dir)' esté en tu variable de entorno PATH:")
-        println("    export PATH=\"$(target_dir):\$PATH\"")
+    j_bin = joinpath(homedir(), ".julia", "bin")
+    println("✅ ReposMx instalado como Julia App en: $(joinpath(j_bin, "reposmx"))")
+    if !occursin(j_bin, get(ENV, "PATH", ""))
+        println("ℹ️  Asegúrate de que '$(j_bin)' esté en tu variable de entorno PATH:")
+        println("    export PATH=\"$(j_bin):\$PATH\"")
     end
-    return target_file
+    return joinpath(j_bin, "reposmx")
 end
 
 """

@@ -68,7 +68,7 @@ function get_repositories(; config_file=DEFAULT_REPOS_JSON)
     if isfile(config_file)
         return open(JSON.parse, config_file)
     else
-        return Dict{String, String}()
+        return Dict{String,String}()
     end
 end
 
