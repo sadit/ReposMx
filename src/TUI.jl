@@ -941,7 +941,7 @@ function launch_interactive_shell(; data_dir=DEFAULT_DATA_DIR, index_dir=DEFAULT
     end
     
     # Check if stdin is a TTY terminal with interactive line-editing support
-    if isa(stdin, Base.TTY) && isatty(stdin)
+    if isa(stdin, Base.TTY)
         try
             term = REPL.Terminals.TTYTerminal(get(ENV, "TERM", "xterm-256color"), stdin, stdout, stderr)
             repl = REPL.LineEditREPL(term, true)
