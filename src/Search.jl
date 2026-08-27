@@ -13,6 +13,7 @@ export query_index, search_authors, search_authors_by_topic, find_similar_author
 mutable struct SearchEngine
     invfile::Union{BM25InvertedFile, Nothing}
     docs::Union{Vector{Dict{String, Any}}, Nothing}
+    docs_by_id::Union{Dict{String, Dict{String, Any}}, Nothing}
     authors_invfile::Union{BM25InvertedFile, Nothing}
     authors_topic_invfile::Union{BM25InvertedFile, Nothing}
     authors_data::Union{Vector{Dict{String, Any}}, Nothing}
@@ -23,7 +24,8 @@ mutable struct SearchEngine
     
     function SearchEngine(; index_dir=DEFAULT_INDEX_DIR)
         invfile, docs = load_search_index(; index_dir)
-        new(invfile, docs, nothing, nothing, nothing, nothing, nothing, String(index_dir), InvertedFileContext())
+        docs_by_id = docs !== nothing ? Dict{String, Dict{String, Any}}(get(d, "id", "") => d for d in docs) : nothing
+        new(invfile, docs, docs_by_id, nothing, nothing, nothing, nothing, nothing, String(index_dir), InvertedFileContext())
     end
 end
 
@@ -205,17 +207,19 @@ function search_authors_by_topic(engine::SearchEngine, topic_query::AbstractStri
     res = search(target_inv, engine.ctx, topic_query, knnqueue(engine.ctx, top))
     t1 = time()
     
-    hits = []
-    for (score, idx) in zip(res.dists, res.labels)
+    hits = Dict{String, Any}[]
+    for item in res
+        idx = item.id
         (idx < 1 || idx > length(engine.authors_data)) && continue
         auth = engine.authors_data[idx]
         push!(hits, Dict(
             "name" => get(auth, "name", ""),
             "role" => get(auth, "role", "Autor"),
             "doc_count" => get(auth, "doc_count", 0),
-            "repos" => get(auth, "repos", []),
-            "coauthors" => get(auth, "coauthors", []),
-            "score" => score
+            "repos" => get(auth, "repos", String[]),
+            "coauthors" => get(auth, "coauthors", String[]),
+            "keywords" => get(auth, "keywords", String[]),
+            "score" => round(-item.dist, digits=2)
         ))
     end
     
@@ -272,10 +276,8 @@ function find_similar_authors_by_references(engine::SearchEngine, author_name::A
         ref = engine.references_data[r_idx]
         doc_id = get(ref, "doc_id", "")
         
-        # Find document in engine.docs
-        d_idx = findfirst(d -> d["id"] == doc_id, engine.docs)
-        d_idx === nothing && continue
-        doc = engine.docs[d_idx]
+        doc = engine.docs_by_id !== nothing ? get(engine.docs_by_id, doc_id, nothing) : nothing
+        doc === nothing && continue
         
         doc_creators = get(doc, "creators", String[])
         for c in doc_creators
