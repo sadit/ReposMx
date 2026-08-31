@@ -20,14 +20,16 @@ SimilaritySearch = "053f045d-5466-53fd-b400-a066f88fe02a"
 Term = "22787eb5-b846-44ae-b979-8e399b8463ab"
 TextSearch = "7f6f6c8a-3b03-11e9-223d-e7d88259bd6c"
 URIs = "5c2747f8-b7ea-4ff2-ba2e-563bfd36b1d4"
+ZipArchives = "49080126-0e18-4c2a-b176-c102e4b3760c"
 
 [compat]
-HTTP = "1, 2"
+HTTP = "2"
 JLD2 = "0.6.6"
 RocksDB = "1.0.0"
 SimilaritySearch = "1.2"
 Term = "2"
-TextSearch = "1.1"
+TextSearch = "=1.1.1"
+ZipArchives = "2.6.0"
 julia = "1.10, 1.11, 1.12"
 
 [apps.reposmx]

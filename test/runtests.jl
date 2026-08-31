@@ -1,7 +1,65 @@
 using Test
 using ReposMx
+using ReposMx: LazyBM25
+using RocksDB
+using SimilaritySearch, TextSearch
 
 @testset "ReposMx Tests" begin
+    @testset "LazyBM25 round-trip (isolated, synthetic corpus)" begin
+        # Builds a tiny in-memory BM25InvertedFile, exports it to a temp RocksDB via
+        # LazyBM25.export_to_rocksdb!, reassembles it as a lazily-backed index via
+        # LazyBM25.assemble_bm25, and checks that search() returns byte-identical
+        # results (doc ids, order, and scores) from both versions. This is the
+        # correctness gate for the whole lazy-index design: if TextSearch.jl ever
+        # reorders BM25InvertedFile's fields, this test fails loudly instead of
+        # silently corrupting production search results.
+        docs = [
+            "el gato negro corre en el jardin",
+            "el perro blanco duerme en la casa",
+            "un gato y un perro juegan juntos",
+            "the black cat runs fast",
+            "the white dog sleeps all day",
+            "cats and dogs play together in the garden",
+            "la casa tiene un jardin grande",
+            "grandes jardines con gatos y perros",
+            "el sol brilla sobre el jardin",
+            "un dia soleado en el parque",
+        ]
+        config = TextConfig(del_diac=true, del_punc=true, lc=true, nlist=[1])
+        voc = Vocabulary(config, docs)
+        invfile = BM25InvertedFile(voc)
+        ctx = InvertedFileContext()
+        append_items!(invfile, ctx, docs)
+
+        tmpdir = mktempdir()
+        db_path = joinpath(tmpdir, "rocksdb")
+        init_db = opendb(db_path; create_if_missing=true)
+        for cf in ["postings", "docvecs"]
+            create_column_family(init_db, cf)
+        end
+        close(init_db)
+
+        db = opendb(db_path; column_families=["default", "postings", "docvecs"])
+        try
+            LazyBM25.export_to_rocksdb!(db, LazyBM25.DOCS_CONTENT, invfile)
+            lazy_invfile = LazyBM25.assemble_bm25(
+                db, LazyBM25.DOCS_CONTENT, invfile.voc, invfile.bm25, invfile.doclens, invfile.len[], invfile.query
+            )
+
+            for q in ["gato jardin", "perro casa", "cat dog garden", "sol parque", "inexistente xyz123"]
+                ctx_a = InvertedFileContext()
+                res_a = search(invfile, ctx_a, q, knnqueue(ctx_a, 10))
+                ctx_b = InvertedFileContext()
+                res_b = search(lazy_invfile, ctx_b, q, knnqueue(ctx_b, 10))
+
+                @test [item.id for item in res_a] == [item.id for item in res_b]
+                @test [item.dist for item in res_a] ≈ [item.dist for item in res_b]
+            end
+        finally
+            close(db)
+        end
+    end
+
     @testset "Database and Column Families" begin
         db = open_database(ReposMx.DEFAULT_ROCKSDB_DIR; read_only=true)
         @test db !== nothing
@@ -74,12 +132,48 @@ using ReposMx
         topic_res = get_topic_elements(engine, "optimizacion"; repo="cimat", limit=5)
         @test haskey(topic_res, "documents")
         @test haskey(topic_res, "authors")
-        
-        # 5. Detailed stats
+
+        # 5. Detailed stats (global and repo-scoped). Repo-scoped stats regressed silently
+        #    earlier this session (`strip(repo)::SubString{String}` didn't match a `::String`
+        #    parameter) because nothing exercised this path with a real repo string — cover it.
         stats = get_detailed_statistics(engine)
         @test stats["total_docs"] > 0
         @test stats["total_authors"] > 0
-        
+        @test haskey(stats, "years_histogram")
+        @test haskey(stats, "top_researchers")
+
+        repo_stats = get_detailed_statistics(engine; repo="cimat")
+        @test !haskey(repo_stats, "error")
+        @test repo_stats["total_docs"] > 0
+        @test repo_stats["total_docs"] < stats["total_docs"]
+
+        # 6. Pagination: two pages of the same query must not overlap, and
+        #    has_more must be consistent with there being further results.
+        page1 = query_index(engine, "inteligencia artificial"; top=5, offset=0)
+        page2 = query_index(engine, "inteligencia artificial"; top=5, offset=5)
+        @test haskey(page1, "has_more")
+        if !isempty(page1["hits"]) && !isempty(page2["hits"])
+            ids1 = Set(h["doc_idx"] for h in page1["hits"])
+            ids2 = Set(h["doc_idx"] for h in page2["hits"])
+            @test isempty(intersect(ids1, ids2))
+        end
+
+        # 7. Year-range post-filter: every returned hit's date must fall in range.
+        year_res = query_index(engine, "optimizacion"; top=5, year_min=2010, year_max=2020)
+        for h in year_res["hits"]
+            m = match(r"\b(19\d\d|20\d\d)\b", h["date"])
+            @test m !== nothing
+            y = parse(Int, m.match)
+            @test 2010 <= y <= 2020
+        end
+
+        # 8. Author network: nodes/edges around a real author from the results above.
+        if !isempty(res_doc["hits"]) && !isempty(res_doc["hits"][1]["creator"])
+            net = get_author_network(engine, res_doc["hits"][1]["creator"])
+            @test haskey(net, "nodes")
+            @test haskey(net, "edges")
+        end
+
         close(engine)
     end
 end

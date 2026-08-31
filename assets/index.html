@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ReposMx - Repositorios Institucionales de México</title>
+  <script>
+    (function () {
+      try {
+        var stored = localStorage.getItem('reposmx_theme');
+        var theme = stored || (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+        document.documentElement.dataset.theme = theme;
+      } catch (e) {}
+    })();
+  </script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Fira+Code:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+  <header>
+    <div class="header-content">
+      <div>
+        <div class="logo-title">🇲🇽 ReposMx</div>
+        <div class="tagline">Búsqueda Multicapa: Metadatos, Autores, Citas Bibliográficas, Párrafos e Inteligencia Institucional</div>
+      </div>
+      <div class="header-actions">
+        <div id="stats-badge" class="stats-pill">Cargando acervo...</div>
+        <button id="theme-toggle" class="theme-toggle" title="Cambiar tema" aria-label="Cambiar tema claro/oscuro">🌓</button>
+      </div>
+    </div>
+  </header>
+
+  <main>
+    <!-- Navigation Tabs -->
+    <div class="nav-tabs">
+      <button class="tab-btn active" id="tab-docs" data-tab="docs">📚 Documentos y Publicaciones</button>
+      <button class="tab-btn" id="tab-authors" data-tab="authors">👤 Autores e Investigadores</button>
+      <button class="tab-btn" id="tab-refs" data-tab="refs">📖 Corpus de Citas / Referencias</button>
+      <button class="tab-btn" id="tab-info" data-tab="info">📊 Inteligencia & Estadísticas (/info)</button>
+      <button class="tab-btn" id="tab-shell" data-tab="shell">💻 Consola Web (Shell TUI)</button>
+    </div>
+
+    <!-- Main Search Container (Hidden in info/shell modes) -->
+    <div id="search-section">
+      <div class="search-box-container">
+        <input type="text" id="query-input" class="search-input" placeholder="Buscar por tema, conceptos, palabras clave (ej. redes neuronales, sistemas de información geográfica)..." autofocus>
+        <select id="repo-select" class="filter-select">
+          <option value="">Todos los repositorios</option>
+        </select>
+        <select id="type-select" class="filter-select">
+          <option value="">Todos los tipos</option>
+          <option value="Tesis">Tesis</option>
+          <option value="Artículo">Artículos</option>
+          <option value="Libro">Libros</option>
+          <option value="Conferencia">Conferencias / Ponencias</option>
+        </select>
+        <div class="year-filter" id="year-filter">
+          <span>Año:</span>
+          <input type="number" id="year-min-input" class="year-input" placeholder="desde" min="1950" max="2030">
+          <span>—</span>
+          <input type="number" id="year-max-input" class="year-input" placeholder="hasta" min="1950" max="2030">
+        </div>
+        <button id="search-btn" class="btn-search">Buscar</button>
+      </div>
+
+      <!-- Sub-modes for Authors Tab -->
+      <div id="author-subfilters" class="sub-filters" style="display: none;">
+        <span style="font-size:0.85rem; color:var(--text-muted); font-weight:600;">Modo de Análisis:</span>
+        <button class="sub-filter-btn active" id="btn-auth-name" data-submode="name">🔤 Por Nombre (/author)</button>
+        <button class="sub-filter-btn" id="btn-auth-topic" data-submode="topic">🎯 Por Campo / Tema (/topic-authors)</button>
+        <button class="sub-filter-btn" id="btn-auth-sim" data-submode="sim">🔗 Por Afinidad / Co-citación (/sim-authors)</button>
+        <button class="sub-filter-btn" id="btn-auth-network" data-submode="network">🕸️ Red de Coautoría / Citas</button>
+      </div>
+
+      <div id="wiki-container"></div>
+
+      <div class="results-header" id="results-header" style="display: none;">
+        <span id="results-count"></span>
+        <span id="results-time"></span>
+      </div>
+
+      <div id="results-grid" class="results-grid">
+        <div class="empty-state">Ingresa una consulta para explorar el acervo académico nacional.</div>
+      </div>
+
+      <div id="network-section" style="display: none;">
+        <div class="network-container">
+          <div class="network-legend">
+            <span class="network-legend-item"><span class="network-legend-swatch" style="background:var(--accent);"></span> Autor consultado</span>
+            <span class="network-legend-item"><span class="network-legend-swatch" style="background:var(--chart-3);"></span> Coautor</span>
+            <span class="network-legend-item"><span class="network-legend-swatch" style="background:var(--chart-2);"></span> Autor citante</span>
+          </div>
+          <div class="network-svg-wrap" id="network-svg-wrap"></div>
+          <div class="network-hint">Arrastra los nodos para reacomodar · rueda del mouse para zoom · clic en un nodo para centrar la red en ese autor.</div>
+        </div>
+      </div>
+
+      <div class="pagination" id="pagination" style="display: none;">
+        <button class="page-btn" id="prev-page-btn">← Anterior</button>
+        <span class="page-label" id="page-label"></span>
+        <button class="page-btn" id="next-page-btn">Siguiente →</button>
+      </div>
+    </div>
+
+    <!-- Info & Analytics Section -->
+    <div id="info-section" style="display: none;">
+      <div style="display: flex; gap: 1rem; align-items: center; margin-bottom: 1.5rem; flex-wrap: wrap;">
+        <label for="info-repo-select" style="font-weight: 600; color: var(--text-muted);">Seleccionar Repositorio:</label>
+        <select id="info-repo-select" class="filter-select">
+          <option value="">Panorama Global (Todos los repositorios)</option>
+        </select>
+        <button class="btn-search" id="info-refresh-btn">Actualizar</button>
+      </div>
+      <div id="info-content">
+        <div class="empty-state">Cargando análisis estadístico...</div>
+      </div>
+    </div>
+
+    <!-- Web Shell Section -->
+    <div id="shell-section" style="display: none;">
+      <div class="terminal-container">
+        <div class="terminal-output" id="term-output">╔══════════════════════════════════════════════════════════════════════════════╗
+║  🇲🇽 ReposMx - Consola Web Interactiva (Modo Consulta)                       ║
+║  Escribe /? o /help para ver la lista de comandos disponibles.               ║
+║  Ejemplos:                                                                   ║
+║    /? info              -&gt; Ver ayuda de estadísticas                        ║
+║    /info cimat          -&gt; Ver ficha estadística del CIMAT                  ║
+║    /topic-authors optica-&gt; Rankear autores por tema                         ║
+║    /sim-authors tellez  -&gt; Encontrar autores afines por acoplamiento        ║
+║    /cited knuth         -&gt; Buscar citas a Donald Knuth                      ║
+║    aprendizaje profundo -&gt; Búsqueda general BM25                            ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+</div>
+        <div class="terminal-input-line">
+          <span class="term-prompt">reposmx&gt;</span>
+          <input type="text" id="term-input" class="term-input" placeholder="Escribe un comando o consulta (ej. /info, /topic-authors grafos)..." autofocus>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <div id="chart-tooltip" class="chart-tooltip"></div>
+
+  <script src="https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js"></script>
+  <script src="/js/main.js"></script>
+  <script src="/js/search.js"></script>
+  <script src="/js/stats.js"></script>
+  <script src="/js/network.js"></script>
+  <script src="/js/shell.js"></script>
+</body>
+</html>

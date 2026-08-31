@@ -10,6 +10,8 @@ include("Corpus.jl")
 include("TextModel.jl")
 include("Wikipedia.jl")
 include("DB.jl")
+include("VocabIO.jl")
+include("LazyBM25.jl")
 include("Indexing.jl")
 include("Search.jl")
 include("Server.jl")
@@ -26,6 +28,8 @@ using .Corpus
 using .TextModel
 using .Wikipedia
 using .DB
+using .VocabIO
+using .LazyBM25
 using .Indexing
 using .Search
 using .Server
@@ -50,7 +54,7 @@ export Record, RepoInfo, SearchHit, SearchResponse, AuthorProfile, ParagraphHit,
        put_topics!, get_topic_docs, get_topic_authors, intersect_topic_repo_docs, intersect_topic_repo_authors,
        get_fulltext, get_paragraphs, ingest_repository_to_db!, ingest_all_to_db!,
        SearchEngine, query_index, search_authors, find_similar_authors_by_profile, find_similar_documents_by_references,
-       search_references, search_document_paragraphs, get_detailed_statistics, get_topic_elements,
+       search_references, search_document_paragraphs, get_detailed_statistics, get_topic_elements, get_author_network,
        start_server, launch_interactive_shell, main_cli, install_cli
 
 """

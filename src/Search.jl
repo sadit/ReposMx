@@ -4,38 +4,43 @@ using TextSearch, SimilaritySearch, JSON, JSON3
 using ..Types: SearchHit, SearchResponse, AuthorProfile, ParagraphHit, ReferenceRecord
 using ..Config: DEFAULT_INDEX_DIR, DEFAULT_DATA_DIR
 import ..DB: get_author_documents, get_coauthors, get_document_references
-using ..DB: Database, open_database, close_database, get_document, get_author_profile,
+using ..DB: Database, open_database, close_database, get_document, scan_documents, get_author_profile,
             get_reference, get_topic_docs, get_topic_authors,
-            intersect_topic_repo_docs, intersect_topic_repo_authors, normalize_author_name
+            intersect_topic_repo_docs, intersect_topic_repo_authors, normalize_author_name,
+            get_documents_citing_author, put_stats!, get_stats, compute_detailed_statistics
 using ..Indexing: load_docs_content_index, load_docs_refs_index, load_authors_name_index,
                     load_authors_profile_index, search_document_in_depth
 using ..Wikipedia: explain_concept
 
 export query_index, search_authors, find_similar_authors_by_profile, find_similar_documents_by_references,
        search_references, get_document_references, get_author_documents, get_coauthors,
-       get_topic_elements, search_document_paragraphs, get_detailed_statistics, SearchEngine
+       get_topic_elements, search_document_paragraphs, get_detailed_statistics, get_author_network,
+       SearchEngine
 
 mutable struct SearchEngine
     db::Union{Database, Nothing}
     docs_content_invfile::Union{BM25InvertedFile, Nothing}
-    doc_keys::Vector{Tuple{String, String}}
+    doc_keys::AbstractVector{Tuple{String, String}}
     docs_refs_invfile::Union{BM25InvertedFile, Nothing}
     authors_name_invfile::Union{BM25InvertedFile, Nothing}
     authors_profile_invfile::Union{BM25InvertedFile, Nothing}
-    author_keys::Vector{String}
+    author_keys::AbstractVector{String}
     index_dir::String
     data_dir::String
-    ctx::InvertedFileContext
-    
+    stats_cache::Dict{Union{String, Nothing}, Dict{String, Any}}
+
     function SearchEngine(; index_dir=DEFAULT_INDEX_DIR, data_dir=DEFAULT_DATA_DIR)
         db_path = joinpath(data_dir, "rocksdb")
-        db = isdir(db_path) ? open_database(db_path; read_only=true) : nothing
-        
-        content_inv, d_keys = load_docs_content_index(; index_dir)
-        refs_inv, _ = load_docs_refs_index(; index_dir)
-        auth_name_inv, a_keys = load_authors_name_index(; index_dir)
-        auth_prof_inv, _ = load_authors_profile_index(; index_dir)
-        
+        db = @time "open_database" (isdir(db_path) ? open_database(db_path; read_only=true) : nothing)
+
+        # Posting lists / per-document term vectors live in `db` (RocksDB `postings`/`docvecs`
+        # column families) and are read lazily on demand — only the small vocab/BM25-params/
+        # doclens "shell" is deserialized here.
+        content_inv, d_keys = @time "load_docs_content_index" load_docs_content_index(db; index_dir)
+        refs_inv, _ = @time "load_docs_refs_index" load_docs_refs_index(db; index_dir)
+        auth_name_inv, a_keys = @time "load_authors_name_index" load_authors_name_index(db; index_dir)
+        auth_prof_inv, _ = @time "load_authors_profile_index" load_authors_profile_index(db; index_dir)
+
         new(
             db,
             content_inv,
@@ -46,7 +51,7 @@ mutable struct SearchEngine
             a_keys,
             String(index_dir),
             String(data_dir),
-            InvertedFileContext()
+            Dict{Union{String, Nothing}, Dict{String, Any}}()
         )
     end
 end
@@ -60,8 +65,8 @@ end
 
 function ensure_authors_loaded!(engine::SearchEngine)
     if engine.authors_name_invfile === nothing || engine.authors_profile_invfile === nothing
-        auth_name_inv, a_keys = load_authors_name_index(; index_dir=engine.index_dir)
-        auth_prof_inv, _ = load_authors_profile_index(; index_dir=engine.index_dir)
+        auth_name_inv, a_keys = load_authors_name_index(engine.db; index_dir=engine.index_dir)
+        auth_prof_inv, _ = load_authors_profile_index(engine.db; index_dir=engine.index_dir)
         engine.authors_name_invfile = auth_name_inv
         engine.authors_profile_invfile = auth_prof_inv
         engine.author_keys = a_keys
@@ -70,23 +75,27 @@ end
 
 function ensure_docs_refs_loaded!(engine::SearchEngine)
     if engine.docs_refs_invfile === nothing
-        refs_inv, _ = load_docs_refs_index(; index_dir=engine.index_dir)
+        refs_inv, _ = load_docs_refs_index(engine.db; index_dir=engine.index_dir)
         engine.docs_refs_invfile = refs_inv
     end
 end
 
 """
-    query_index(engine::SearchEngine, q::AbstractString; top::Int=10, repo=nothing, keyword=nothing, doc_type=nothing, include_wiki=false)
+    query_index(engine::SearchEngine, q::AbstractString; top::Int=10, offset::Int=0, repo=nothing, keyword=nothing, doc_type=nothing, year_min=nothing, year_max=nothing, include_wiki=false)
 
-Executes a primary BM25 search over titles, abstracts, keywords and conclusions, with post-filtering.
+Executes a primary BM25 search over titles, abstracts, keywords and conclusions, with post-filtering
+and offset-based pagination.
 """
 function query_index(
     engine::SearchEngine,
     q::AbstractString;
     top::Int=10,
+    offset::Int=0,
     repo::Union{String, Nothing}=nothing,
     keyword::Union{String, Nothing}=nothing,
     doc_type::Union{String, Nothing}=nothing,
+    year_min::Union{Int, Nothing}=nothing,
+    year_max::Union{Int, Nothing}=nothing,
     include_wiki::Bool=false
 )
     if engine.docs_content_invfile === nothing || isempty(engine.doc_keys)
@@ -98,87 +107,118 @@ function query_index(
             "error" => "Search index not loaded. Run `reposmx prepare-index` first."
         )
     end
-    
+
     t0 = time()
-    knn_k = top * ((repo !== nothing || keyword !== nothing || doc_type !== nothing) ? 8 : 1)
-    res = search(engine.docs_content_invfile, engine.ctx, q, knnqueue(engine.ctx, knn_k))
-    
+    has_filters = (repo !== nothing || keyword !== nothing || doc_type !== nothing || year_min !== nothing || year_max !== nothing)
+    offset = max(offset, 0)
+    needed = offset + top
+    # Peek one extra match beyond the requested page so we know whether a next page exists.
+    target = needed + 1
+    knn_k = target * (has_filters ? 8 : 1)
+    max_k = length(engine.doc_keys)
     hits = Dict{String, Any}[]
-    for item in res
-        doc_idx = item.id
-        (doc_idx < 1 || doc_idx > length(engine.doc_keys)) && continue
-        doc_repo, doc_id = engine.doc_keys[doc_idx]
-        
-        # 1. Post-filter by repo
-        if repo !== nothing && !isempty(repo) && doc_repo != repo
-            continue
+
+    # Restrictive post-filters (repo/type/keyword/year) or a deep offset can starve the candidate
+    # window; widen it geometrically instead of silently returning fewer than `top` hits.
+    while true
+        ctx = InvertedFileContext()
+        res = search(engine.docs_content_invfile, ctx, q, knnqueue(ctx, knn_k))
+        empty!(hits)
+
+        for item in res
+            doc_idx = item.id
+            (doc_idx < 1 || doc_idx > length(engine.doc_keys)) && continue
+            doc_repo, doc_id = engine.doc_keys[doc_idx]
+
+            # 1. Post-filter by repo
+            if repo !== nothing && !isempty(repo) && doc_repo != repo
+                continue
+            end
+
+            # Fetch document metadata directly from RocksDB
+            doc = engine.db !== nothing ? get_document(engine.db, doc_repo, doc_id) : nothing
+            doc === nothing && continue
+
+            # 2. Post-filter by document type
+            dtype = get(doc, "type", "")
+            if doc_type !== nothing && !isempty(doc_type) && !occursin(lowercase(doc_type), lowercase(dtype))
+                continue
+            end
+
+            # 3. Post-filter by keyword/discipline
+            kws = get(doc, "keywords", String[])
+            if keyword !== nothing && !isempty(keyword)
+                kw_match = any(k -> occursin(lowercase(keyword), lowercase(k)), kws)
+                !kw_match && continue
+            end
+
+            date = get(doc, "date", "")
+
+            # 4. Post-filter by year range
+            if year_min !== nothing || year_max !== nothing
+                ym = match(r"\b(19\d\d|20\d\d)\b", date)
+                ym === nothing && continue
+                doc_year = parse(Int, ym.match)
+                year_min !== nothing && doc_year < year_min && continue
+                year_max !== nothing && doc_year > year_max && continue
+            end
+
+            title = get(doc, "title", "")
+            creator = get(doc, "creator", "")
+            contributor = get(doc, "contributor", "")
+            desc = get(doc, "description", "")
+            file = get(doc, "file", nothing)
+            has_fulltext = get(doc, "has_fulltext", false)
+            ref_count = get(doc, "reference_count", 0)
+
+            snippet = if !isempty(desc)
+                first(desc, min(300, length(desc))) * (length(desc) > 300 ? "..." : "")
+            else
+                title
+            end
+
+            push!(hits, Dict(
+                "doc_idx" => doc_idx,
+                "id" => doc_id,
+                "repo" => doc_repo,
+                "title" => title,
+                "creator" => creator,
+                "contributor" => contributor,
+                "date" => date,
+                "description" => desc,
+                "keywords" => kws,
+                "type" => dtype,
+                "file" => file,
+                "has_fulltext" => has_fulltext,
+                "reference_count" => ref_count,
+                "score" => -item.dist,
+                "snippet" => snippet
+            ))
+
+            length(hits) >= target && break
         end
-        
-        # Fetch document metadata directly from RocksDB
-        doc = engine.db !== nothing ? get_document(engine.db, doc_repo, doc_id) : nothing
-        doc === nothing && continue
-        
-        # 2. Post-filter by document type
-        dtype = get(doc, "type", "")
-        if doc_type !== nothing && !isempty(doc_type) && !occursin(lowercase(doc_type), lowercase(dtype))
-            continue
-        end
-        
-        # 3. Post-filter by keyword/discipline
-        kws = get(doc, "keywords", String[])
-        if keyword !== nothing && !isempty(keyword)
-            kw_match = any(k -> occursin(lowercase(keyword), lowercase(k)), kws)
-            !kw_match && continue
-        end
-        
-        title = get(doc, "title", "")
-        creator = get(doc, "creator", "")
-        contributor = get(doc, "contributor", "")
-        date = get(doc, "date", "")
-        desc = get(doc, "description", "")
-        file = get(doc, "file", nothing)
-        has_fulltext = get(doc, "has_fulltext", false)
-        ref_count = get(doc, "reference_count", 0)
-        
-        snippet = if !isempty(desc)
-            first(desc, min(300, length(desc))) * (length(desc) > 300 ? "..." : "")
-        else
-            title
-        end
-        
-        push!(hits, Dict(
-            "doc_idx" => doc_idx,
-            "id" => doc_id,
-            "repo" => doc_repo,
-            "title" => title,
-            "creator" => creator,
-            "contributor" => contributor,
-            "date" => date,
-            "description" => desc,
-            "keywords" => kws,
-            "type" => dtype,
-            "file" => file,
-            "has_fulltext" => has_fulltext,
-            "reference_count" => ref_count,
-            "score" => -item.dist,
-            "snippet" => snippet
-        ))
-        
-        length(hits) >= top && break
+
+        (length(hits) < target && knn_k < max_k) || break
+        knn_k = min(knn_k * 4, max_k)
     end
-    
+
+    has_more = length(hits) > needed
+    page_hits = offset >= length(hits) ? Dict{String, Any}[] : hits[(offset + 1):min(needed, length(hits))]
+
     wiki_info = nothing
-    if include_wiki && !isempty(strip(q))
+    if include_wiki && offset == 0 && !isempty(strip(q))
         wiki_info = explain_concept(q)
     end
-    
+
     t1 = time()
     time_ms = round((t1 - t0) * 1000, digits=2)
-    
+
     return Dict(
         "query" => q,
-        "total_hits" => length(hits),
-        "hits" => hits,
+        "offset" => offset,
+        "total_hits" => length(page_hits),
+        "has_more" => has_more,
+        "hits" => page_hits,
         "wiki_concept" => wiki_info,
         "time_ms" => time_ms
     )
@@ -189,50 +229,67 @@ end
 
 Searches researcher and advisor profiles by name using the `authors_name_bm25` index.
 """
-function search_authors(engine::SearchEngine, author_query::AbstractString; top::Int=10, repo::Union{String, Nothing}=nothing)
+function search_authors(engine::SearchEngine, author_query::AbstractString; top::Int=10, offset::Int=0, repo::Union{String, Nothing}=nothing)
     ensure_authors_loaded!(engine)
     if engine.authors_name_invfile === nothing || isempty(engine.author_keys)
         return Dict("query" => author_query, "total_hits" => 0, "authors" => [], "time_ms" => 0.0)
     end
-    
+
     t0 = time()
-    knn_k = top * (repo !== nothing ? 5 : 1)
-    res = search(engine.authors_name_invfile, engine.ctx, author_query, knnqueue(engine.ctx, knn_k))
-    
+    offset = max(offset, 0)
+    needed = offset + top
+    target = needed + 1
+    knn_k = target * (repo !== nothing ? 5 : 1)
+    max_k = length(engine.author_keys)
     results = Dict{String, Any}[]
-    for item in res
-        idx = item.id
-        (idx < 1 || idx > length(engine.author_keys)) && continue
-        norm_name = engine.author_keys[idx]
-        
-        auth = engine.db !== nothing ? get_author_profile(engine.db, norm_name) : nothing
-        auth === nothing && continue
-        
-        # Post-filter by repo
-        auth_repos = get(auth, "repos", String[])
-        if repo !== nothing && !isempty(repo) && !(repo in auth_repos)
-            continue
+
+    while true
+        ctx = InvertedFileContext()
+        res = search(engine.authors_name_invfile, ctx, author_query, knnqueue(ctx, knn_k))
+        empty!(results)
+
+        for item in res
+            idx = item.id
+            (idx < 1 || idx > length(engine.author_keys)) && continue
+            norm_name = engine.author_keys[idx]
+
+            auth = engine.db !== nothing ? get_author_profile(engine.db, norm_name) : nothing
+            auth === nothing && continue
+
+            # Post-filter by repo
+            auth_repos = get(auth, "repos", String[])
+            if repo !== nothing && !isempty(repo) && !(repo in auth_repos)
+                continue
+            end
+
+            push!(results, Dict(
+                "name" => auth["name"],
+                "norm_name" => norm_name,
+                "role" => get(auth, "role", "Autor"),
+                "doc_count" => get(auth, "doc_count", 1),
+                "repos" => auth_repos,
+                "coauthors" => get(auth, "coauthors", String[]),
+                "keywords" => get(auth, "keywords", String[]),
+                "score" => -item.dist
+            ))
+
+            length(results) >= target && break
         end
-        
-        push!(results, Dict(
-            "name" => auth["name"],
-            "norm_name" => norm_name,
-            "role" => get(auth, "role", "Autor"),
-            "doc_count" => get(auth, "doc_count", 1),
-            "repos" => auth_repos,
-            "coauthors" => get(auth, "coauthors", String[]),
-            "keywords" => get(auth, "keywords", String[]),
-            "score" => -item.dist
-        ))
-        
-        length(results) >= top && break
+
+        (length(results) < target && knn_k < max_k) || break
+        knn_k = min(knn_k * 4, max_k)
     end
-    
+
+    has_more = length(results) > needed
+    page = offset >= length(results) ? Dict{String, Any}[] : results[(offset + 1):min(needed, length(results))]
+
     t1 = time()
     return Dict(
         "query" => author_query,
-        "total_hits" => length(results),
-        "authors" => results,
+        "offset" => offset,
+        "total_hits" => length(page),
+        "has_more" => has_more,
+        "authors" => page,
         "time_ms" => round((t1 - t0) * 1000, digits=2)
     )
 end
@@ -273,7 +330,8 @@ function find_similar_authors_by_profile(engine::SearchEngine, author_name_or_no
     profile_query = "$target_name . $(join(kws, " , ")) . $(join(topics, " \n ")) . $(join(refs, " \n "))"
     
     knn_k = (top + 1) * (repo !== nothing ? 5 : 1)
-    res = search(engine.authors_profile_invfile, engine.ctx, profile_query, knnqueue(engine.ctx, knn_k))
+    ctx = InvertedFileContext()
+    res = search(engine.authors_profile_invfile, ctx, profile_query, knnqueue(ctx, knn_k))
     
     results = Dict{String, Any}[]
     for item in res
@@ -343,7 +401,8 @@ function find_similar_documents_by_references(engine::SearchEngine, repo::Abstra
     end
     
     query_str = join(ref_texts, " \n ")
-    res = search(engine.docs_refs_invfile, engine.ctx, query_str, knnqueue(engine.ctx, top + 1))
+    ctx = InvertedFileContext()
+    res = search(engine.docs_refs_invfile, ctx, query_str, knnqueue(ctx, top + 1))
     
     target_key = (String(repo), String(doc_id))
     results = Dict{String, Any}[]
@@ -384,49 +443,66 @@ end
 
 Searches across the citations corpus to discover who cites a specific author, book, paper or theory.
 """
-function search_references(engine::SearchEngine, query::AbstractString; top::Int=10, repo::Union{String, Nothing}=nothing)
+function search_references(engine::SearchEngine, query::AbstractString; top::Int=10, offset::Int=0, repo::Union{String, Nothing}=nothing)
     ensure_docs_refs_loaded!(engine)
     if engine.docs_refs_invfile === nothing || isempty(engine.doc_keys) || engine.db === nothing
         return Dict("query" => query, "total_hits" => 0, "references" => [], "time_ms" => 0.0)
     end
-    
+
     t0 = time()
-    knn_k = top * (repo !== nothing ? 5 : 1)
-    res = search(engine.docs_refs_invfile, engine.ctx, query, knnqueue(engine.ctx, knn_k))
-    
+    offset = max(offset, 0)
+    needed = offset + top
+    target = needed + 1
+    knn_k = target * (repo !== nothing ? 5 : 1)
+    max_k = length(engine.doc_keys)
     results = Dict{String, Any}[]
-    for item in res
-        idx = item.id
-        (idx < 1 || idx > length(engine.doc_keys)) && continue
-        doc_repo, doc_id = engine.doc_keys[idx]
-        
-        if repo !== nothing && !isempty(repo) && doc_repo != repo
-            continue
+
+    while true
+        ctx = InvertedFileContext()
+        res = search(engine.docs_refs_invfile, ctx, query, knnqueue(ctx, knn_k))
+        empty!(results)
+
+        for item in res
+            idx = item.id
+            (idx < 1 || idx > length(engine.doc_keys)) && continue
+            doc_repo, doc_id = engine.doc_keys[idx]
+
+            if repo !== nothing && !isempty(repo) && doc_repo != repo
+                continue
+            end
+
+            doc = get_document(engine.db, doc_repo, doc_id)
+            doc === nothing && continue
+
+            doc_refs = get(doc, "references", Dict{String, Any}[])
+
+            push!(results, Dict(
+                "doc_id" => doc_id,
+                "doc_title" => get(doc, "title", ""),
+                "repo" => doc_repo,
+                "creator" => get(doc, "creator", ""),
+                "total_references" => length(doc_refs),
+                "sample_references" => first(doc_refs, 3),
+                "score" => -item.dist
+            ))
+
+            length(results) >= target && break
         end
-        
-        doc = get_document(engine.db, doc_repo, doc_id)
-        doc === nothing && continue
-        
-        doc_refs = get(doc, "references", Dict{String, Any}[])
-        
-        push!(results, Dict(
-            "doc_id" => doc_id,
-            "doc_title" => get(doc, "title", ""),
-            "repo" => doc_repo,
-            "creator" => get(doc, "creator", ""),
-            "total_references" => length(doc_refs),
-            "sample_references" => first(doc_refs, 3),
-            "score" => -item.dist
-        ))
-        
-        length(results) >= top && break
+
+        (length(results) < target && knn_k < max_k) || break
+        knn_k = min(knn_k * 4, max_k)
     end
-    
+
+    has_more = length(results) > needed
+    page = offset >= length(results) ? Dict{String, Any}[] : results[(offset + 1):min(needed, length(results))]
+
     t1 = time()
     return Dict(
         "query" => query,
-        "total_hits" => length(results),
-        "references" => results,
+        "offset" => offset,
+        "total_hits" => length(page),
+        "has_more" => has_more,
+        "references" => page,
         "time_ms" => round((t1 - t0) * 1000, digits=2)
     )
 end
@@ -475,8 +551,11 @@ function get_author_documents(engine::SearchEngine, author_name_or_norm::Abstrac
         
         doc = get_document(engine.db, repo, doc_id)
         if doc !== nothing
-            doc["author_role"] = get(de, "role", "Autor")
-            push!(docs, doc)
+            # get_document returns a read-only JSON3.Object; copy into a mutable Dict before
+            # adding the extra field (also required to push! into `docs::Vector{Dict{String,Any}}`).
+            doc_dict = Dict{String, Any}(string(k) => v for (k, v) in pairs(doc))
+            doc_dict["author_role"] = get(de, "role", "Autor")
+            push!(docs, doc_dict)
         end
     end
     
@@ -497,6 +576,84 @@ function get_coauthors(engine::SearchEngine, author_name_or_norm::AbstractString
     engine.db === nothing && return Pair{String, Int}[]
     norm_name = normalize_author_name(author_name_or_norm)
     return get_coauthors(engine.db, norm_name; limit)
+end
+
+"""
+    get_author_network(engine::SearchEngine, author_name_or_norm::AbstractString; limit_coauthors::Int=15, limit_citations::Int=15)
+
+Builds a small graph centered on a resolved author, combining coauthorship edges (RocksDB `authors` CF)
+and citation edges (who cites this author, resolved via the `references` CF reverse index), for
+network visualization.
+"""
+function get_author_network(engine::SearchEngine, author_name_or_norm::AbstractString; limit_coauthors::Int=15, limit_citations::Int=15)
+    engine.db === nothing && return Dict("error" => "Base de datos no disponible", "nodes" => [], "edges" => [])
+
+    norm_target = normalize_author_name(author_name_or_norm)
+    target_profile = get_author_profile(engine.db, norm_target)
+
+    if target_profile === nothing
+        ensure_authors_loaded!(engine)
+        idx = findfirst(k -> occursin(norm_target, k) || occursin(k, norm_target), engine.author_keys)
+        if idx !== nothing
+            norm_target = engine.author_keys[idx]
+            target_profile = get_author_profile(engine.db, norm_target)
+        end
+    end
+
+    target_profile === nothing && return Dict("error" => "Autor no encontrado en el acervo", "nodes" => [], "edges" => [])
+
+    target_name = get(target_profile, "name", author_name_or_norm)
+
+    nodes = Dict{String, Dict{String, Any}}()
+    nodes[norm_target] = Dict("id" => norm_target, "name" => target_name, "kind" => "target")
+
+    edges = Dict{Tuple{String, String, String}, Int}()
+
+    # Coauthorship edges
+    for (coauth_norm, cnt) in get_coauthors(engine.db, norm_target; limit=limit_coauthors)
+        if !haskey(nodes, coauth_norm)
+            cand = get_author_profile(engine.db, coauth_norm)
+            cand_name = cand !== nothing ? get(cand, "name", coauth_norm) : coauth_norm
+            nodes[coauth_norm] = Dict("id" => coauth_norm, "name" => cand_name, "kind" => "coauthor")
+        end
+        key = (coauth_norm, norm_target, "coauthor")
+        edges[key] = get(edges, key, 0) + cnt
+    end
+
+    # Citation edges: authors of documents that cite the target author
+    citer_count = 0
+    for entry in get_documents_citing_author(engine.db, norm_target; limit=limit_citations * 4)
+        loc = get(entry, "cited_in", "")
+        parts = split(loc, ":"; limit=2)
+        length(parts) != 2 && continue
+        citing_repo, citing_doc_id = parts[1], parts[2]
+        (isempty(citing_repo) || isempty(citing_doc_id)) && continue
+
+        doc = get_document(engine.db, citing_repo, citing_doc_id)
+        doc === nothing && continue
+
+        for creator in get(doc, "creators", String[])
+            citer_norm = normalize_author_name(creator)
+            (citer_norm == norm_target || isempty(citer_norm)) && continue
+
+            if !haskey(nodes, citer_norm)
+                citer_count >= limit_citations && continue
+                nodes[citer_norm] = Dict("id" => citer_norm, "name" => creator, "kind" => "citer")
+                citer_count += 1
+            end
+            key = (citer_norm, norm_target, "cites")
+            edges[key] = get(edges, key, 0) + 1
+        end
+    end
+
+    edges_list = [Dict("source" => s, "target" => t, "kind" => k, "weight" => w) for ((s, t, k), w) in edges]
+
+    return Dict(
+        "target_author" => target_name,
+        "target_norm" => norm_target,
+        "nodes" => collect(values(nodes)),
+        "edges" => edges_list
+    )
 end
 
 """
@@ -523,7 +680,9 @@ function get_topic_elements(engine::SearchEngine, topic::AbstractString; repo::U
     docs = Dict{String, Any}[]
     for (r, did) in doc_pairs
         doc = get_document(engine.db, r, did)
-        doc !== nothing && push!(docs, doc)
+        # get_document returns a read-only JSON3.Object; copy into a mutable Dict to match
+        # `docs::Vector{Dict{String,Any}}`'s concrete element type.
+        doc !== nothing && push!(docs, Dict{String, Any}(string(k) => v for (k, v) in pairs(doc)))
     end
     
     t1 = time()
@@ -582,10 +741,6 @@ function search_document_paragraphs(engine::SearchEngine, repo::AbstractString, 
     )
 end
 
-const GENERIC_TAGS = Set([
-    "info:eu-repo", "cti", "classification", "openaccess", "12", "11", "1299", "129999", "110403", "1208", "masterthesis", "doctoralthesis", "bachelorthesis"
-])
-
 """
     get_detailed_statistics(engine::SearchEngine; repo::Union{AbstractString, Nothing}=nothing)
 
@@ -595,98 +750,25 @@ function get_detailed_statistics(engine::SearchEngine; repo::Union{AbstractStrin
     if isempty(engine.doc_keys) || engine.db === nothing
         return Dict("error" => "No hay índice cargado")
     end
-    
+
     clean_repo = (repo !== nothing && !isempty(strip(repo)) && strip(repo) != "all") ? strip(repo) : nothing
-    
-    total_docs = 0
-    total_files = 0
-    total_fulltext = 0
-    total_refs = 0
-    
-    types_count = Dict{String, Int}()
-    repos_count = Dict{String, Int}()
-    kws_count = Dict{String, Int}()
-    years_list = Int[]
-    
-    for (r, did) in engine.doc_keys
-        if clean_repo !== nothing && r != clean_repo
-            continue
-        end
-        
-        doc = get_document(engine.db, r, did)
-        doc === nothing && continue
-        
-        total_docs += 1
-        
-        if get(doc, "file", nothing) !== nothing
-            total_files += 1
-        end
-        
-        if get(doc, "has_fulltext", false)
-            total_fulltext += 1
-        end
-        
-        rcnt = get(doc, "reference_count", 0)
-        total_refs += rcnt
-        
-        raw_type = get(doc, "type", "Documento")
-        norm_type = if occursin(r"(?i)\btesis\b"i, raw_type) || occursin(r"(?i)\bthesis\b"i, raw_type)
-            "Tesis"
-        elseif occursin(r"(?i)\bart[ií]culo\b"i, raw_type) || occursin(r"(?i)\barticle\b"i, raw_type)
-            "Artículo"
-        elseif occursin(r"(?i)\blibro\b"i, raw_type) || occursin(r"(?i)\bbook\b"i, raw_type)
-            "Libro"
-        elseif occursin(r"(?i)\bconferencia\b"i, raw_type) || occursin(r"(?i)\bconference\b"i, raw_type) || occursin(r"(?i)\bponencia\b"i, raw_type)
-            "Conferencia / Ponencia"
-        else
-            "Documento Académico"
-        end
-        types_count[norm_type] = get(types_count, norm_type, 0) + 1
-        repos_count[r] = get(repos_count, r, 0) + 1
-        
-        kws = get(doc, "keywords", String[])
-        for kw in kws
-            k_clean = strip(kw)
-            isempty(k_clean) && continue
-            lowercase(k_clean) in GENERIC_TAGS && continue
-            kws_count[k_clean] = get(kws_count, k_clean, 0) + 1
-        end
-        
-        date_str = get(doc, "date", "")
-        m = match(r"\b(19\d\d|20\d\d)\b", date_str)
-        if m !== nothing
-            y = parse(Int, m.match)
-            if y >= 1950 && y <= 2030
-                push!(years_list, y)
-            end
-        end
+
+    # Computing this requires a full RocksDB scan over every document (up to ~450k
+    # random-access reads), so cache the result per repo filter for the engine's lifetime.
+    cached = get(engine.stats_cache, clean_repo, nothing)
+    cached !== nothing && return cached
+
+    # Precomputed at index-build time (`precompute_all_statistics!`, run once from
+    # `build_search_index`) when available — a single RocksDB get instead of a full corpus scan.
+    persisted = get_stats(engine.db, clean_repo === nothing ? "global" : "repo:$clean_repo")
+    if persisted !== nothing
+        engine.stats_cache[clean_repo] = persisted
+        return persisted
     end
-    
-    if total_docs == 0
-        return Dict("error" => "No se encontraron documentos para el repositorio '$repo'")
-    end
-    
-    sorted_types = sort([Dict("type" => k, "count" => v) for (k, v) in types_count], by=x->x["count"], rev=true)
-    sorted_kws = sort([Dict("discipline" => k, "count" => v) for (k, v) in kws_count], by=x->x["count"], rev=true)
-    sorted_repos = sort([Dict("repo" => k, "count" => v) for (k, v) in repos_count], by=x->x["count"], rev=true)
-    
-    year_min = isempty(years_list) ? "N/A" : string(minimum(years_list))
-    year_max = isempty(years_list) ? "N/A" : string(maximum(years_list))
-    
-    return Dict(
-        "is_global" => clean_repo === nothing,
-        "target_repo" => clean_repo,
-        "total_docs" => total_docs,
-        "total_files" => total_files,
-        "total_fulltext" => total_fulltext,
-        "total_references" => total_refs,
-        "total_authors" => length(engine.author_keys),
-        "year_min" => year_min,
-        "year_max" => year_max,
-        "types_distribution" => sorted_types,
-        "top_disciplines" => sorted_kws[1:min(15, length(sorted_kws))],
-        "top_repositories" => sorted_repos
-    )
+
+    stats = compute_detailed_statistics(engine.db, length(engine.author_keys), clean_repo, repo)
+    !haskey(stats, "error") && (engine.stats_cache[clean_repo] = stats)
+    return stats
 end
 
 end # module Search

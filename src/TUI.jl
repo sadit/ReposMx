@@ -825,15 +825,15 @@ end
 """
 function launch_interactive_shell(; data_dir=DEFAULT_DATA_DIR, index_dir=DEFAULT_INDEX_DIR)
     tprintln("{bold cyan}Cargando índices JLD2 y conectando a RocksDB...{/bold cyan}")
-    engine = SearchEngine(; index_dir, data_dir)
-    
+    engine = @time "SearchEngine (total)" SearchEngine(; index_dir, data_dir)
+
     if engine.docs_content_invfile === nothing
         tprintln("{bold red}No se encontró el índice de búsqueda en '$index_dir'.{/bold red}")
         tprintln("{yellow}Ejecuta primero 'reposmx prepare-index' para generar los índices.{/yellow}")
         return
     end
-    
-    state = ShellState(
+
+    state = @time "ShellState init" ShellState(
         engine,
         nothing,  # active_repo
         nothing,  # active_type
@@ -847,8 +847,8 @@ function launch_interactive_shell(; data_dir=DEFAULT_DATA_DIR, index_dir=DEFAULT
         data_dir,
         index_dir
     )
-    
-    render_banner(state)
+
+    @time "render_banner" render_banner(state)
     
     get_prompt_str = function()
         repo_badge = state.active_repo === nothing ? "todos" : state.active_repo
@@ -871,7 +871,7 @@ function launch_interactive_shell(; data_dir=DEFAULT_DATA_DIR, index_dir=DEFAULT
             )
             
             hp = REPL.REPLHistoryProvider(Dict{Symbol, Any}(:reposmx => main_prompt))
-            if isfile(HISTORY_FILE)
+            @time "history load" if isfile(HISTORY_FILE)
                 try
                     for line in eachline(HISTORY_FILE)
                         s = strip(line)
@@ -886,17 +886,19 @@ function launch_interactive_shell(; data_dir=DEFAULT_DATA_DIR, index_dir=DEFAULT
                 end
             end
             main_prompt.hist = hp
-            
-            search_prompt, skeymap = REPL.LineEdit.setup_search_keymap(hp)
-            prefix_prompt, pkeymap = REPL.LineEdit.setup_prefix_keymap(hp, main_prompt)
-            
-            main_prompt.keymap_dict = REPL.LineEdit.keymap([
-                skeymap,
-                pkeymap,
-                REPL.LineEdit.history_keymap,
-                REPL.LineEdit.default_keymap,
-                REPL.LineEdit.escape_defaults
-            ])
+
+            @time "REPL/keymap setup" begin
+                search_prompt, skeymap = REPL.LineEdit.setup_search_keymap(hp)
+                prefix_prompt, pkeymap = REPL.LineEdit.setup_prefix_keymap(hp, main_prompt)
+
+                main_prompt.keymap_dict = REPL.LineEdit.keymap([
+                    skeymap,
+                    pkeymap,
+                    REPL.LineEdit.history_keymap,
+                    REPL.LineEdit.default_keymap,
+                    REPL.LineEdit.escape_defaults
+                ])
+            end
             
             main_prompt.on_done = (s, buf, ok) -> begin
                 if !ok

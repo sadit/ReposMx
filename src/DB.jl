@@ -1,23 +1,23 @@
 module DB
 
-using RocksDB, JSON, Dates, SHA
+using RocksDB, JSON, JSON3, Dates, SHA
 import ..Types: get_document_references
 using ..Config: DEFAULT_DATA_DIR
 using ..Storage: load_metadata_records, load_corpus_records, list_repo_names, get_repo_dir
 
 export Database, open_database, close_database,
-       put_document!, get_document, put_xml!, get_xml,
+       put_document!, get_document, scan_documents, put_xml!, get_xml,
        put_author_profile!, get_author_profile, get_author_documents, get_coauthors, normalize_author_name,
        put_reference!, get_reference, get_document_references, get_documents_citing_author,
        put_topics!, get_topic_docs, get_topic_authors, intersect_topic_repo_docs, intersect_topic_repo_authors,
        put_facets!, scan_facet, get_documents_by_year, get_documents_by_type, get_documents_by_repo, get_documents_by_keyword,
        put_fulltext!, get_fulltext, put_paragraphs!, get_paragraphs,
-       put_stats!, get_stats,
+       put_stats!, get_stats, compute_detailed_statistics, precompute_all_statistics!,
        ingest_repository_to_db!, ingest_all_to_db!,
-       DEFAULT_ROCKSDB_DIR
+       DEFAULT_ROCKSDB_DIR, rocksdb_handle, compact_all!
 
 const DEFAULT_ROCKSDB_DIR = joinpath(DEFAULT_DATA_DIR, "rocksdb")
-const COLUMN_FAMILIES = ["default", "authors", "references", "topics", "stats"]
+const COLUMN_FAMILIES = ["default", "authors", "references", "topics", "fulltext", "stats", "postings", "docvecs", "dockeys", "authorkeys"]
 
 """
     Database
@@ -33,6 +33,30 @@ end
 
 function Base.show(io::IO, d::Database)
     print(io, "ReposMx.DB.Database(path=\"$(d.path)\", open=$(d.is_open), CFs=$(collect(keys(d.cfs))))")
+end
+
+"""
+    rocksdb_handle(d::Database) -> RocksDB.DB
+
+Returns the raw `RocksDB.DB` handle wrapped by `d`, for modules (e.g. `LazyBM25`) that need
+direct column-family access beyond the `Database` convenience API.
+"""
+rocksdb_handle(d::Database) = d.db
+
+"""
+    compact_all!(d::Database)
+
+Forces a full compaction of every column family. Bulk index-building writes (`build_search_index`,
+`ingest_repository_to_db!`) accumulate write-ahead-log files that RocksDB only reclaims once their
+data is compacted into SST files; left uncompacted, a subsequent `open_database` must scan/replay
+all of them, which can turn a near-instant open into a multi-second one. Call this once after a
+bulk-write session, not on every read-only open.
+"""
+function compact_all!(d::Database)
+    for cf in keys(d.cfs)
+        compact!(d.db; cf)
+    end
+    return nothing
 end
 
 """
@@ -154,10 +178,38 @@ function get_document(d::Database, repo::AbstractString, doc_id::AbstractString)
     val = get(d.db, k; cf="default")
     val === nothing && return nothing
     return try
-        JSON.parse(String(val))
+        # JSON3's lazy Object is ~2x faster to read than JSON.parse for these blobs (measured
+        # on real data) — safe here because every caller only reads fields (`get(doc, k, ...)`),
+        # never mutates the returned object in place.
+        JSON3.read(val)
     catch
         nothing
     end
+end
+
+"""
+    scan_documents(f::Function, d::Database; repo::Union{AbstractString, Nothing}=nothing)
+
+Streams every document (optionally scoped to one `repo`) directly via a prefix scan over the
+`default` column family's `doc:` keys, calling `f(doc)` for each parsed document dict. Unlike
+looking documents up one-by-one via an external `(repo, doc_id)` index, this reads each document
+exactly once and needs no such index — the right tool for a full corpus scan (e.g. computing
+global statistics), as opposed to `get_document`, which is the right tool for point lookups of a
+handful of already-known documents.
+"""
+function scan_documents(f::Function, d::Database; repo::Union{AbstractString, Nothing}=nothing)
+    prefix = repo === nothing ? "doc:" : "doc:$(strip(repo)):"
+    iter = DBIterator(d.db; cf="default")
+    seek!(iter, prefix)
+
+    while valid(iter)
+        k = String(key(iter))
+        !startswith(k, prefix) && break
+        doc = try JSON3.read(value(iter)) catch; nothing end
+        doc !== nothing && f(doc)
+        advance!(iter)
+    end
+    return nothing
 end
 
 """
@@ -258,7 +310,7 @@ function get_author_documents(d::Database, norm_author::AbstractString; limit::I
         k = String(key(iter))
         !startswith(k, prefix) && break
         
-        parts = split(k[length(prefix)+1:end], ":"; limit=2)
+        parts = split(k[ncodeunits(prefix)+1:end], ":"; limit=2)
         if length(parts) == 2
             repo, doc_id = parts[1], parts[2]
             payload = try JSON.parse(String(value(iter))) catch; Dict{String, Any}() end
@@ -305,7 +357,7 @@ function get_coauthors(d::Database, norm_author::AbstractString; limit::Int=50)
     while valid(iter) && length(coauthors) < limit
         k = String(key(iter))
         !startswith(k, prefix) && break
-        coauth = k[length(prefix)+1:end]
+        coauth = k[ncodeunits(prefix)+1:end]
         cnt = try parse(Int, String(value(iter))) catch; 1 end
         push!(coauthors, coauth => cnt)
         advance!(iter)
@@ -415,7 +467,7 @@ function get_documents_citing_author(d::Database, norm_author::AbstractString; l
     while valid(iter) && length(results) < limit
         k = String(key(iter))
         !startswith(k, prefix) && break
-        ref_id = k[length(prefix)+1:end]
+        ref_id = k[ncodeunits(prefix)+1:end]
         doc_loc = String(value(iter))
         push!(results, Dict("ref_id" => ref_id, "cited_in" => doc_loc))
         advance!(iter)
@@ -494,7 +546,7 @@ function get_topic_docs(d::Database, topic::AbstractString; limit::Int=100)
         k = String(key(iter))
         !startswith(k, prefix) && break
         
-        tail = k[length(prefix)+1:end]
+        tail = k[ncodeunits(prefix)+1:end]
         parts = split(tail, ":"; limit=2)
         if length(parts) == 2
             push!(matches, parts[1] => parts[2])
@@ -544,7 +596,7 @@ function intersect_topic_repo_docs(d::Database, topic::AbstractString, repo::Abs
     while valid(iter) && length(matches) < limit
         k = String(key(iter))
         !startswith(k, prefix) && break
-        doc_id = k[length(prefix)+1:end]
+        doc_id = k[ncodeunits(prefix)+1:end]
         push!(matches, s_repo => doc_id)
         advance!(iter)
     end
@@ -671,6 +723,150 @@ function get_stats(d::Database, stat_key::AbstractString)
     return try JSON.parse(String(val)) catch; nothing end
 end
 
+const GENERIC_TAGS = Set([
+    "info:eu-repo", "cti", "classification", "openaccess", "12", "11", "1299", "129999", "110403", "1208", "masterthesis", "doctoralthesis", "bachelorthesis"
+])
+
+"""
+    compute_detailed_statistics(db::Database, n_authors::Int, clean_repo::Union{AbstractString,Nothing}, repo)
+
+Full-corpus scan computing rich statistics globally or for a specific institutional repository —
+the logic behind both `get_detailed_statistics` (Search module, live/cached fallback) and
+`precompute_all_statistics!` (called once from `build_search_index`). Lives here rather than in
+the Search module because it only depends on `Database`/`scan_documents`, and `Indexing.jl`
+(which needs `precompute_all_statistics!`) is compiled before `Search.jl`.
+"""
+function compute_detailed_statistics(db::Database, n_authors::Int, clean_repo::Union{AbstractString, Nothing}, repo)
+    total_docs = 0
+    total_files = 0
+    total_fulltext = 0
+    total_refs = 0
+
+    types_count = Dict{String, Int}()
+    repos_count = Dict{String, Int}()
+    kws_count = Dict{String, Int}()
+    years_list = Int[]
+    years_count = Dict{Int, Int}()
+    authors_tally = Dict{String, Dict{String, Any}}()
+
+    # Streams document blobs directly from RocksDB (scoped to `clean_repo` when given, via a
+    # `doc:<repo>:` prefix scan) instead of going through the BM25 index's positional
+    # `doc_keys`/`get_document` pair — this is the only place in the codebase that needs every
+    # document exactly once, so it reads each one exactly once instead of twice.
+    scan_documents(db; repo=clean_repo) do doc
+        r = get(doc, "repo", "")
+        total_docs += 1
+
+        if get(doc, "file", nothing) !== nothing
+            total_files += 1
+        end
+
+        if get(doc, "has_fulltext", false)
+            total_fulltext += 1
+        end
+
+        rcnt = get(doc, "reference_count", 0)
+        total_refs += rcnt
+
+        raw_type = get(doc, "type", "Documento")
+        norm_type = if occursin(r"(?i)\btesis\b"i, raw_type) || occursin(r"(?i)\bthesis\b"i, raw_type)
+            "Tesis"
+        elseif occursin(r"(?i)\bart[ií]culo\b"i, raw_type) || occursin(r"(?i)\barticle\b"i, raw_type)
+            "Artículo"
+        elseif occursin(r"(?i)\blibro\b"i, raw_type) || occursin(r"(?i)\bbook\b"i, raw_type)
+            "Libro"
+        elseif occursin(r"(?i)\bconferencia\b"i, raw_type) || occursin(r"(?i)\bconference\b"i, raw_type) || occursin(r"(?i)\bponencia\b"i, raw_type)
+            "Conferencia / Ponencia"
+        else
+            "Documento Académico"
+        end
+        types_count[norm_type] = get(types_count, norm_type, 0) + 1
+        repos_count[r] = get(repos_count, r, 0) + 1
+
+        kws = get(doc, "keywords", String[])
+        for kw in kws
+            k_clean = strip(kw)
+            isempty(k_clean) && continue
+            lowercase(k_clean) in GENERIC_TAGS && continue
+            kws_count[k_clean] = get(kws_count, k_clean, 0) + 1
+        end
+
+        date_str = get(doc, "date", "")
+        m = match(r"\b(19\d\d|20\d\d)\b", date_str)
+        if m !== nothing
+            y = parse(Int, m.match)
+            if y >= 1950 && y <= 2030
+                push!(years_list, y)
+                years_count[y] = get(years_count, y, 0) + 1
+            end
+        end
+
+        for (a, role) in Iterators.flatten((
+            (a => "Autor" for a in get(doc, "creators", String[])),
+            (a => "Colaborador / Asesor" for a in get(doc, "contributors", String[]))
+        ))
+            na = normalize_author_name(a)
+            isempty(na) && continue
+            entry = get!(authors_tally, na) do
+                Dict{String, Any}("name" => a, "role" => role, "repo" => r, "count" => 0)
+            end
+            entry["count"] += 1
+        end
+    end
+
+    if total_docs == 0
+        return Dict("error" => "No se encontraron documentos para el repositorio '$repo'")
+    end
+
+    sorted_types = sort([Dict("type" => k, "count" => v) for (k, v) in types_count], by=x->x["count"], rev=true)
+    sorted_kws = sort([Dict("discipline" => k, "count" => v) for (k, v) in kws_count], by=x->x["count"], rev=true)
+    sorted_repos = sort([Dict("repo" => k, "count" => v) for (k, v) in repos_count], by=x->x["count"], rev=true)
+    sorted_authors = sort(collect(values(authors_tally)), by=x->x["count"], rev=true)
+
+    year_min = isempty(years_list) ? "N/A" : string(minimum(years_list))
+    year_max = isempty(years_list) ? "N/A" : string(maximum(years_list))
+    years_histogram = [[y, c] for (y, c) in sort(collect(years_count); by=first)]
+
+    return Dict(
+        "is_global" => clean_repo === nothing,
+        "target_repo" => clean_repo,
+        "total_docs" => total_docs,
+        "total_files" => total_files,
+        "total_fulltext" => total_fulltext,
+        "total_references" => total_refs,
+        "total_authors" => n_authors,
+        "year_min" => year_min,
+        "year_max" => year_max,
+        "years_histogram" => years_histogram,
+        "types_distribution" => sorted_types,
+        "top_disciplines" => sorted_kws[1:min(15, length(sorted_kws))],
+        "top_repositories" => sorted_repos,
+        "top_researchers" => sorted_authors[1:min(15, length(sorted_authors))]
+    )
+end
+
+"""
+    precompute_all_statistics!(db::Database, n_authors::Int)
+
+Computes global and per-repo statistics once and persists them into RocksDB's `stats` column
+family (`put_stats!`), so `get_detailed_statistics` can serve them via a single point lookup
+instead of a full corpus scan. Requires a read-write `db` — called from `build_search_index`
+(which already holds one) at the end of an index rebuild, not from a live (read-only)
+`SearchEngine`.
+"""
+function precompute_all_statistics!(db::Database, n_authors::Int)
+    global_stats = compute_detailed_statistics(db, n_authors, nothing, nothing)
+    haskey(global_stats, "error") && return nothing
+    put_stats!(db, "global", global_stats)
+
+    for r in global_stats["top_repositories"]
+        repo_name = r["repo"]
+        repo_stats = compute_detailed_statistics(db, n_authors, repo_name, repo_name)
+        !haskey(repo_stats, "error") && put_stats!(db, "repo:$repo_name", repo_stats)
+    end
+    return nothing
+end
+
 # ====================================================================
 # 7. Batch Ingestion & Database Population
 # ====================================================================
@@ -766,6 +962,9 @@ function ingest_all_to_db!(d::Database; data_dir=DEFAULT_DATA_DIR, repos=nothing
         total_ingested += ingest_repository_to_db!(d, r; data_dir)
     end
     
+    println("Compacting RocksDB (reclaims write-ahead logs from this bulk-write session)...")
+    compact_all!(d)
+
     t1 = time()
     println("=======================================================")
     println("✅ Ingestion complete: $total_ingested documents in $(round(t1 - t0, digits=2))s")
