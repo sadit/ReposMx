@@ -219,7 +219,7 @@ end
 
 # ====================================================================
 # Assemble (read path) — rebuilds a queryable BM25InvertedFile from the
-# small JLD2 "shell" (voc/bm25/doclens/len/query, all cheap & RAM-resident)
+# small JSON/zip "shell" (voc/bm25/doclens/len/query, all cheap & RAM-resident)
 # plus lazy RocksDB-backed adj/db. Uses BM25InvertedFile's default
 # positional constructor (field order: voc, bm25, adj, doclens, db, len,
 # query) since the package exposes no keyword to inject custom adj/db.

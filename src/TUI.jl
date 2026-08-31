@@ -145,7 +145,7 @@ Muestra los colaboradores y coautores más frecuentes del autor en contexto acti
 {bold}Sintaxis:{/bold} {cyan}/author-similar{/cyan} o {cyan}/sim-authors [nombre]{/cyan}
 
 {bold}Descripción:{/bold}
-Evalúa el índice semántico de autores (`authors_profile_bm25.jld2`) para descubrir investigadores que comparten marco conceptual, tópicos y literatura citada con el autor en contexto.
+Evalúa el índice semántico de autores (`authors_profile_shell.zip`) para descubrir investigadores que comparten marco conceptual, tópicos y literatura citada con el autor en contexto.
 """),
         "doc" => ("Fijar Documento en Contexto y Ver Ficha",
             """
@@ -167,7 +167,7 @@ Muestra las citas bibliográficas extraídas del documento en contexto activo.
 {bold}Sintaxis:{/bold} {cyan}/doc-similar-refs{/cyan} o {cyan}/sim-refs{/cyan}
 
 {bold}Descripción:{/bold}
-Toma las referencias citadas por el documento en contexto y consulta el índice bibliográfico (`docs_refs_bm25.jld2`) para descubrir publicaciones con acoplamiento bibliográfico afín.
+Toma las referencias citadas por el documento en contexto y consulta el índice bibliográfico (`docs_refs_shell.zip`) para descubrir publicaciones con acoplamiento bibliográfico afín.
 """),
         "doc-find" => ("Búsqueda Profunda en Párrafos",
             """
@@ -245,7 +245,7 @@ function show_repos_table(state::ShellState)
         n_pdf = st["pdf_files"]
         n_txt = st["txt_files"]
         has_corpus = st["has_corpus"] ? "{green}✓{/green}" : "{dim}✗{/dim}"
-        has_idx = isfile(joinpath(state.index_dir, "docs_content_bm25.jld2")) ? "{green}✓{/green}" : "{dim}✗{/dim}"
+        has_idx = isfile(joinpath(state.index_dir, "docs_content_shell.zip")) ? "{green}✓{/green}" : "{dim}✗{/dim}"
         
         push!(rows, [r, string(n_xml), string(n_corpus), string(n_pdf), string(n_txt), has_corpus, has_idx])
     end
@@ -824,7 +824,7 @@ end
     launch_interactive_shell(; data_dir=DEFAULT_DATA_DIR, index_dir=DEFAULT_INDEX_DIR)
 """
 function launch_interactive_shell(; data_dir=DEFAULT_DATA_DIR, index_dir=DEFAULT_INDEX_DIR)
-    tprintln("{bold cyan}Cargando índices JLD2 y conectando a RocksDB...{/bold cyan}")
+    tprintln("{bold cyan}Cargando índices y conectando a RocksDB...{/bold cyan}")
     engine = @time "SearchEngine (total)" SearchEngine(; index_dir, data_dir)
 
     if engine.docs_content_invfile === nothing

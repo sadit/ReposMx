@@ -11,6 +11,7 @@ include("TextModel.jl")
 include("Wikipedia.jl")
 include("DB.jl")
 include("VocabIO.jl")
+include("IndexShellIO.jl")
 include("LazyBM25.jl")
 include("Indexing.jl")
 include("Search.jl")
@@ -29,13 +30,13 @@ using .TextModel
 using .Wikipedia
 using .DB
 using .VocabIO
+using .IndexShellIO
 using .LazyBM25
 using .Indexing
 using .Search
 using .Server
 using .TUI
 using .CLI
-import Pkg
 
 export Record, RepoInfo, SearchHit, SearchResponse, AuthorProfile, ParagraphHit, ReferenceRecord,
        DEFAULT_DATA_DIR, DEFAULT_INDEX_DIR, get_repositories,
@@ -55,29 +56,7 @@ export Record, RepoInfo, SearchHit, SearchResponse, AuthorProfile, ParagraphHit,
        get_fulltext, get_paragraphs, ingest_repository_to_db!, ingest_all_to_db!,
        SearchEngine, query_index, search_authors, find_similar_authors_by_profile, find_similar_documents_by_references,
        search_references, search_document_paragraphs, get_detailed_statistics, get_topic_elements, get_author_network,
-       start_server, launch_interactive_shell, main_cli, install_cli
-
-"""
-    install_cli(; dev::Bool=true)
-
-Registers and installs the `reposmx` executable application into `~/.julia/bin`
-via official Julia Pkg.Apps specification.
-"""
-function install_cli(; dev::Bool=true)
-    pkg_dir = dirname(@__DIR__)
-    if dev
-        Pkg.Apps.develop(path=pkg_dir)
-    else
-        Pkg.Apps.add(path=pkg_dir)
-    end
-    j_bin = joinpath(homedir(), ".julia", "bin")
-    println("✅ ReposMx instalado como Julia App en: $(joinpath(j_bin, "reposmx"))")
-    if !occursin(j_bin, get(ENV, "PATH", ""))
-        println("ℹ️  Asegúrate de que '$(j_bin)' esté en tu variable de entorno PATH:")
-        println("    export PATH=\"$(j_bin):\$PATH\"")
-    end
-    return joinpath(j_bin, "reposmx")
-end
+       start_server, launch_interactive_shell, main_cli
 
 """
     main(args=ARGS)

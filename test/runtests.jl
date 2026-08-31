@@ -1,10 +1,75 @@
 using Test
 using ReposMx
-using ReposMx: LazyBM25
+using ReposMx: LazyBM25, IndexShellIO, VocabIO
 using RocksDB
 using SimilaritySearch, TextSearch
 
 @testset "ReposMx Tests" begin
+    @testset "IndexShellIO round-trip (bm25/doclens/len/query, isolated)" begin
+        # Guards the JSON3/zip replacement for what used to be a JLD2 jldsave/load round-trip
+        # (see IndexShellIO's docstring): BM25Scorer's Float32 fields, QueryPipeline's
+        # Union{Nothing,Dict} fields (variants/expansion/distances), and QueryPolicy's Symbol
+        # field must all survive the trip unchanged.
+        docs = [
+            "el gato negro corre en el jardin",
+            "el perro blanco duerme en la casa",
+            "un gato y un perro juegan juntos",
+            "the black cat runs fast",
+        ]
+        config = TextConfig(del_diac=true, del_punc=true, lc=true, nlist=[1])
+        voc = Vocabulary(config, docs)
+        invfile = BM25InvertedFile(voc)
+        ctx = InvertedFileContext()
+        append_items!(invfile, ctx, docs)
+
+        tmpdir = mktempdir()
+        shell_path = joinpath(tmpdir, "shell.zip")
+        IndexShellIO.save_index_shell_zip(shell_path;
+            bm25=invfile.bm25, doclens=invfile.doclens, len=invfile.len[], query=invfile.query)
+        d = IndexShellIO.load_index_shell_zip(shell_path)
+
+        @test d.bm25.k1_plus_1 ≈ invfile.bm25.k1_plus_1
+        @test d.bm25.k1_mult_1_min_b ≈ invfile.bm25.k1_mult_1_min_b
+        @test d.bm25.k1_mult_b_div_avg_doc_len ≈ invfile.bm25.k1_mult_b_div_avg_doc_len
+        @test d.bm25.δ ≈ invfile.bm25.δ
+        @test d.bm25.trainsize == invfile.bm25.trainsize
+        @test d.doclens == invfile.doclens
+        @test d.len == invfile.len[]
+        @test d.query.policy.correction == invfile.query.policy.correction
+        @test d.query.policy.expansion == invfile.query.policy.expansion
+        @test d.query.policy.expansion_k == invfile.query.policy.expansion_k
+        @test d.query.policy.negligible_ratio == invfile.query.policy.negligible_ratio
+        @test d.query.variants === invfile.query.variants  # both nothing here
+        @test d.query.expansion === invfile.query.expansion
+        @test d.query.distances === invfile.query.distances
+
+        # A round-tripped shell must assemble into a lazily-backed index whose search results
+        # are identical to the original in-memory one — the actual end-to-end gate.
+        db_path = joinpath(tmpdir, "rocksdb")
+        init_db = opendb(db_path; create_if_missing=true)
+        for cf in ["postings", "docvecs"]
+            create_column_family(init_db, cf)
+        end
+        close(init_db)
+        db = opendb(db_path; column_families=["default", "postings", "docvecs"])
+        try
+            LazyBM25.export_to_rocksdb!(db, LazyBM25.DOCS_CONTENT, invfile)
+            lazy_invfile = LazyBM25.assemble_bm25(
+                db, LazyBM25.DOCS_CONTENT, voc, d.bm25, d.doclens, d.len, d.query
+            )
+            for q in ["gato jardin", "perro casa", "cat dog"]
+                ctx_a = InvertedFileContext()
+                res_a = search(invfile, ctx_a, q, knnqueue(ctx_a, 10))
+                ctx_b = InvertedFileContext()
+                res_b = search(lazy_invfile, ctx_b, q, knnqueue(ctx_b, 10))
+                @test [item.id for item in res_a] == [item.id for item in res_b]
+                @test [item.dist for item in res_a] ≈ [item.dist for item in res_b]
+            end
+        finally
+            close(db)
+        end
+    end
+
     @testset "LazyBM25 round-trip (isolated, synthetic corpus)" begin
         # Builds a tiny in-memory BM25InvertedFile, exports it to a temp RocksDB via
         # LazyBM25.export_to_rocksdb!, reassembles it as a lazily-backed index via

@@ -1,6 +1,5 @@
 module Indexing
 
-using JLD2, JSON
 using TextSearch, SimilaritySearch
 using ..Config: DEFAULT_DATA_DIR, DEFAULT_INDEX_DIR
 using ..Types: ParagraphHit, ReferenceRecord
@@ -15,6 +14,7 @@ using ..LazyBM25: export_to_rocksdb!, assemble_bm25,
                   LazyDocKeys, LazyAuthorKeys, export_dockeys_to_rocksdb!, export_authorkeys_to_rocksdb!,
                   DOCS_CONTENT, DOCS_REFS, AUTHORS_NAME, AUTHORS_PROFILE
 using ..VocabIO: save_vocabulary_zip, load_vocabulary_zip
+using ..IndexShellIO: save_index_shell_zip, load_index_shell_zip
 
 export build_search_index,
        load_docs_content_index, load_docs_refs_index,
@@ -84,8 +84,9 @@ end
 """
     build_search_index(; data_dir=DEFAULT_DATA_DIR, index_dir=DEFAULT_INDEX_DIR, repos=nothing, max_docs=nothing)
 
-Builds the 4 segregated homogeneous BM25 search indices in portable JLD2 format,
-and populates the RocksDB database with all metadata, author profiles, and references.
+Builds the 4 segregated homogeneous BM25 search indices (vocabulary + shell as JSON/zip,
+postings/doc-vectors in RocksDB — see `VocabIO`, `IndexShellIO`, `LazyBM25`), and populates the
+RocksDB database with all metadata, author profiles, and references.
 """
 function build_search_index(;
     data_dir=DEFAULT_DATA_DIR,
@@ -215,7 +216,7 @@ function build_search_index(;
         println("RocksDB populated with $(length(all_docs)) docs and $(length(authors_data)) author profiles.")
 
         # -------------------------------------------------------------
-        # 1. Index 1: Documents by Content (docs_content_bm25.jld2)
+        # 1. Index 1: Documents by Content (docs_content_shell.zip)
         # -------------------------------------------------------------
         println("Fitting bilingual TextProfile & refit for Document Content Index...")
         base_profile = get_or_create_bilingual_base_profile(; verbose=true)
@@ -228,15 +229,15 @@ function build_search_index(;
 
         export_to_rocksdb!(rdb, DOCS_CONTENT, docs_content_invfile)
         save_vocabulary_zip(joinpath(index_dir, "docs_content_vocab.zip"), docs_content_invfile.voc)
-        jldsave(joinpath(index_dir, "docs_content_bm25.jld2");
+        save_index_shell_zip(joinpath(index_dir, "docs_content_shell.zip");
                 bm25=docs_content_invfile.bm25,
                 doclens=docs_content_invfile.doclens, len=docs_content_invfile.len[],
                 query=docs_content_invfile.query)
         save_profile(joinpath(index_dir, "profile"), refitted_profile)
-        println("Saved Index 1: docs_content_bm25.jld2 + docs_content_vocab.zip (postings/docvecs in RocksDB)")
+        println("Saved Index 1: docs_content_shell.zip + docs_content_vocab.zip (postings/docvecs in RocksDB)")
 
         # -------------------------------------------------------------
-        # 2. Index 2: Documents by References (docs_refs_bm25.jld2)
+        # 2. Index 2: Documents by References (docs_refs_shell.zip)
         # -------------------------------------------------------------
         println("Building BM25 for Documents by References...")
         docs_refs_voc_full = Vocabulary(refitted_profile.model.voc.textconfig, docs_refs_texts)
@@ -253,14 +254,14 @@ function build_search_index(;
 
         export_to_rocksdb!(rdb, DOCS_REFS, docs_refs_invfile)
         save_vocabulary_zip(joinpath(index_dir, "docs_refs_vocab.zip"), docs_refs_invfile.voc)
-        jldsave(joinpath(index_dir, "docs_refs_bm25.jld2");
+        save_index_shell_zip(joinpath(index_dir, "docs_refs_shell.zip");
                 bm25=docs_refs_invfile.bm25,
                 doclens=docs_refs_invfile.doclens, len=docs_refs_invfile.len[],
                 query=docs_refs_invfile.query)
-        println("Saved Index 2: docs_refs_bm25.jld2 + docs_refs_vocab.zip (postings/docvecs in RocksDB)")
+        println("Saved Index 2: docs_refs_shell.zip + docs_refs_vocab.zip (postings/docvecs in RocksDB)")
 
         # -------------------------------------------------------------
-        # 3. Index 3: Authors by Name (authors_name_bm25.jld2)
+        # 3. Index 3: Authors by Name (authors_name_shell.zip)
         # -------------------------------------------------------------
         println("Building BM25 for Authors by Name...")
         authors_names = [a["name"] for a in authors_data]
@@ -278,14 +279,14 @@ function build_search_index(;
 
         export_to_rocksdb!(rdb, AUTHORS_NAME, authors_name_invfile)
         save_vocabulary_zip(joinpath(index_dir, "authors_name_vocab.zip"), authors_name_invfile.voc)
-        jldsave(joinpath(index_dir, "authors_name_bm25.jld2");
+        save_index_shell_zip(joinpath(index_dir, "authors_name_shell.zip");
                 bm25=authors_name_invfile.bm25,
                 doclens=authors_name_invfile.doclens, len=authors_name_invfile.len[],
                 query=authors_name_invfile.query)
-        println("Saved Index 3: authors_name_bm25.jld2 + authors_name_vocab.zip (postings/docvecs in RocksDB)")
+        println("Saved Index 3: authors_name_shell.zip + authors_name_vocab.zip (postings/docvecs in RocksDB)")
 
         # -------------------------------------------------------------
-        # 4. Index 4: Authors by Profile & Citations (authors_profile_bm25.jld2)
+        # 4. Index 4: Authors by Profile & Citations (authors_profile_shell.zip)
         # -------------------------------------------------------------
         println("Building BM25 for Authors by Semantic Profile & References...")
         authors_profile_texts = [
@@ -300,11 +301,11 @@ function build_search_index(;
 
         export_to_rocksdb!(rdb, AUTHORS_PROFILE, authors_profile_invfile)
         save_vocabulary_zip(joinpath(index_dir, "authors_profile_vocab.zip"), authors_profile_invfile.voc)
-        jldsave(joinpath(index_dir, "authors_profile_bm25.jld2");
+        save_index_shell_zip(joinpath(index_dir, "authors_profile_shell.zip");
                 bm25=authors_profile_invfile.bm25,
                 doclens=authors_profile_invfile.doclens, len=authors_profile_invfile.len[],
                 query=authors_profile_invfile.query)
-        println("Saved Index 4: authors_profile_bm25.jld2 + authors_profile_vocab.zip (postings/docvecs in RocksDB)")
+        println("Saved Index 4: authors_profile_shell.zip + authors_profile_vocab.zip (postings/docvecs in RocksDB)")
 
         # Clean up legacy .bin files if present
         for bin_f in ["bm25.bin", "docs.bin", "authors.bin", "authors_bm25.bin", "authors_topics_bm25.bin", "references.bin", "references_bm25.bin"]
@@ -331,63 +332,64 @@ end
 """
     load_docs_content_index(db::Database; index_dir=DEFAULT_INDEX_DIR)
 
-Loads the vocabulary from its `.zip` (via `VocabIO.load_vocabulary_zip` — see that docstring for
-why it's not just another JLD2 field) plus the small JLD2 "shell" (BM25 params/doc lengths/query
-pipeline), and assembles a `BM25InvertedFile` whose posting lists and per-document term vectors
-are read lazily from RocksDB (`postings`/`docvecs` column families) instead of being deserialized
-eagerly into RAM.
+Loads the vocabulary from its `.zip` (via `VocabIO.load_vocabulary_zip`) plus the small shell —
+BM25 params/doc lengths/query pipeline — from its own `.zip` (via
+`IndexShellIO.load_index_shell_zip`; see that module's docstring for why this replaced a JLD2
+`jldsave`/`JLD2.load` round-trip), and assembles a `BM25InvertedFile` whose posting lists and
+per-document term vectors are read lazily from RocksDB (`postings`/`docvecs` column families)
+instead of being deserialized eagerly into RAM.
 """
 function load_docs_content_index(db::Union{Database, Nothing}; index_dir=DEFAULT_INDEX_DIR)
-    f = joinpath(index_dir, "docs_content_bm25.jld2")
+    f = joinpath(index_dir, "docs_content_shell.zip")
     vf = joinpath(index_dir, "docs_content_vocab.zip")
     (db === nothing || !isfile(f) || !isfile(vf)) && return (nothing, Tuple{String, String}[])
-    d = JLD2.load(f)
+    d = load_index_shell_zip(f)
     voc = load_vocabulary_zip(vf)
     rdb = rocksdb_handle(db)
-    invfile = assemble_bm25(rdb, DOCS_CONTENT, voc, d["bm25"], d["doclens"], d["len"], d["query"])
-    return (invfile, LazyDocKeys(rdb, length(d["doclens"])))
+    invfile = assemble_bm25(rdb, DOCS_CONTENT, voc, d.bm25, d.doclens, d.len, d.query)
+    return (invfile, LazyDocKeys(rdb, length(d.doclens)))
 end
 
 """
     load_docs_refs_index(db::Database; index_dir=DEFAULT_INDEX_DIR)
 """
 function load_docs_refs_index(db::Union{Database, Nothing}; index_dir=DEFAULT_INDEX_DIR)
-    f = joinpath(index_dir, "docs_refs_bm25.jld2")
+    f = joinpath(index_dir, "docs_refs_shell.zip")
     vf = joinpath(index_dir, "docs_refs_vocab.zip")
     (db === nothing || !isfile(f) || !isfile(vf)) && return (nothing, Tuple{String, String}[])
-    d = JLD2.load(f)
+    d = load_index_shell_zip(f)
     voc = load_vocabulary_zip(vf)
     rdb = rocksdb_handle(db)
-    invfile = assemble_bm25(rdb, DOCS_REFS, voc, d["bm25"], d["doclens"], d["len"], d["query"])
-    return (invfile, LazyDocKeys(rdb, length(d["doclens"])))
+    invfile = assemble_bm25(rdb, DOCS_REFS, voc, d.bm25, d.doclens, d.len, d.query)
+    return (invfile, LazyDocKeys(rdb, length(d.doclens)))
 end
 
 """
     load_authors_name_index(db::Database; index_dir=DEFAULT_INDEX_DIR)
 """
 function load_authors_name_index(db::Union{Database, Nothing}; index_dir=DEFAULT_INDEX_DIR)
-    f = joinpath(index_dir, "authors_name_bm25.jld2")
+    f = joinpath(index_dir, "authors_name_shell.zip")
     vf = joinpath(index_dir, "authors_name_vocab.zip")
     (db === nothing || !isfile(f) || !isfile(vf)) && return (nothing, String[])
-    d = JLD2.load(f)
+    d = load_index_shell_zip(f)
     voc = load_vocabulary_zip(vf)
     rdb = rocksdb_handle(db)
-    invfile = assemble_bm25(rdb, AUTHORS_NAME, voc, d["bm25"], d["doclens"], d["len"], d["query"])
-    return (invfile, LazyAuthorKeys(rdb, length(d["doclens"])))
+    invfile = assemble_bm25(rdb, AUTHORS_NAME, voc, d.bm25, d.doclens, d.len, d.query)
+    return (invfile, LazyAuthorKeys(rdb, length(d.doclens)))
 end
 
 """
     load_authors_profile_index(db::Database; index_dir=DEFAULT_INDEX_DIR)
 """
 function load_authors_profile_index(db::Union{Database, Nothing}; index_dir=DEFAULT_INDEX_DIR)
-    f = joinpath(index_dir, "authors_profile_bm25.jld2")
+    f = joinpath(index_dir, "authors_profile_shell.zip")
     vf = joinpath(index_dir, "authors_profile_vocab.zip")
     (db === nothing || !isfile(f) || !isfile(vf)) && return (nothing, String[])
-    d = JLD2.load(f)
+    d = load_index_shell_zip(f)
     voc = load_vocabulary_zip(vf)
     rdb = rocksdb_handle(db)
-    invfile = assemble_bm25(rdb, AUTHORS_PROFILE, voc, d["bm25"], d["doclens"], d["len"], d["query"])
-    return (invfile, LazyAuthorKeys(rdb, length(d["doclens"])))
+    invfile = assemble_bm25(rdb, AUTHORS_PROFILE, voc, d.bm25, d.doclens, d.len, d.query)
+    return (invfile, LazyAuthorKeys(rdb, length(d.doclens)))
 end
 
 """

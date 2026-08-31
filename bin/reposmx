@@ -1,4 +1,0 @@
-#!/usr/bin/env bash
-# ReposMx CLI wrapper
-PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-exec julia --project="$PROJECT_DIR" -e 'using ReposMx; ReposMx.main(ARGS)' -- "$@"

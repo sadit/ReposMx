@@ -12,7 +12,6 @@ using ..Search: SearchEngine, query_index, get_detailed_statistics
 using ..Server: start_server
 using ..TUI: launch_interactive_shell
 using ..Wikipedia: explain_concept
-import Pkg
 
 export main_cli
 
@@ -43,7 +42,6 @@ SUBCOMANDOS INDIVIDUALES:
   search "<query>"           Busca directamente en la terminal (BM25 + Wikipedia)
   info [repo]                Estadísticas detalladas de publicaciones, disciplinas y autores
   status                     Muestra estadísticas de cobertura y estado de los repositorios
-  install-cli [--bin-dir DIR] Instala el comando ejecutable 'reposmx' en ~/.julia/bin o ~/.local/bin
 
 EJEMPLOS:
   reposmx                    # Abre el buscador interactivo rápido
@@ -52,7 +50,6 @@ EJEMPLOS:
   reposmx update-all iteso cideteq
   reposmx search "aprendizaje profundo"
   reposmx serve --port 8080
-  reposmx install-cli        # Instala el comando 'reposmx' globalmente en PATH
 """)
 end
 
@@ -322,21 +319,6 @@ function main_cli(args=ARGS)
     elseif cmd == "info"
         target = isempty(repos) ? nothing : first(repos)
         show_info_cli(target)
-    elseif cmd == "install-cli"
-        bin_dir_arg = nothing
-        for j in 1:length(subargs)
-            if subargs[j] == "--bin-dir" && j < length(subargs)
-                bin_dir_arg = subargs[j+1]
-            end
-        end
-        pkg_dir = dirname(@__DIR__)
-        Pkg.Apps.develop(path=pkg_dir)
-        j_bin = joinpath(homedir(), ".julia", "bin")
-        println("✅ ReposMx instalado como Julia App en: $(joinpath(j_bin, "reposmx"))")
-        if !occursin(j_bin, get(ENV, "PATH", ""))
-            println("ℹ️  Asegúrate de que '$(j_bin)' esté en tu variable de entorno PATH:")
-            println("    export PATH=\"$(j_bin):\$PATH\"")
-        end
     else
         println(stderr, "Subcomando desconocido: '$cmd'")
         print_usage()
