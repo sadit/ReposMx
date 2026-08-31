@@ -232,34 +232,48 @@ end
     main_cli(args=ARGS)
 
 Main entry point for command line interface.
+
+Every branch below calls its handler through `Base.invokelatest` rather than directly. This is
+not stylistic: `main_cli` used to call `update_db`, `build_search_index`, `start_server`,
+`SearchEngine`, etc. as ordinary static calls, and Julia's compiler infers/compiles a method's
+*entire* body — every branch, not just the one actually taken — the first time that method itself
+gets compiled. With ~15 branches reaching into Indexing.jl, Server.jl, TUI.jl and Search.jl, that
+meant compiling `main_cli` once (which happens on *every* fresh `reposmx` invocation, since nothing
+caches this across processes) cost ~37s even for something as trivial as `reposmx --help` or
+launching the shell — measured with `--trace-compile-timing`: 217 other precompiled specializations
+totaled under 1s combined, and `ReposMx.main` alone accounted for 37.0s of that same run.
+`Base.invokelatest(f, args...)` calls `f` at the *current* (latest) method-table world age instead
+of resolving/inferring it statically at the call site, which breaks that inference cascade: only
+the dispatcher logic (string comparisons, arg parsing) gets compiled up front, and each handler is
+compiled lazily, only when the branch that reaches it actually runs.
 """
 function main_cli(args=ARGS)
     if isempty(args)
         # Default action: launch the Term.jl interactive shell!
-        launch_interactive_shell()
+        Base.invokelatest(launch_interactive_shell)
         return 0
     end
 
     if args[1] in ("-h", "--help", "help")
-        print_usage()
+        Base.invokelatest(print_usage)
         return 0
     end
-    
+
     cmd = args[1]
     subargs = args[2:end]
-    
+
     # Check interactive subcommands
     if cmd in ("shell", "interactive", "i", "tui")
-        launch_interactive_shell()
+        Base.invokelatest(launch_interactive_shell)
         return 0
     end
-    
+
     # Parse options and repos
     repos = String[]
     port = 8000
     host = "0.0.0.0"
     top = 10
-    
+
     i = 1
     while i <= length(subargs)
         arg = subargs[i]
@@ -279,52 +293,54 @@ function main_cli(args=ARGS)
             i += 1
         end
     end
-    
+
     target_repos = isempty(repos) ? nothing : repos
-    
+
     if cmd == "update-db"
-        update_db(; repos=target_repos)
+        Base.invokelatest(update_db; repos=target_repos)
     elseif cmd == "prepare-index"
-        prepare_index(; repos=target_repos)
+        Base.invokelatest(prepare_index; repos=target_repos)
     elseif cmd == "populate-db"
-        db_inst = open_database()
-        try
-            ingest_all_to_db!(db_inst; repos=target_repos)
-        finally
-            close_database(db_inst)
+        Base.invokelatest() do
+            db_inst = open_database()
+            try
+                ingest_all_to_db!(db_inst; repos=target_repos)
+            finally
+                close_database(db_inst)
+            end
         end
     elseif cmd == "update-all"
-        update_all(; repos=target_repos)
+        Base.invokelatest(update_all; repos=target_repos)
     elseif cmd == "serve" || cmd == "server"
-        start_server(; port, host)
+        Base.invokelatest(start_server; port, host)
     elseif cmd == "harvest"
-        harvest_all(; repos=target_repos)
+        Base.invokelatest(harvest_all; repos=target_repos)
     elseif cmd == "download"
-        download_all_files(; repos=target_repos)
+        Base.invokelatest(download_all_files; repos=target_repos)
     elseif cmd == "parse"
-        parse_all_documents(; repos=target_repos)
+        Base.invokelatest(parse_all_documents; repos=target_repos)
     elseif cmd == "build-corpus"
-        build_all_corpus(; repos=target_repos)
+        Base.invokelatest(build_all_corpus; repos=target_repos)
     elseif cmd == "index"
-        build_search_index(; repos=target_repos)
+        Base.invokelatest(build_search_index; repos=target_repos)
     elseif cmd == "search"
         q = isempty(repos) ? (isempty(subargs) ? "" : subargs[1]) : join(repos, " ")
         if isempty(q)
             println(stderr, "Error: Debe especificar una consulta de búsqueda.")
         else
-            search_cli(q; top)
+            Base.invokelatest(search_cli, q; top)
         end
     elseif cmd == "status"
-        show_status()
+        Base.invokelatest(show_status)
     elseif cmd == "info"
         target = isempty(repos) ? nothing : first(repos)
-        show_info_cli(target)
+        Base.invokelatest(show_info_cli, target)
     else
         println(stderr, "Subcomando desconocido: '$cmd'")
-        print_usage()
+        Base.invokelatest(print_usage)
         return 1
     end
-    
+
     return 0
 end
 
