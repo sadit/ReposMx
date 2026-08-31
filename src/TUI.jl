@@ -235,29 +235,21 @@ function show_info_command(state::ShellState, repo_arg::Union{AbstractString, No
 end
 
 function show_repos_table(state::ShellState)
-    repos = list_repo_names(; data_dir=state.data_dir)
-    rows = Any[]
-    
-    for r in sort(repos)
-        st = get_repo_stats(r; data_dir=state.data_dir)
-        n_xml = st["xml_records"]
-        n_corpus = st["corpus_records"]
-        n_pdf = st["pdf_files"]
-        n_txt = st["txt_files"]
-        has_corpus = st["has_corpus"] ? "{green}✓{/green}" : "{dim}✗{/dim}"
-        has_idx = isfile(joinpath(state.index_dir, "docs_content_shell.zip")) ? "{green}✓{/green}" : "{dim}✗{/dim}"
-        
-        push!(rows, [r, string(n_xml), string(n_corpus), string(n_pdf), string(n_txt), has_corpus, has_idx])
-    end
-    
-    tab = Table(
-        rows;
-        header=["Repositorio", "XML Cosechados", "Corpus JSONL", "PDFs", "TXT Fulltext", "Corpus Listo", "Indexado"],
-        box=:ROUNDED,
-        style="blue"
-    )
+    stats = get_repo_stats(; data_dir=state.data_dir)
+    has_idx = isfile(joinpath(state.index_dir, "docs_content_shell.zip")) ? "✓" : "✗"
+    repos_sorted = sort(stats["repos"]; by=x -> x["repo"])
+    fmt_harvest(h) = h === nothing ? "Nunca" : first(h, min(16, length(h)))
+
+    tab = Table(Dict(
+        "Repositorio" => [r["repo"] for r in repos_sorted],
+        "Registros" => [string(r["total_records"]) for r in repos_sorted],
+        "Corpus JSONL" => [string(r["corpus_records"]) for r in repos_sorted],
+        "Archivos" => [string(r["files_downloaded"]) for r in repos_sorted],
+        "Último Harvest" => [fmt_harvest(r["last_harvest"]) for r in repos_sorted],
+        "Índice Global" => [has_idx for _ in repos_sorted],
+    ); style="blue", box=:ROUNDED)
     println(tab)
-    tprintln("{dim}Total: $(length(rows)) repositorios. Usa '/repo <nombre>' para filtrar.{/dim}\n")
+    tprintln("{dim}Total: $(length(repos_sorted)) repositorios. Usa '/repo <nombre>' para filtrar.{/dim}\n")
 end
 
 function show_author_search(state::ShellState, author_query::AbstractString)
@@ -677,26 +669,36 @@ end
 
 """
     process_shell_input(state::ShellState, raw_input::AbstractString)::Bool
+
+Dispatches one line of shell input to its handler. Every branch calls its handler through
+`Base.invokelatest` rather than directly, for the same reason `CLI.main_cli` does (see that
+function's docstring, and the `julia-app-compile-latency` skill): this function has ~20 branches
+reaching into Search.jl/DB.jl/Wikipedia.jl, and it is itself compiled as a closure captured
+inside `launch_interactive_shell` (the `on_done` callback passed to `REPL.LineEdit.Prompt`) — so
+without `invokelatest`, every fresh `reposmx` process paid for compiling all ~20 command handlers
+just to open the shell, not only the ones a session actually types. Measured with
+`--trace-compile-timing`: `launch_interactive_shell` alone accounted for 22.15s of compile time
+before this fix.
 """
 function process_shell_input(state::ShellState, raw_input::AbstractString)::Bool
     input = strip(raw_input)
     isempty(input) && return true
-    
+
     if input in ("/exit", "exit", "quit", ":q", "q")
         tprintln("\n{bold cyan}¡Hasta luego!{/bold cyan}\n")
         return false
     elseif input in ("/?", "/help", "help", "?")
-        print_general_help()
+        Base.invokelatest(print_general_help)
     elseif startswith(input, "/?") || startswith(input, "/help ")
         parts = split(input; limit=2)
         if length(parts) >= 2 && !isempty(strip(parts[2]))
-            print_specific_help(strip(parts[2]))
+            Base.invokelatest(print_specific_help, strip(parts[2]))
         else
-            print_general_help()
+            Base.invokelatest(print_general_help)
         end
     elseif input in ("/clear", "clear", "cls")
         print("\033c")
-        render_banner(state)
+        Base.invokelatest(render_banner, state)
     elseif input in ("/clear-context", "clear-context")
         state.context_doc = nothing
         state.context_author = nothing
@@ -704,51 +706,51 @@ function process_shell_input(state::ShellState, raw_input::AbstractString)::Bool
     elseif startswith(input, "/info")
         parts = split(input; limit=2)
         if length(parts) >= 2 && !isempty(strip(parts[2]))
-            show_info_command(state, strip(parts[2]))
+            Base.invokelatest(show_info_command, state, strip(parts[2]))
         else
-            show_info_command(state, nothing)
+            Base.invokelatest(show_info_command, state, nothing)
         end
     elseif startswith(input, "/set-author")
         parts = split(input; limit=2)
         if length(parts) >= 2
-            set_author_context(state, strip(parts[2]))
+            Base.invokelatest(set_author_context, state, strip(parts[2]))
         else
             tprintln("{bold red}Uso: /set-author <número_resultado | nombre_autor>{/bold red}\n")
         end
     elseif input in ("/author-docs", "author-docs")
-        show_author_docs(state)
+        Base.invokelatest(show_author_docs, state)
     elseif input in ("/author-coauth", "author-coauth", "/coauth")
-        show_author_coauthors(state)
+        Base.invokelatest(show_author_coauthors, state)
     elseif startswith(input, "/author-similar") || startswith(input, "/sim-authors")
         parts = split(input; limit=2)
         opt_arg = length(parts) >= 2 ? strip(parts[2]) : nothing
-        show_similar_authors(state, opt_arg)
+        Base.invokelatest(show_similar_authors, state, opt_arg)
     elseif startswith(input, "/author")
         parts = split(input; limit=2)
         if length(parts) >= 2
-            show_author_search(state, strip(parts[2]))
+            Base.invokelatest(show_author_search, state, strip(parts[2]))
         else
             tprintln("{bold red}Uso: /author <nombre_investigador>{/bold red}\n")
         end
     elseif startswith(input, "/topic")
         parts = split(input; limit=2)
         if length(parts) >= 2
-            show_topic_elements_cli(state, strip(parts[2]))
+            Base.invokelatest(show_topic_elements_cli, state, strip(parts[2]))
         else
             tprintln("{bold red}Uso: /topic <nombre_tema_o_disciplina>{/bold red}\n")
         end
     elseif input in ("/doc-similar-refs", "doc-similar-refs", "/sim-refs")
-        show_similar_documents_by_refs(state)
+        Base.invokelatest(show_similar_documents_by_refs, state)
     elseif input in ("/doc-refs", "doc-refs")
-        show_document_references_cli(state, nothing)
+        Base.invokelatest(show_document_references_cli, state, nothing)
     elseif startswith(input, "/refs")
         parts = split(input)
         idx = length(parts) >= 2 ? tryparse(Int, parts[2]) : nothing
-        show_document_references_cli(state, idx)
+        Base.invokelatest(show_document_references_cli, state, idx)
     elseif startswith(input, "/doc-find") || startswith(input, "/find")
         parts = split(input; limit=2)
         if length(parts) >= 2
-            search_in_document_cli(state, strip(parts[2]))
+            Base.invokelatest(search_in_document_cli, state, strip(parts[2]))
         else
             tprintln("{bold red}Uso: /doc-find <consulta_dentro_del_documento>{/bold red}\n")
         end
@@ -795,7 +797,7 @@ function process_shell_input(state::ShellState, raw_input::AbstractString)::Bool
         if length(parts) >= 2
             idx = tryparse(Int, parts[2])
             if idx !== nothing
-                show_document_detail(state, idx)
+                Base.invokelatest(show_document_detail, state, idx)
             else
                 tprintln("{bold red}Uso: /doc <número_resultado>{/bold red}\n")
             end
@@ -803,20 +805,22 @@ function process_shell_input(state::ShellState, raw_input::AbstractString)::Bool
             tprintln("{bold red}Uso: /doc <número_resultado>{/bold red}\n")
         end
     elseif input in ("/status", "/repos", "status", "repos")
-        show_repos_table(state)
+        Base.invokelatest(show_repos_table, state)
     else
-        res = query_index(
-            state.engine,
-            input;
-            top=state.top_k,
-            repo=state.active_repo,
-            keyword=state.active_keyword,
-            doc_type=state.active_type,
-            include_wiki=state.include_wiki
-        )
-        render_search_results(state, res)
+        Base.invokelatest() do
+            res = query_index(
+                state.engine,
+                input;
+                top=state.top_k,
+                repo=state.active_repo,
+                keyword=state.active_keyword,
+                doc_type=state.active_type,
+                include_wiki=state.include_wiki
+            )
+            render_search_results(state, res)
+        end
     end
-    
+
     return true
 end
 
