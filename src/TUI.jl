@@ -126,7 +126,7 @@ function render_banner(state::ShellState)
 
 {bold yellow}Flags disponibles (después del comando, en cualquier orden):{/bold yellow}
   {dim}--top N | -k N        --repo <nombre>       --type <tipo>{/dim}
-  {dim}--tag <keyword>       --wiki | --no-wiki{/dim}
+  {dim}--tag <keyword>       --wiki | --no-wiki    -h | --help (ayuda del comando){/dim}
 """
     p = Panel(
         content,
@@ -166,6 +166,7 @@ function print_general_help()
     {yellow}--type <tipo>{/yellow}                 Filtro por tipo de documento (Tesis, Artículo, etc.) — solo búsqueda libre
     {yellow}--tag <keyword>{/yellow}                Filtro por disciplina / keyword — solo búsqueda libre
     {yellow}--wiki{/yellow} / {yellow}--no-wiki{/yellow}            Activa/desactiva tarjetas de Wikipedia — solo búsqueda libre
+    {yellow}-h{/yellow} / {yellow}--help{/yellow}                Muestra la ayuda de ese comando en vez de ejecutarlo (cualquier comando con '/')
     {yellow}/info [repo]{/yellow}                  Estadísticas detalladas del repositorio o acervo global
     {yellow}/clear-context{/yellow}                Limpia los contextos activos de documento y autor
     {yellow}/clear{/yellow} | {yellow}/exit{/yellow}              Limpia la pantalla o sale del shell
@@ -759,6 +760,13 @@ function process_shell_input(state::ShellState, raw_input::AbstractString)::Bool
     parts = split(input; limit=2)
     cmd = parts[1]
     rest = length(parts) >= 2 ? parts[2] : ""
+
+    # -h/--help is a generic flag on any command: show that command's help instead of
+    # running it, regardless of what other flags/arguments are present.
+    if startswith(cmd, "/") && cmd ∉ ("/?", "/help") && ("-h" in split(rest) || "--help" in split(rest))
+        Base.invokelatest(print_specific_help, cmd)
+        return true
+    end
 
     if input in ("/exit", "exit", "quit", ":q", "q")
         tprintln("\n{bold cyan}¡Hasta luego!{/bold cyan}\n")
