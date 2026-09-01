@@ -13,6 +13,7 @@ include("DB.jl")
 include("VocabIO.jl")
 include("IndexShellIO.jl")
 include("LazyBM25.jl")
+include("AuthorConsolidation.jl")
 include("Indexing.jl")
 include("Search.jl")
 include("Server.jl")
@@ -32,6 +33,7 @@ using .DB
 using .VocabIO
 using .IndexShellIO
 using .LazyBM25
+using .AuthorConsolidation
 using .Indexing
 using .Search
 using .Server

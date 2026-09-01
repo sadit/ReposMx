@@ -2,7 +2,8 @@ module Config
 
 using JSON
 
-export DEFAULT_DATA_DIR, DEFAULT_INDEX_DIR, DEFAULT_HEADERS, DEFAULT_OAI_NS, get_repositories, get_repository_url
+export DEFAULT_DATA_DIR, DEFAULT_INDEX_DIR, DEFAULT_HEADERS, DEFAULT_OAI_NS,
+       DEFAULT_AUTHOR_OVERRIDES_JSON, get_repositories, get_repository_url
 
 const DEFAULT_DATA_DIR = let
     if haskey(ENV, "REPOSMX_DATA_DIR") && !isempty(ENV["REPOSMX_DATA_DIR"])
@@ -45,6 +46,28 @@ const DEFAULT_REPOS_JSON = let
             abspath(joinpath(pwd(), "repos.json"))
         else
             normpath(joinpath(homedir(), ".reposmx", "repos.json"))
+        end
+    end
+end
+
+"""
+    DEFAULT_AUTHOR_OVERRIDES_JSON
+
+Path to the human-curated author consolidation overrides file (explicit `merge`/`split` of raw
+author names — see [`AuthorConsolidation`](@ref)). Same resolution pattern as `DEFAULT_REPOS_JSON`:
+versioned at the repo root, never under `data/`.
+"""
+const DEFAULT_AUTHOR_OVERRIDES_JSON = let
+    if haskey(ENV, "REPOSMX_AUTHOR_OVERRIDES") && !isempty(ENV["REPOSMX_AUTHOR_OVERRIDES"])
+        abspath(ENV["REPOSMX_AUTHOR_OVERRIDES"])
+    else
+        pkg = pkgdir(@__MODULE__)
+        if pkg !== nothing && isfile(joinpath(pkg, "author_overrides.json"))
+            normpath(joinpath(pkg, "author_overrides.json"))
+        elseif isfile(joinpath(pwd(), "author_overrides.json"))
+            abspath(joinpath(pwd(), "author_overrides.json"))
+        else
+            normpath(joinpath(homedir(), ".reposmx", "author_overrides.json"))
         end
     end
 end

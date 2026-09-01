@@ -389,6 +389,7 @@ function build_authors_index_data(all_docs::Vector{Dict{String, Any}})
         doc_title = get(doc, "title", "")
         doc_desc = get(doc, "description", "")
         doc_keywords = get(doc, "keywords", String[])
+        doc_publisher = strip(get(doc, "publisher", ""))
         creators = get(doc, "creators", String[])
         contributors = get(doc, "contributors", String[])
         refs = get(doc, "references", Dict{String, Any}[])
@@ -403,6 +404,7 @@ function build_authors_index_data(all_docs::Vector{Dict{String, Any}})
                 "doc_count" => 0,
                 "doc_ids" => String[],
                 "repos" => Set{String}(),
+                "institutions" => Set{String}(),
                 "coauthors" => Set{String}(),
                 "keywords" => Set{String}(),
                 "topic_texts" => String[],
@@ -411,6 +413,8 @@ function build_authors_index_data(all_docs::Vector{Dict{String, Any}})
             entry["doc_count"] += 1
             push!(entry["doc_ids"], doc_id)
             push!(entry["repos"], repo)
+            isempty(repo) || push!(entry["institutions"], repo)
+            isempty(doc_publisher) || push!(entry["institutions"], doc_publisher)
             length(entry["topic_texts"]) < 10 && push!(entry["topic_texts"], doc_summary)
             for kw in doc_keywords
                 length(entry["keywords"]) < 30 && push!(entry["keywords"], kw)
@@ -430,6 +434,7 @@ function build_authors_index_data(all_docs::Vector{Dict{String, Any}})
                 "doc_count" => 0,
                 "doc_ids" => String[],
                 "repos" => Set{String}(),
+                "institutions" => Set{String}(),
                 "coauthors" => Set{String}(),
                 "keywords" => Set{String}(),
                 "topic_texts" => String[],
@@ -438,6 +443,8 @@ function build_authors_index_data(all_docs::Vector{Dict{String, Any}})
             entry["doc_count"] += 1
             push!(entry["doc_ids"], doc_id)
             push!(entry["repos"], repo)
+            isempty(repo) || push!(entry["institutions"], repo)
+            isempty(doc_publisher) || push!(entry["institutions"], doc_publisher)
             length(entry["topic_texts"]) < 10 && push!(entry["topic_texts"], doc_summary)
             for kw in doc_keywords
                 length(entry["keywords"]) < 30 && push!(entry["keywords"], kw)
@@ -454,23 +461,20 @@ function build_authors_index_data(all_docs::Vector{Dict{String, Any}})
     profiles = Dict{String, Any}[]
     for (_, v) in author_map
         topic_sample = v["topic_texts"][1:min(10, length(v["topic_texts"]))]
-        topic_str = join(topic_sample, " \n ")
-        if length(topic_str) > 4000
-            topic_str = first(topic_str, 4000)
-        end
-        
+
         all_refs = collect(Set(v["cited_references"]))
         ref_sample = all_refs[1:min(30, length(all_refs))]
-        
+
         push!(profiles, Dict(
             "name" => v["name"],
             "role" => v["role"],
             "doc_count" => v["doc_count"],
             "doc_ids" => v["doc_ids"],
             "repos" => sort(collect(v["repos"])),
+            "institutions" => sort(collect(v["institutions"])),
             "coauthors" => collect(v["coauthors"])[1:min(15, length(v["coauthors"]))],
             "keywords" => collect(v["keywords"])[1:min(20, length(v["keywords"]))],
-            "topic_text" => topic_str,
+            "topic_texts" => topic_sample,
             "cited_references" => ref_sample
         ))
     end

@@ -1,10 +1,56 @@
 using Test
 using ReposMx
-using ReposMx: LazyBM25, IndexShellIO, VocabIO
+using ReposMx: LazyBM25, IndexShellIO, VocabIO, AuthorConsolidation
 using RocksDB
 using SimilaritySearch, TextSearch
 
 @testset "ReposMx Tests" begin
+    @testset "AuthorConsolidation (clustering + overrides, isolated)" begin
+        # Guards the graph-based clustering that groups raw author profiles into consolidated
+        # ones: full-name matches, initials-vs-full-name matches (the whole reason for the
+        # initials key), and human overrides (merge forces an edge the auto-key can't find;
+        # split removes one the auto-key would otherwise create) — see AuthorConsolidation.jl.
+        mk(name) = Dict{String,Any}("name" => name, "doc_count" => 1)
+
+        names = ["Juan Perez Gonzalez", "J. Perez Gonzalez", "JUAN PEREZ GONZALEZ",
+                  "Ana Ruiz", "A. Ruiz",
+                  "Pedro Soto", "Maria Soto"]  # last two share no key at all -> must stay separate
+
+        no_overrides = (merges=Vector{Vector{String}}(), splits=Vector{Tuple{String,String}}())
+        groups = AuthorConsolidation.compute_groups(names, no_overrides)
+        by_first = Dict(sort(g)[1] => sort(g) for g in groups)
+
+        @test by_first["J. Perez Gonzalez"] == sort(["Juan Perez Gonzalez", "J. Perez Gonzalez", "JUAN PEREZ GONZALEZ"])
+        @test by_first["A. Ruiz"] == sort(["Ana Ruiz", "A. Ruiz"])
+        @test any(g -> g == ["Pedro Soto"], groups)
+        @test any(g -> g == ["Maria Soto"], groups)
+
+        # merge: force two names together that share no automatic key at all
+        merge_overrides = (merges=[["Pedro Soto", "Maria Soto"]], splits=Tuple{String,String}[])
+        merged_groups = AuthorConsolidation.compute_groups(names, merge_overrides)
+        @test any(g -> sort(g) == ["Maria Soto", "Pedro Soto"], merged_groups)
+
+        # split: break an automatic match apart (isolated pair, no third name bridging them
+        # transitively — with one in `names` this would stay connected via "JUAN PEREZ GONZALEZ",
+        # which is the real, documented limit of a single pairwise split, not a bug)
+        split_names = ["Carla Nunez", "C. Nunez"]
+        no_overrides_2 = (merges=Vector{Vector{String}}(), splits=Tuple{String,String}[])
+        @test length(AuthorConsolidation.compute_groups(split_names, no_overrides_2)) == 1
+
+        split_overrides = (merges=Vector{Vector{String}}(), splits=[("Carla Nunez", "C. Nunez")])
+        split_groups = AuthorConsolidation.compute_groups(split_names, split_overrides)
+        @test length(split_groups) == 2
+        @test !any(g -> "Carla Nunez" in g && "C. Nunez" in g, split_groups)
+
+        # round-trip through the TOML corpus on disk
+        by_name = Dict(n => mk(n) for n in names)
+        tmpdir = mktempdir()
+        n = AuthorConsolidation.build_and_persist([by_name[n] for n in names], tmpdir)
+        reloaded = AuthorConsolidation.load_all(tmpdir)
+        @test length(reloaded) == n
+        @test sum(p["doc_count"] for p in reloaded) == length(names)
+    end
+
     @testset "IndexShellIO round-trip (bm25/doclens/len/query, isolated)" begin
         # Guards the JSON3/zip replacement for what used to be a JLD2 jldsave/load round-trip
         # (see IndexShellIO's docstring): BM25Scorer's Float32 fields, QueryPipeline's

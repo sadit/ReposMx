@@ -8,6 +8,8 @@ using ..Storage: load_metadata_records, load_corpus_records, list_repo_names, ge
 export Database, open_database, close_database,
        put_document!, get_document, scan_documents, put_xml!, get_xml,
        put_author_profile!, get_author_profile, get_author_documents, get_coauthors, normalize_author_name,
+       put_consolidated_profile!, get_consolidated_profile, get_consolidated_id_for_raw,
+       get_author_documents_for_group, get_coauthors_for_group,
        put_reference!, get_reference, get_document_references, get_documents_citing_author,
        put_topics!, get_topic_docs, get_topic_authors, intersect_topic_repo_docs, intersect_topic_repo_authors,
        put_facets!, scan_facet, get_documents_by_year, get_documents_by_type, get_documents_by_repo, get_documents_by_keyword,
@@ -17,7 +19,7 @@ export Database, open_database, close_database,
        DEFAULT_ROCKSDB_DIR, rocksdb_handle, compact_all!
 
 const DEFAULT_ROCKSDB_DIR = joinpath(DEFAULT_DATA_DIR, "rocksdb")
-const COLUMN_FAMILIES = ["default", "authors", "references", "topics", "fulltext", "stats", "postings", "docvecs", "dockeys", "authorkeys"]
+const COLUMN_FAMILIES = ["default", "authors", "references", "topics", "fulltext", "stats", "postings", "docvecs", "dockeys", "authorkeys", "consolidated_authors"]
 
 """
     Database
@@ -327,14 +329,18 @@ end
 """
     add_coauthor_link!(db::Database, norm_a, norm_b; count=1, batch=nothing)
 
-Records an edge in the coauthorship graph.
+Records an edge in the coauthorship graph, accumulating `count` into whatever is already stored
+for this pair (read-before-write) rather than overwriting it — two authors who coauthor 10
+documents must end up with count=10, not count=1 from whichever call happened to run last.
 """
 function add_coauthor_link!(d::Database, norm_a::AbstractString, norm_b::AbstractString; count::Int=1, batch=nothing)
     a = normalize_author_name(norm_a)
     b = normalize_author_name(norm_b)
     a == b && return
     k = "coauth:$a:$b"
-    v = string(count)
+    existing = get(d.db, k; cf="authors")
+    new_count = (existing === nothing ? 0 : parse(Int, String(existing))) + count
+    v = string(new_count)
     if batch !== nothing
         put!(batch, k, v; cf=d.cfs["authors"])
     else
@@ -365,6 +371,94 @@ function get_coauthors(d::Database, norm_author::AbstractString; limit::Int=50)
     
     sort!(coauthors, by=x->x.second, rev=true)
     return coauthors
+end
+
+"""
+    put_consolidated_profile!(db::Database, profile::AbstractDict; batch=nothing)
+
+Persists a consolidated author profile (see `AuthorConsolidation`) in the `consolidated_authors`
+column family, keyed by its own `consolidated_id`, plus a reverse lookup from each of its
+`raw_names` back to that id — the raw profiles themselves (`auth:`, in the `authors` CF) are
+never touched by this; consolidation is purely an additional layer on top.
+"""
+function put_consolidated_profile!(d::Database, profile::AbstractDict; batch=nothing)
+    cid = profile["consolidated_id"]
+    k = "cons:$cid"
+    v = JSON.json(profile)
+    if batch !== nothing
+        put!(batch, k, v; cf=d.cfs["consolidated_authors"])
+        for raw in profile["raw_names"]
+            put!(batch, "raw2cons:$(normalize_author_name(raw))", cid; cf=d.cfs["consolidated_authors"])
+        end
+    else
+        put!(d.db, k, v; cf="consolidated_authors")
+        for raw in profile["raw_names"]
+            put!(d.db, "raw2cons:$(normalize_author_name(raw))", cid; cf="consolidated_authors")
+        end
+    end
+end
+
+"""
+    get_consolidated_profile(db::Database, consolidated_id::AbstractString)
+
+Retrieves a consolidated author profile by its `consolidated_id`.
+"""
+function get_consolidated_profile(d::Database, consolidated_id::AbstractString)
+    val = get(d.db, "cons:$consolidated_id"; cf="consolidated_authors")
+    val === nothing && return nothing
+    return try JSON.parse(String(val)) catch; nothing end
+end
+
+"""
+    get_consolidated_id_for_raw(db::Database, raw_name::AbstractString)
+
+Looks up which consolidated group a raw author name belongs to, or `nothing` if it hasn't been
+clustered (e.g. the index hasn't been rebuilt since this raw name first appeared).
+"""
+function get_consolidated_id_for_raw(d::Database, raw_name::AbstractString)
+    val = get(d.db, "raw2cons:$(normalize_author_name(raw_name))"; cf="consolidated_authors")
+    return val === nothing ? nothing : String(val)
+end
+
+"""
+    get_author_documents_for_group(db::Database, raw_names::AbstractVector{<:AbstractString}; limit::Int=500)
+
+`get_author_documents` for every raw name in a consolidated group, merged. A consolidated author's
+"my documents" view has to union across all its raw variants — `auth_doc:` links stay keyed by
+the individual raw (normalized) names, never by `consolidated_id`.
+"""
+function get_author_documents_for_group(d::Database, raw_names::AbstractVector; limit::Int=500)
+    results = Dict{String, Any}[]
+    seen = Set{Tuple{String,String}}()
+    for raw in raw_names
+        for doc in get_author_documents(d, raw; limit)
+            key = (doc["repo"], doc["doc_id"])
+            key in seen && continue
+            push!(seen, key)
+            push!(results, doc)
+        end
+    end
+    return results
+end
+
+"""
+    get_coauthors_for_group(db::Database, raw_names::AbstractVector{<:AbstractString}; limit::Int=50)
+
+`get_coauthors` for every raw name in a consolidated group, with counts summed across raw variants
+(excluding coauthor keys that are themselves raw names inside this same group — those would be
+"coauthored with yourself under another spelling").
+"""
+function get_coauthors_for_group(d::Database, raw_names::AbstractVector; limit::Int=50)
+    own_keys = Set(normalize_author_name(r) for r in raw_names)
+    totals = Dict{String, Int}()
+    for raw in raw_names
+        for (coauth, cnt) in get_coauthors(d, raw; limit=typemax(Int))
+            coauth in own_keys && continue
+            totals[coauth] = get(totals, coauth, 0) + cnt
+        end
+    end
+    ranked = sort(collect(totals); by=x -> x.second, rev=true)
+    return ranked[1:min(limit, length(ranked))]
 end
 
 # ====================================================================

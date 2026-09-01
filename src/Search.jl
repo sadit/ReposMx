@@ -5,6 +5,8 @@ using ..Types: SearchHit, SearchResponse, AuthorProfile, ParagraphHit, Reference
 using ..Config: DEFAULT_INDEX_DIR, DEFAULT_DATA_DIR
 import ..DB: get_author_documents, get_coauthors, get_document_references
 using ..DB: Database, open_database, close_database, get_document, scan_documents, get_author_profile,
+            get_consolidated_profile, get_consolidated_id_for_raw,
+            get_author_documents_for_group, get_coauthors_for_group,
             get_reference, get_topic_docs, get_topic_authors,
             intersect_topic_repo_docs, intersect_topic_repo_authors, normalize_author_name,
             get_documents_citing_author, put_stats!, get_stats, compute_detailed_statistics
@@ -225,6 +227,32 @@ function query_index(
 end
 
 """
+    resolve_consolidated_profile(engine::SearchEngine, author_name_or_norm::AbstractString)
+
+Resolves a name (a raw author string, or anything close to one) to its consolidated profile.
+`engine.author_keys` holds opaque `consolidated_id`s now (see `AuthorConsolidation`), not
+normalized names, so there is no longer a name substring to match against them directly — first
+tries an exact raw-name lookup (`get_consolidated_id_for_raw`), and only if that misses falls back
+to the top hit of the `authors_name` BM25 index itself (which is exactly what it exists for:
+resolving an imprecise or partial name to the right author).
+"""
+function resolve_consolidated_profile(engine::SearchEngine, author_name_or_norm::AbstractString)
+    engine.db === nothing && return nothing
+    cid = get_consolidated_id_for_raw(engine.db, author_name_or_norm)
+    profile = cid === nothing ? nothing : get_consolidated_profile(engine.db, cid)
+    profile !== nothing && return profile
+
+    ensure_authors_loaded!(engine)
+    (engine.authors_name_invfile === nothing || isempty(engine.author_keys)) && return nothing
+    ctx = InvertedFileContext()
+    res = search(engine.authors_name_invfile, ctx, author_name_or_norm, knnqueue(ctx, 1))
+    isempty(res) && return nothing
+    idx = first(res).id
+    (idx < 1 || idx > length(engine.author_keys)) && return nothing
+    return get_consolidated_profile(engine.db, engine.author_keys[idx])
+end
+
+"""
     search_authors(engine::SearchEngine, author_query::AbstractString; top::Int=10, repo::Union{String, Nothing}=nothing)
 
 Searches researcher and advisor profiles by name using the `authors_name_bm25` index.
@@ -251,9 +279,9 @@ function search_authors(engine::SearchEngine, author_query::AbstractString; top:
         for item in res
             idx = item.id
             (idx < 1 || idx > length(engine.author_keys)) && continue
-            norm_name = engine.author_keys[idx]
+            cid = engine.author_keys[idx]
 
-            auth = engine.db !== nothing ? get_author_profile(engine.db, norm_name) : nothing
+            auth = engine.db !== nothing ? get_consolidated_profile(engine.db, cid) : nothing
             auth === nothing && continue
 
             # Post-filter by repo
@@ -264,7 +292,7 @@ function search_authors(engine::SearchEngine, author_query::AbstractString; top:
 
             push!(results, Dict(
                 "name" => auth["name"],
-                "norm_name" => norm_name,
+                "consolidated_id" => cid,
                 "role" => get(auth, "role", "Autor"),
                 "doc_count" => get(auth, "doc_count", 1),
                 "repos" => auth_repos,
@@ -306,22 +334,13 @@ function find_similar_authors_by_profile(engine::SearchEngine, author_name_or_no
     end
     
     t0 = time()
-    norm_target = normalize_author_name(author_name_or_norm)
-    target_author = engine.db !== nothing ? get_author_profile(engine.db, norm_target) : nothing
-    
-    if target_author === nothing
-        # Try finding by loose name in author_keys
-        idx = findfirst(k -> occursin(norm_target, k) || occursin(k, norm_target), engine.author_keys)
-        if idx !== nothing
-            norm_target = engine.author_keys[idx]
-            target_author = get_author_profile(engine.db, norm_target)
-        end
-    end
-    
+    target_author = resolve_consolidated_profile(engine, author_name_or_norm)
+
     if target_author === nothing
         return Dict("author" => author_name_or_norm, "total_hits" => 0, "similar_authors" => [], "time_ms" => 0.0, "error" => "Autor no encontrado en el acervo")
     end
-    
+
+    target_cid = target_author["consolidated_id"]
     target_name = get(target_author, "name", author_name_or_norm)
     kws = get(target_author, "keywords", String[])
     topics = get(target_author, "topic_texts", String[])
@@ -337,27 +356,27 @@ function find_similar_authors_by_profile(engine::SearchEngine, author_name_or_no
     for item in res
         idx = item.id
         (idx < 1 || idx > length(engine.author_keys)) && continue
-        cand_norm = engine.author_keys[idx]
-        cand_norm == norm_target && continue
-        
-        cand_auth = engine.db !== nothing ? get_author_profile(engine.db, cand_norm) : nothing
+        cand_cid = engine.author_keys[idx]
+        cand_cid == target_cid && continue
+
+        cand_auth = engine.db !== nothing ? get_consolidated_profile(engine.db, cand_cid) : nothing
         cand_auth === nothing && continue
-        
+
         cand_repos = get(cand_auth, "repos", String[])
         if repo !== nothing && !isempty(repo) && !(repo in cand_repos)
             continue
         end
-        
+
         push!(results, Dict(
-            "name" => get(cand_auth, "name", cand_norm),
-            "norm_name" => cand_norm,
+            "name" => get(cand_auth, "name", cand_cid),
+            "consolidated_id" => cand_cid,
             "role" => get(cand_auth, "role", "Autor"),
             "doc_count" => get(cand_auth, "doc_count", 1),
             "repos" => cand_repos,
             "keywords" => get(cand_auth, "keywords", String[]),
             "score" => -item.dist
         ))
-        
+
         length(results) >= top && break
     end
     
@@ -538,17 +557,17 @@ Retrieves all publications registered for an author from RocksDB.
 """
 function get_author_documents(engine::SearchEngine, author_name_or_norm::AbstractString; limit::Int=100)
     engine.db === nothing && return Dict("error" => "Base de datos no disponible", "documents" => [])
-    norm_name = normalize_author_name(author_name_or_norm)
-    profile = get_author_profile(engine.db, norm_name)
-    
-    doc_entries = get_author_documents(engine.db, norm_name; limit)
+    profile = resolve_consolidated_profile(engine, author_name_or_norm)
+    profile === nothing && return Dict("error" => "Autor no encontrado en el acervo", "documents" => [])
+
+    doc_entries = get_author_documents_for_group(engine.db, profile["raw_names"]; limit)
     docs = Dict{String, Any}[]
-    
+
     for de in doc_entries
         repo = get(de, "repo", "")
         doc_id = get(de, "doc_id", "")
         (isempty(repo) || isempty(doc_id)) && continue
-        
+
         doc = get_document(engine.db, repo, doc_id)
         if doc !== nothing
             # get_document returns a read-only JSON3.Object; copy into a mutable Dict before
@@ -558,10 +577,10 @@ function get_author_documents(engine::SearchEngine, author_name_or_norm::Abstrac
             push!(docs, doc_dict)
         end
     end
-    
+
     return Dict(
-        "author" => profile !== nothing ? profile["name"] : author_name_or_norm,
-        "norm_name" => norm_name,
+        "author" => profile["name"],
+        "consolidated_id" => profile["consolidated_id"],
         "total_documents" => length(docs),
         "documents" => docs
     )
@@ -570,12 +589,14 @@ end
 """
     get_coauthors(engine::SearchEngine, author_name_or_norm::AbstractString; limit::Int=50)
 
-Retrieves coauthors and collaboration frequencies from RocksDB.
+Retrieves coauthors and collaboration frequencies from RocksDB, aggregated across every raw name
+variant in the resolved author's consolidated group.
 """
 function get_coauthors(engine::SearchEngine, author_name_or_norm::AbstractString; limit::Int=50)
     engine.db === nothing && return Pair{String, Int}[]
-    norm_name = normalize_author_name(author_name_or_norm)
-    return get_coauthors(engine.db, norm_name; limit)
+    profile = resolve_consolidated_profile(engine, author_name_or_norm)
+    profile === nothing && return Pair{String, Int}[]
+    return get_coauthors_for_group(engine.db, profile["raw_names"]; limit)
 end
 
 """
@@ -588,61 +609,54 @@ network visualization.
 function get_author_network(engine::SearchEngine, author_name_or_norm::AbstractString; limit_coauthors::Int=15, limit_citations::Int=15)
     engine.db === nothing && return Dict("error" => "Base de datos no disponible", "nodes" => [], "edges" => [])
 
-    norm_target = normalize_author_name(author_name_or_norm)
-    target_profile = get_author_profile(engine.db, norm_target)
-
-    if target_profile === nothing
-        ensure_authors_loaded!(engine)
-        idx = findfirst(k -> occursin(norm_target, k) || occursin(k, norm_target), engine.author_keys)
-        if idx !== nothing
-            norm_target = engine.author_keys[idx]
-            target_profile = get_author_profile(engine.db, norm_target)
-        end
-    end
-
+    target_profile = resolve_consolidated_profile(engine, author_name_or_norm)
     target_profile === nothing && return Dict("error" => "Autor no encontrado en el acervo", "nodes" => [], "edges" => [])
 
+    target_cid = target_profile["consolidated_id"]
     target_name = get(target_profile, "name", author_name_or_norm)
+    own_raw_keys = Set(normalize_author_name(r) for r in target_profile["raw_names"])
 
     nodes = Dict{String, Dict{String, Any}}()
-    nodes[norm_target] = Dict("id" => norm_target, "name" => target_name, "kind" => "target")
+    nodes[target_cid] = Dict("id" => target_cid, "name" => target_name, "kind" => "target")
 
     edges = Dict{Tuple{String, String, String}, Int}()
 
-    # Coauthorship edges
-    for (coauth_norm, cnt) in get_coauthors(engine.db, norm_target; limit=limit_coauthors)
+    # Coauthorship edges, aggregated across every raw name variant in the target's group
+    for (coauth_norm, cnt) in get_coauthors_for_group(engine.db, target_profile["raw_names"]; limit=limit_coauthors)
         if !haskey(nodes, coauth_norm)
             cand = get_author_profile(engine.db, coauth_norm)
             cand_name = cand !== nothing ? get(cand, "name", coauth_norm) : coauth_norm
             nodes[coauth_norm] = Dict("id" => coauth_norm, "name" => cand_name, "kind" => "coauthor")
         end
-        key = (coauth_norm, norm_target, "coauthor")
+        key = (coauth_norm, target_cid, "coauthor")
         edges[key] = get(edges, key, 0) + cnt
     end
 
-    # Citation edges: authors of documents that cite the target author
+    # Citation edges: authors of documents that cite the target author, aggregated across raw variants
     citer_count = 0
-    for entry in get_documents_citing_author(engine.db, norm_target; limit=limit_citations * 4)
-        loc = get(entry, "cited_in", "")
-        parts = split(loc, ":"; limit=2)
-        length(parts) != 2 && continue
-        citing_repo, citing_doc_id = parts[1], parts[2]
-        (isempty(citing_repo) || isempty(citing_doc_id)) && continue
+    for raw in target_profile["raw_names"]
+        for entry in get_documents_citing_author(engine.db, raw; limit=limit_citations * 4)
+            loc = get(entry, "cited_in", "")
+            parts = split(loc, ":"; limit=2)
+            length(parts) != 2 && continue
+            citing_repo, citing_doc_id = parts[1], parts[2]
+            (isempty(citing_repo) || isempty(citing_doc_id)) && continue
 
-        doc = get_document(engine.db, citing_repo, citing_doc_id)
-        doc === nothing && continue
+            doc = get_document(engine.db, citing_repo, citing_doc_id)
+            doc === nothing && continue
 
-        for creator in get(doc, "creators", String[])
-            citer_norm = normalize_author_name(creator)
-            (citer_norm == norm_target || isempty(citer_norm)) && continue
+            for creator in get(doc, "creators", String[])
+                citer_norm = normalize_author_name(creator)
+                (citer_norm in own_raw_keys || isempty(citer_norm)) && continue
 
-            if !haskey(nodes, citer_norm)
-                citer_count >= limit_citations && continue
-                nodes[citer_norm] = Dict("id" => citer_norm, "name" => creator, "kind" => "citer")
-                citer_count += 1
+                if !haskey(nodes, citer_norm)
+                    citer_count >= limit_citations && continue
+                    nodes[citer_norm] = Dict("id" => citer_norm, "name" => creator, "kind" => "citer")
+                    citer_count += 1
+                end
+                key = (citer_norm, target_cid, "cites")
+                edges[key] = get(edges, key, 0) + 1
             end
-            key = (citer_norm, norm_target, "cites")
-            edges[key] = get(edges, key, 0) + 1
         end
     end
 
@@ -650,7 +664,7 @@ function get_author_network(engine::SearchEngine, author_name_or_norm::AbstractS
 
     return Dict(
         "target_author" => target_name,
-        "target_norm" => norm_target,
+        "target_norm" => target_cid,
         "nodes" => collect(values(nodes)),
         "edges" => edges_list
     )

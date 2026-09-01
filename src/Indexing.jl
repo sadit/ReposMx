@@ -9,12 +9,14 @@ using ..TextModel: TextProfile, create_bilingual_profile, get_or_create_bilingua
                     refit_bilingual_profile, create_bilingual_textconfig, save_profile, load_profile
 using ..DB: Database, open_database, close_database, put_document!, put_author_profile!, put_topics!,
             put_reference!, set_document_references!, link_author_document!, add_coauthor_link!,
-            normalize_author_name, rocksdb_handle, compact_all!, precompute_all_statistics!
+            normalize_author_name, rocksdb_handle, compact_all!, precompute_all_statistics!,
+            put_consolidated_profile!
 using ..LazyBM25: export_to_rocksdb!, assemble_bm25,
                   LazyDocKeys, LazyAuthorKeys, export_dockeys_to_rocksdb!, export_authorkeys_to_rocksdb!,
                   DOCS_CONTENT, DOCS_REFS, AUTHORS_NAME, AUTHORS_PROFILE
 using ..VocabIO: save_vocabulary_zip, load_vocabulary_zip
 using ..IndexShellIO: save_index_shell_zip, load_index_shell_zip
+using ..AuthorConsolidation: build_and_persist, load_all, AUTHOR_NAME_CONFIG
 
 export build_search_index,
        load_docs_content_index, load_docs_refs_index,
@@ -134,6 +136,7 @@ function build_search_index(;
                 "date" => get(doc, "date", ""),
                 "description" => get(doc, "description", ""),
                 "subject" => get(doc, "subject", ""),
+                "publisher" => get(doc, "publisher", ""),
                 "keywords" => get(doc, "keywords", String[]),
                 "type" => get(doc, "type", "Documento"),
                 "references" => doc_refs,
@@ -261,18 +264,30 @@ function build_search_index(;
         println("Saved Index 2: docs_refs_shell.zip + docs_refs_vocab.zip (postings/docvecs in RocksDB)")
 
         # -------------------------------------------------------------
+        # 3+4. Cluster raw authors_data into consolidated profiles first — both BM25 author
+        # indices below run over the consolidated corpus, not over authors_data directly (raw
+        # profiles stay raw in RocksDB; see AuthorConsolidation.jl for why and how).
+        # -------------------------------------------------------------
+        println("Clustering raw author profiles into consolidated profiles...")
+        n_groups = build_and_persist(authors_data, index_dir)
+        consolidated = load_all(index_dir)
+        println("  $(length(authors_data)) raw profiles -> $(n_groups) consolidated profiles")
+        for profile in consolidated
+            put_consolidated_profile!(db, profile)
+        end
+
+        # -------------------------------------------------------------
         # 3. Index 3: Authors by Name (authors_name_shell.zip)
         # -------------------------------------------------------------
         println("Building BM25 for Authors by Name...")
-        authors_names = [a["name"] for a in authors_data]
-        author_keys = [normalize_author_name(a["name"]) for a in authors_data]
+        authors_names = ["$(a["name"]) . $(a["name_initials_form"])" for a in consolidated]
+        author_keys = [a["consolidated_id"] for a in consolidated]
 
         # author_keys is shared by authors_name_invfile and authors_profile_invfile (both
-        # built from `authors_data` in the same order), so it is exported once here.
+        # built from `consolidated` in the same order), so it is exported once here.
         export_authorkeys_to_rocksdb!(rdb, author_keys)
 
-        auth_name_config = TextConfig(del_diac=true, del_punc=true, lc=true, nlist=[1])
-        auth_name_voc = Vocabulary(auth_name_config, authors_names)
+        auth_name_voc = Vocabulary(AUTHOR_NAME_CONFIG, authors_names)
         authors_name_invfile = BM25InvertedFile(auth_name_voc)
         ctx3 = InvertedFileContext()
         append_items!(authors_name_invfile, ctx3, authors_names)
@@ -291,7 +306,7 @@ function build_search_index(;
         println("Building BM25 for Authors by Semantic Profile & References...")
         authors_profile_texts = [
             "$(a["name"]) . $(join(get(a, "keywords", []), " , ")) . $(join(get(a, "topic_texts", []), " \n ")) . $(join(get(a, "cited_references", []), " \n "))"
-            for a in authors_data
+            for a in consolidated
         ]
 
         authors_profile_voc = Vocabulary(refitted_profile.model.voc.textconfig, authors_profile_texts)
