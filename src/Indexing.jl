@@ -18,7 +18,7 @@ using ..VocabIO: save_vocabulary_zip, load_vocabulary_zip
 using ..IndexShellIO: save_index_shell_zip, load_index_shell_zip
 using ..AuthorConsolidation: build_and_persist, load_all, AUTHOR_NAME_CONFIG
 
-export build_search_index,
+export build_search_index, rebuild_authors_index,
        load_docs_content_index, load_docs_refs_index,
        load_authors_name_index, load_authors_profile_index,
        search_document_in_depth, extract_index_text
@@ -84,47 +84,41 @@ function extract_index_text(doc::Dict)
 end
 
 """
-    build_search_index(; data_dir=DEFAULT_DATA_DIR, index_dir=DEFAULT_INDEX_DIR, repos=nothing, max_docs=nothing)
+    _collect_documents(; data_dir, repos, max_docs)
 
-Builds the 4 segregated homogeneous BM25 search indices (vocabulary + shell as JSON/zip,
-postings/doc-vectors in RocksDB — see `VocabIO`, `IndexShellIO`, `LazyBM25`), and populates the
-RocksDB database with all metadata, author profiles, and references.
+Shared by `build_search_index` and `rebuild_authors_index`: scans `corpus.jsonl` for the target
+repos and returns `(all_docs, docs_content_texts, docs_refs_texts, doc_keys)`. Not the expensive
+part of indexing (no tokenization happens here) — safe to redo standalone.
 """
-function build_search_index(;
-    data_dir=DEFAULT_DATA_DIR,
-    index_dir=DEFAULT_INDEX_DIR,
-    repos::Union{Vector{String}, Nothing}=nothing,
-    max_docs::Union{Int, Nothing}=nothing
-)
-    mkpath(index_dir)
+function _collect_documents(; data_dir=DEFAULT_DATA_DIR, repos::Union{Vector{String}, Nothing}=nothing,
+                              max_docs::Union{Int, Nothing}=nothing)
     target_repos = repos !== nothing ? repos : list_repo_names(; data_dir)
-    
     println("Collecting structured documents from $(length(target_repos)) repositories...")
-    
+
     all_docs = Dict{String, Any}[]
     docs_content_texts = String[]
     docs_refs_texts = String[]
     doc_keys = Tuple{String, String}[]
-    
+
     for r in target_repos
         corpus_path = joinpath(get_repo_dir(r; data_dir), "corpus.jsonl")
         if !isfile(corpus_path)
             build_repository_corpus(r; data_dir)
         end
-        
+
         records = load_corpus_records(r; data_dir)
         for doc in records
             max_docs !== nothing && length(all_docs) >= max_docs && break
             stext = extract_index_text(doc)
             isempty(strip(stext)) && continue
-            
+
             repo = get(doc, "repo", r)
             doc_id = get(doc, "id", "")
             isempty(doc_id) && continue
-            
+
             doc_refs = get(doc, "references", Dict{String, Any}[])
             ref_texts = [get(ref, "text", "") for ref in doc_refs]
-            
+
             clean_doc = Dict(
                 "id" => doc_id,
                 "repo" => repo,
@@ -145,7 +139,7 @@ function build_search_index(;
                 "fulltext_file" => get(doc, "fulltext_file", nothing),
                 "has_fulltext" => get(doc, "has_fulltext", false)
             )
-            
+
             push!(all_docs, clean_doc)
             push!(docs_content_texts, stext)
             push!(docs_refs_texts, join(ref_texts, " \n "))
@@ -153,10 +147,137 @@ function build_search_index(;
         end
         max_docs !== nothing && length(all_docs) >= max_docs && break
     end
-    
+
     println("Total documents ready for indexing: $(length(all_docs))")
+    return all_docs, docs_content_texts, docs_refs_texts, doc_keys
+end
+
+"""
+    _build_authors_indices!(db, rdb, authors_data, index_dir, name_textconfig) -> Int
+
+Clusters `authors_data` into consolidated profiles, persists them (TOML corpus + RocksDB), and
+builds the `authors_name`/`authors_profile` BM25 indices from that consolidated corpus. Shared by
+`build_search_index` (full rebuild) and `rebuild_authors_index` (authors-only, no re-tokenizing of
+`docs_content`/`docs_refs`) — `name_textconfig` is the bilingual profile's `TextConfig`, needed for
+`authors_profile`'s vocabulary but not otherwise available without a full docs_content refit, so
+callers pass it in (`build_search_index` has it fresh; `rebuild_authors_index` reads it back from
+the already-saved profile on disk). Returns the number of consolidated profiles written.
+"""
+function _build_authors_indices!(db::Database, rdb, authors_data::Vector{<:AbstractDict},
+                                  index_dir::AbstractString, name_textconfig)
+    println("Clustering raw author profiles into consolidated profiles...")
+    n_groups = build_and_persist(authors_data, index_dir)
+    consolidated = load_all(index_dir)
+    println("  $(length(authors_data)) raw profiles -> $(n_groups) consolidated profiles")
+    for profile in consolidated
+        put_consolidated_profile!(db, profile)
+    end
+
+    println("Building BM25 for Authors by Name...")
+    authors_names = ["$(a["name"]) . $(a["name_initials_form"])" for a in consolidated]
+    author_keys = [a["consolidated_id"] for a in consolidated]
+
+    # author_keys is shared by authors_name_invfile and authors_profile_invfile (both
+    # built from `consolidated` in the same order), so it is exported once here.
+    export_authorkeys_to_rocksdb!(rdb, author_keys)
+
+    auth_name_voc = Vocabulary(AUTHOR_NAME_CONFIG, authors_names)
+    authors_name_invfile = BM25InvertedFile(auth_name_voc)
+    ctx3 = InvertedFileContext()
+    append_items!(authors_name_invfile, ctx3, authors_names)
+
+    export_to_rocksdb!(rdb, AUTHORS_NAME, authors_name_invfile)
+    save_vocabulary_zip(joinpath(index_dir, "authors_name_vocab.zip"), authors_name_invfile.voc)
+    save_index_shell_zip(joinpath(index_dir, "authors_name_shell.zip");
+            bm25=authors_name_invfile.bm25,
+            doclens=authors_name_invfile.doclens, len=authors_name_invfile.len[],
+            query=authors_name_invfile.query)
+    println("Saved Index 3: authors_name_shell.zip + authors_name_vocab.zip (postings/docvecs in RocksDB)")
+
+    println("Building BM25 for Authors by Semantic Profile & References...")
+    authors_profile_texts = [
+        "$(a["name"]) . $(join(get(a, "keywords", []), " , ")) . $(join(get(a, "topic_texts", []), " \n ")) . $(join(get(a, "cited_references", []), " \n "))"
+        for a in consolidated
+    ]
+
+    authors_profile_voc = Vocabulary(name_textconfig, authors_profile_texts)
+    authors_profile_invfile = BM25InvertedFile(authors_profile_voc)
+    ctx4 = InvertedFileContext()
+    append_items!(authors_profile_invfile, ctx4, authors_profile_texts)
+
+    export_to_rocksdb!(rdb, AUTHORS_PROFILE, authors_profile_invfile)
+    save_vocabulary_zip(joinpath(index_dir, "authors_profile_vocab.zip"), authors_profile_invfile.voc)
+    save_index_shell_zip(joinpath(index_dir, "authors_profile_shell.zip");
+            bm25=authors_profile_invfile.bm25,
+            doclens=authors_profile_invfile.doclens, len=authors_profile_invfile.len[],
+            query=authors_profile_invfile.query)
+    println("Saved Index 4: authors_profile_shell.zip + authors_profile_vocab.zip (postings/docvecs in RocksDB)")
+
+    return n_groups
+end
+
+"""
+    rebuild_authors_index(; data_dir=DEFAULT_DATA_DIR, index_dir=DEFAULT_INDEX_DIR, repos=nothing, max_docs=nothing)
+
+Re-runs author clustering and rebuilds only `authors_name`/`authors_profile` — not
+`docs_content`/`docs_refs`, which is the expensive part of `build_search_index` (re-tokenizing the
+whole document corpus). Meant to be re-run cheaply after editing `author_overrides.json`: overrides
+only change grouping, and grouping only affects these two indices. Requires that
+`build_search_index` has already run at least once (reuses its saved bilingual profile from
+`<index_dir>/profile` for `authors_profile`'s vocabulary — this command never refits it).
+"""
+function rebuild_authors_index(;
+    data_dir=DEFAULT_DATA_DIR,
+    index_dir=DEFAULT_INDEX_DIR,
+    repos::Union{Vector{String}, Nothing}=nothing,
+    max_docs::Union{Int, Nothing}=nothing
+)
+    profile_path = joinpath(index_dir, "profile")
+    isdir(profile_path) ||
+        error("No hay un perfil de texto guardado en '$profile_path'. Corre 'reposmx prepare-index' " *
+              "al menos una vez antes de usar 'reposmx consolidate-authors'.")
+    profile = load_profile(profile_path)
+
+    all_docs, _, _, _ = _collect_documents(; data_dir, repos, max_docs)
     isempty(all_docs) && return nothing
-    
+
+    authors_data = build_authors_index_data(all_docs)
+    println("Raw author profiles: $(length(authors_data))")
+
+    db_path = joinpath(data_dir, "rocksdb")
+    db = open_database(db_path; create_if_missing=true)
+    rdb = rocksdb_handle(db)
+    try
+        for a in authors_data
+            put_author_profile!(db, normalize_author_name(a["name"]), a)
+        end
+        n_groups = _build_authors_indices!(db, rdb, authors_data, index_dir, profile.model.voc.textconfig)
+        precompute_all_statistics!(db, n_groups)
+        compact_all!(db)
+        println("Listo: $(length(authors_data)) perfiles raw -> $n_groups consolidados.")
+    finally
+        close_database(db)
+    end
+    return nothing
+end
+
+"""
+    build_search_index(; data_dir=DEFAULT_DATA_DIR, index_dir=DEFAULT_INDEX_DIR, repos=nothing, max_docs=nothing)
+
+Builds the 4 segregated homogeneous BM25 search indices (vocabulary + shell as JSON/zip,
+postings/doc-vectors in RocksDB — see `VocabIO`, `IndexShellIO`, `LazyBM25`), and populates the
+RocksDB database with all metadata, author profiles, and references.
+"""
+function build_search_index(;
+    data_dir=DEFAULT_DATA_DIR,
+    index_dir=DEFAULT_INDEX_DIR,
+    repos::Union{Vector{String}, Nothing}=nothing,
+    max_docs::Union{Int, Nothing}=nothing
+)
+    mkpath(index_dir)
+    all_docs, docs_content_texts, docs_refs_texts, doc_keys = _collect_documents(; data_dir, repos, max_docs)
+    isempty(all_docs) && return nothing
+
     # -------------------------------------------------------------
     # 0. Ingest Documents, Authors, and References to RocksDB
     # -------------------------------------------------------------
@@ -264,63 +385,10 @@ function build_search_index(;
         println("Saved Index 2: docs_refs_shell.zip + docs_refs_vocab.zip (postings/docvecs in RocksDB)")
 
         # -------------------------------------------------------------
-        # 3+4. Cluster raw authors_data into consolidated profiles first — both BM25 author
-        # indices below run over the consolidated corpus, not over authors_data directly (raw
-        # profiles stay raw in RocksDB; see AuthorConsolidation.jl for why and how).
+        # 3+4. Authors by Name / Profile & Citations — clustering + BM25 build shared with
+        # rebuild_authors_index (see _build_authors_indices! docstring).
         # -------------------------------------------------------------
-        println("Clustering raw author profiles into consolidated profiles...")
-        n_groups = build_and_persist(authors_data, index_dir)
-        consolidated = load_all(index_dir)
-        println("  $(length(authors_data)) raw profiles -> $(n_groups) consolidated profiles")
-        for profile in consolidated
-            put_consolidated_profile!(db, profile)
-        end
-
-        # -------------------------------------------------------------
-        # 3. Index 3: Authors by Name (authors_name_shell.zip)
-        # -------------------------------------------------------------
-        println("Building BM25 for Authors by Name...")
-        authors_names = ["$(a["name"]) . $(a["name_initials_form"])" for a in consolidated]
-        author_keys = [a["consolidated_id"] for a in consolidated]
-
-        # author_keys is shared by authors_name_invfile and authors_profile_invfile (both
-        # built from `consolidated` in the same order), so it is exported once here.
-        export_authorkeys_to_rocksdb!(rdb, author_keys)
-
-        auth_name_voc = Vocabulary(AUTHOR_NAME_CONFIG, authors_names)
-        authors_name_invfile = BM25InvertedFile(auth_name_voc)
-        ctx3 = InvertedFileContext()
-        append_items!(authors_name_invfile, ctx3, authors_names)
-
-        export_to_rocksdb!(rdb, AUTHORS_NAME, authors_name_invfile)
-        save_vocabulary_zip(joinpath(index_dir, "authors_name_vocab.zip"), authors_name_invfile.voc)
-        save_index_shell_zip(joinpath(index_dir, "authors_name_shell.zip");
-                bm25=authors_name_invfile.bm25,
-                doclens=authors_name_invfile.doclens, len=authors_name_invfile.len[],
-                query=authors_name_invfile.query)
-        println("Saved Index 3: authors_name_shell.zip + authors_name_vocab.zip (postings/docvecs in RocksDB)")
-
-        # -------------------------------------------------------------
-        # 4. Index 4: Authors by Profile & Citations (authors_profile_shell.zip)
-        # -------------------------------------------------------------
-        println("Building BM25 for Authors by Semantic Profile & References...")
-        authors_profile_texts = [
-            "$(a["name"]) . $(join(get(a, "keywords", []), " , ")) . $(join(get(a, "topic_texts", []), " \n ")) . $(join(get(a, "cited_references", []), " \n "))"
-            for a in consolidated
-        ]
-
-        authors_profile_voc = Vocabulary(refitted_profile.model.voc.textconfig, authors_profile_texts)
-        authors_profile_invfile = BM25InvertedFile(authors_profile_voc)
-        ctx4 = InvertedFileContext()
-        append_items!(authors_profile_invfile, ctx4, authors_profile_texts)
-
-        export_to_rocksdb!(rdb, AUTHORS_PROFILE, authors_profile_invfile)
-        save_vocabulary_zip(joinpath(index_dir, "authors_profile_vocab.zip"), authors_profile_invfile.voc)
-        save_index_shell_zip(joinpath(index_dir, "authors_profile_shell.zip");
-                bm25=authors_profile_invfile.bm25,
-                doclens=authors_profile_invfile.doclens, len=authors_profile_invfile.len[],
-                query=authors_profile_invfile.query)
-        println("Saved Index 4: authors_profile_shell.zip + authors_profile_vocab.zip (postings/docvecs in RocksDB)")
+        n_groups = _build_authors_indices!(db, rdb, authors_data, index_dir, refitted_profile.model.voc.textconfig)
 
         # Clean up legacy .bin files if present
         for bin_f in ["bm25.bin", "docs.bin", "authors.bin", "authors_bm25.bin", "authors_topics_bm25.bin", "references.bin", "references_bm25.bin"]
@@ -331,7 +399,7 @@ function build_search_index(;
         println("All 4 lazy BM25 indices and RocksDB backend successfully built.")
 
         println("Precomputing global and per-repo statistics...")
-        precompute_all_statistics!(db, length(author_keys))
+        precompute_all_statistics!(db, n_groups)
         println("Statistics precomputed.")
 
         println("Compacting RocksDB (reclaims write-ahead logs from this bulk-write session)...")

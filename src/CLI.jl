@@ -6,7 +6,7 @@ using ..OAI: harvest_all, harvest_repository
 using ..Downloader: download_all_files, download_repository_files
 using ..Parser: parse_all_documents, parse_repository_documents
 using ..Corpus: build_all_corpus, build_repository_corpus
-using ..Indexing: build_search_index
+using ..Indexing: build_search_index, rebuild_authors_index
 using ..DB: open_database, close_database, ingest_all_to_db!, get_stats
 using ..Search: SearchEngine, query_index, get_detailed_statistics
 using ..Server: start_server
@@ -39,6 +39,8 @@ SUBCOMANDOS INDIVIDUALES:
   parse [repos...]           Extrae texto estructurado desde los PDFs/documentos
   build-corpus [repos...]    Genera 'corpus.jsonl' fusionando metadatos y texto
   index [repos...]           Construye el índice de búsqueda léxico y semántico
+  consolidate-authors [repos...]  Re-agrupa perfiles de autor (tras editar author_overrides.json),
+                             sin re-tokenizar docs_content/docs_refs
   search "<query>"           Busca directamente en la terminal (BM25 + Wikipedia)
   info [repo]                Estadísticas detalladas de publicaciones, disciplinas y autores
   status                     Muestra estadísticas de cobertura y estado de los repositorios
@@ -323,6 +325,8 @@ function main_cli(args=ARGS)
         Base.invokelatest(build_all_corpus; repos=target_repos)
     elseif cmd == "index"
         Base.invokelatest(build_search_index; repos=target_repos)
+    elseif cmd == "consolidate-authors"
+        Base.invokelatest(rebuild_authors_index; repos=target_repos)
     elseif cmd == "search"
         q = isempty(repos) ? (isempty(subargs) ? "" : subargs[1]) : join(repos, " ")
         if isempty(q)
