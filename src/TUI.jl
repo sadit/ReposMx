@@ -752,11 +752,6 @@ just to open the shell, not only the ones a session actually types. Measured wit
 `--trace-compile-timing`: `launch_interactive_shell` alone accounted for 22.15s of compile time
 before this fix.
 """
-const _REMOVED_GLOBAL_FLAGS = Dict(
-    "/repo" => "--repo <nombre>", "/type" => "--type <tipo>",
-    "/tag" => "--tag <keyword>", "/top" => "--top N (o -k N)", "/wiki" => "--wiki / --no-wiki",
-)
-
 function process_shell_input(state::ShellState, raw_input::AbstractString)::Bool
     input = strip(raw_input)
     isempty(input) && return true
@@ -828,8 +823,6 @@ function process_shell_input(state::ShellState, raw_input::AbstractString)::Bool
         else
             tprintln("{bold red}Uso: /doc-search <consulta_dentro_del_documento> [--top N]{/bold red}\n")
         end
-    elseif cmd in keys(_REMOVED_GLOBAL_FLAGS)
-        tprintln("{bold yellow}'$cmd' ya no existe como filtro de sesión — usa {cyan}$(_REMOVED_GLOBAL_FLAGS[cmd]){/cyan} después del comando que lo necesite (ej. '/author garcia --repo cimat').{/bold yellow}\n")
     elseif cmd == "/doc"
         idx = !isempty(rest) ? tryparse(Int, split(rest)[1]) : nothing
         if idx !== nothing
