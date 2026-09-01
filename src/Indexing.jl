@@ -26,10 +26,19 @@ export build_search_index, rebuild_authors_index,
 # Minimum document frequency for a token to survive in the docs_refs vocabulary. Measured on
 # real data (10-repo subset): min_ndocs=5 cuts vocsize from 849,793 to 148,225 (~83%) while
 # only ~4 documents (out of thousands with real reference text) lose all their searchable
-# content to the pruning. Only docs_refs gets this treatment for now — its vocabulary is
-# uniquely long-tailed (bibliographic text: proper nouns, journal names, DOIs, OCR noise);
-# docs_content/authors_name/authors_profile have not been profiled the same way yet.
+# content to the pruning. docs_refs' vocabulary is uniquely long-tailed (bibliographic text:
+# proper nouns, journal names, DOIs, OCR noise), so it gets a more aggressive threshold than
+# docs_content/authors_profile below.
 const DOCS_REFS_MIN_NDOCS = 5
+
+# Measured on the same 10-repo subset: min_ndocs=3 cuts docs_content from 279,021 to 108,709
+# tokens (61%) and authors_profile from 400,698 to 165,733 (59%), in both cases with 0 documents
+# losing all their searchable content (validated the same way as DOCS_REFS_MIN_NDOCS: built the
+# real BM25InvertedFile and counted doclens==0). authors_name is deliberately left unpruned — it's
+# built from a display-name string plus its initials form, not free text, so there's no long tail
+# to trim and pruning would just delete real name tokens.
+const DOCS_CONTENT_MIN_NDOCS = 3
+const AUTHORS_PROFILE_MIN_NDOCS = 3
 
 """
     extract_index_text(doc::Dict)
@@ -200,7 +209,9 @@ function _build_authors_indices!(db::Database, rdb, authors_data::Vector{<:Abstr
         for a in consolidated
     ]
 
-    authors_profile_voc = Vocabulary(name_textconfig, authors_profile_texts)
+    authors_profile_voc_full = Vocabulary(name_textconfig, authors_profile_texts)
+    authors_profile_voc = filter_tokens(t -> t.ndocs >= AUTHORS_PROFILE_MIN_NDOCS, authors_profile_voc_full)
+    println("  authors_profile vocabulary pruned by min_ndocs=$AUTHORS_PROFILE_MIN_NDOCS: $(vocsize(authors_profile_voc_full)) -> $(vocsize(authors_profile_voc)) tokens")
     authors_profile_invfile = BM25InvertedFile(authors_profile_voc)
     ctx4 = InvertedFileContext()
     append_items!(authors_profile_invfile, ctx4, authors_profile_texts)
@@ -346,8 +357,12 @@ function build_search_index(;
         base_profile = get_or_create_bilingual_base_profile(; verbose=true)
         refitted_profile = refit_bilingual_profile(base_profile, docs_content_texts; verbose=true)
 
-        println("Building BM25 for Documents by Content ($(length(refitted_profile.model.voc)) tokens)...")
-        docs_content_invfile = BM25InvertedFile(refitted_profile.model.voc)
+        docs_content_voc_full = refitted_profile.model.voc
+        docs_content_voc = filter_tokens(t -> t.ndocs >= DOCS_CONTENT_MIN_NDOCS, docs_content_voc_full)
+        println("  docs_content vocabulary pruned by min_ndocs=$DOCS_CONTENT_MIN_NDOCS: $(vocsize(docs_content_voc_full)) -> $(vocsize(docs_content_voc)) tokens")
+
+        println("Building BM25 for Documents by Content ($(vocsize(docs_content_voc)) tokens)...")
+        docs_content_invfile = BM25InvertedFile(docs_content_voc)
         ctx1 = InvertedFileContext()
         append_items!(docs_content_invfile, ctx1, docs_content_texts)
 
