@@ -323,16 +323,46 @@ function search_authors(engine::SearchEngine, author_query::AbstractString; top:
 end
 
 """
-    find_similar_authors_by_profile(engine::SearchEngine, author_name_or_norm::AbstractString; top::Int=10, repo::Union{String, Nothing}=nothing)
+    top_informative_bow(idx, text::AbstractString; top_k_tokens::Int) -> BOW
 
-Finds researchers with similar thematic lines, topics, and bibliography starting from a context author.
+Tokenizes `text` against `idx`'s own vocabulary/query pipeline and keeps only the
+`top_k_tokens` *rarest* tokens (lowest document frequency in `idx.voc`, i.e. highest IDF) —
+the rest are dropped before the query ever reaches `search`.
+
+This exists for the "turn a whole profile/reference-list into a query" pattern
+(`find_similar_authors_by_profile`, `find_similar_documents_by_references`): those queries are
+built from dozens of keywords/topic summaries/references, most of which are common words that
+barely move a BM25 score but still cost a full posting-list evaluation each. IDF is exactly BM25's
+own measure of "how much does this token matter" (`log(N/ndocs)`, monotonic in `ndocs`), so
+keeping the lowest-`ndocs` tokens keeps the ones that actually drive the ranking.
+
+Returns a [`BOW`](@ref) (`Dict{UInt32,Int32}`, vocabulary ids -> presence), which `search` accepts
+directly — no re-tokenization round trip.
 """
-function find_similar_authors_by_profile(engine::SearchEngine, author_name_or_norm::AbstractString; top::Int=10, repo::Union{String, Nothing}=nothing)
+function top_informative_bow(idx, text::AbstractString; top_k_tokens::Int)
+    resolved = query_tokens(idx.voc, text, idx.query)
+    bow = querybow(idx.voc, resolved)
+    length(bow) <= top_k_tokens && return bow
+    ids = sort(collect(keys(bow)); by=id -> idx.voc.ndocs[id])
+    keep = Set(@view ids[1:top_k_tokens])
+    BOW(id => cnt for (id, cnt) in bow if id in keep)
+end
+
+"""
+    find_similar_authors_by_profile(engine::SearchEngine, author_name_or_norm::AbstractString; top::Int=10, repo::Union{String, Nothing}=nothing, top_k_tokens::Int=16)
+
+Finds researchers with similar thematic lines, topics, and bibliography starting from a context
+author. The query is the target's own profile (name + keywords + topic summaries + cited
+references) trimmed to its `top_k_tokens` most informative tokens (see
+[`top_informative_bow`](@ref)) — a full untrimmed profile can run into the hundreds of distinct
+tokens, most contributing nothing to the ranking.
+"""
+function find_similar_authors_by_profile(engine::SearchEngine, author_name_or_norm::AbstractString; top::Int=10, repo::Union{String, Nothing}=nothing, top_k_tokens::Int=16)
     ensure_authors_loaded!(engine)
     if engine.authors_profile_invfile === nothing || isempty(engine.author_keys)
         return Dict("author" => author_name_or_norm, "total_hits" => 0, "similar_authors" => [], "time_ms" => 0.0)
     end
-    
+
     t0 = time()
     target_author = resolve_consolidated_profile(engine, author_name_or_norm)
 
@@ -345,9 +375,10 @@ function find_similar_authors_by_profile(engine::SearchEngine, author_name_or_no
     kws = get(target_author, "keywords", String[])
     topics = get(target_author, "topic_texts", String[])
     refs = get(target_author, "cited_references", String[])
-    
-    profile_query = "$target_name . $(join(kws, " , ")) . $(join(topics, " \n ")) . $(join(refs, " \n "))"
-    
+
+    profile_text = "$target_name . $(join(kws, " , ")) . $(join(topics, " \n ")) . $(join(refs, " \n "))"
+    profile_query = top_informative_bow(engine.authors_profile_invfile, profile_text; top_k_tokens)
+
     knn_k = (top + 1) * (repo !== nothing ? 5 : 1)
     ctx = InvertedFileContext()
     res = search(engine.authors_profile_invfile, ctx, profile_query, knnqueue(ctx, knn_k))
@@ -390,11 +421,14 @@ function find_similar_authors_by_profile(engine::SearchEngine, author_name_or_no
 end
 
 """
-    find_similar_documents_by_references(engine::SearchEngine, repo::AbstractString, doc_id::AbstractString; top::Int=10)
+    find_similar_documents_by_references(engine::SearchEngine, repo::AbstractString, doc_id::AbstractString; top::Int=10, top_k_tokens::Int=16)
 
-Finds documents sharing bibliographic coupling with a selected context document.
+Finds documents sharing bibliographic coupling with a selected context document. The query is the
+document's own reference list trimmed to its `top_k_tokens` most informative tokens (see
+[`top_informative_bow`](@ref)) — a document with dozens of references can otherwise touch hundreds
+of distinct tokens (proper nouns, journal names, DOIs), most of them irrelevant to the ranking.
 """
-function find_similar_documents_by_references(engine::SearchEngine, repo::AbstractString, doc_id::AbstractString; top::Int=10)
+function find_similar_documents_by_references(engine::SearchEngine, repo::AbstractString, doc_id::AbstractString; top::Int=10, top_k_tokens::Int=16)
     ensure_docs_refs_loaded!(engine)
     if engine.docs_refs_invfile === nothing || isempty(engine.doc_keys) || engine.db === nothing
         return Dict("doc_id" => doc_id, "total_hits" => 0, "similar_documents" => [], "time_ms" => 0.0)
@@ -420,8 +454,9 @@ function find_similar_documents_by_references(engine::SearchEngine, repo::Abstra
     end
     
     query_str = join(ref_texts, " \n ")
+    query_bow = top_informative_bow(engine.docs_refs_invfile, query_str; top_k_tokens)
     ctx = InvertedFileContext()
-    res = search(engine.docs_refs_invfile, ctx, query_str, knnqueue(ctx, top + 1))
+    res = search(engine.docs_refs_invfile, ctx, query_bow, knnqueue(ctx, top + 1))
     
     target_key = (String(repo), String(doc_id))
     results = Dict{String, Any}[]
