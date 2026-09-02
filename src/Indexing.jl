@@ -1,6 +1,7 @@
 module Indexing
 
 using TextSearch, SimilaritySearch
+import RocksDB
 using ..Config: DEFAULT_DATA_DIR, DEFAULT_INDEX_DIR
 using ..Types: ParagraphHit, ReferenceRecord
 using ..Storage: get_repo_dir, load_corpus_records, list_repo_names
@@ -39,6 +40,11 @@ const DOCS_REFS_MIN_NDOCS = 5
 # to trim and pruning would just delete real name tokens.
 const DOCS_CONTENT_MIN_NDOCS = 3
 const AUTHORS_PROFILE_MIN_NDOCS = 3
+
+# Author-profile RocksDB writes have no read-before-write step (unlike coauthor links), so they
+# can safely batch across many authors at once instead of one `write!` per document — flushed
+# every AUTHOR_BATCH_SIZE profiles to keep any single batch's memory bounded on a large corpus.
+const AUTHOR_BATCH_SIZE = 2000
 
 """
     extract_index_text(doc::Dict)
@@ -230,6 +236,30 @@ function _build_authors_indices!(db::Database, rdb, authors_data::Vector{<:Abstr
 end
 
 """
+    _persist_author_profiles_batched!(db, rdb, authors_data, raw_id_of)
+
+Writes every raw author profile (`put_author_profile!`) and its `name2id` mapping
+(`put_author_id_mapping!`) via chunked `RocksDB.WriteBatch`es of `AUTHOR_BATCH_SIZE` authors
+instead of one native write per call — safe to batch across many authors at once (unlike the
+per-document ingestion loop in `build_search_index`) because neither write reads existing state
+first: each key is set exactly once, in any order, so nothing depends on flush timing.
+"""
+function _persist_author_profiles_batched!(db::Database, rdb, authors_data, raw_id_of::AbstractDict)
+    wb = RocksDB.WriteBatch()
+    for (i, a) in enumerate(authors_data)
+        id = raw_id_of[a["name"]]
+        put_author_profile!(db, id, a; batch=wb)
+        put_author_id_mapping!(db, a["name"], id; batch=wb)
+        if i % AUTHOR_BATCH_SIZE == 0
+            RocksDB.write!(rdb, wb)
+            empty!(wb)
+        end
+    end
+    RocksDB.write!(rdb, wb)
+    return nothing
+end
+
+"""
     rebuild_authors_index(; data_dir=DEFAULT_DATA_DIR, index_dir=DEFAULT_INDEX_DIR, repos=nothing, max_docs=nothing)
 
 Re-runs author clustering and rebuilds only `authors_name`/`authors_profile` — not
@@ -263,11 +293,7 @@ function rebuild_authors_index(;
     db = open_database(db_path; create_if_missing=true)
     rdb = rocksdb_handle(db)
     try
-        for a in authors_data
-            id = raw_id_of[a["name"]]
-            put_author_profile!(db, id, a)
-            put_author_id_mapping!(db, a["name"], id)
-        end
+        _persist_author_profiles_batched!(db, rdb, authors_data, raw_id_of)
         n_groups = _build_authors_indices!(db, rdb, authors_data, index_dir, profile.model.voc.textconfig, raw_id_of)
         precompute_all_statistics!(db, n_groups)
         compact_all!(db)
@@ -316,26 +342,34 @@ function build_search_index(;
         # once per index.
         export_dockeys_to_rocksdb!(rdb, doc_keys)
 
-        # Ingest documents and topics into RocksDB
+        # Ingest documents and topics into RocksDB. One WriteBatch per document (reused via
+        # empty! to avoid allocating ~length(all_docs) of them): `add_coauthor_link!` does a
+        # read-before-write against the *live* db to accumulate counts, so each document's writes
+        # must be committed before the next document's reads can see them — batching writes
+        # across multiple documents would let a coauthor pair recurring within one unflushed
+        # window silently undercount. Flushing once per document still collapses what was
+        # dozens of individual native RocksDB puts per document into a single write!() call,
+        # with none of that correctness risk.
+        wb = RocksDB.WriteBatch()
         for doc in all_docs
             repo = doc["repo"]
             doc_id = doc["id"]
-            put_document!(db, repo, doc_id, doc)
-            put_topics!(db, doc)
-            
+            put_document!(db, repo, doc_id, doc; batch=wb)
+            put_topics!(db, doc; batch=wb)
+
             creators = get(doc, "creators", String[])
             for a in creators
-                link_author_document!(db, raw_id_of[a], repo, doc_id; role="Autor", year=get(doc, "date", ""))
+                link_author_document!(db, raw_id_of[a], repo, doc_id; role="Autor", year=get(doc, "date", ""), batch=wb)
             end
             contributors = get(doc, "contributors", String[])
             for a in contributors
-                link_author_document!(db, raw_id_of[a], repo, doc_id; role="Colaborador / Asesor", year=get(doc, "date", ""))
+                link_author_document!(db, raw_id_of[a], repo, doc_id; role="Colaborador / Asesor", year=get(doc, "date", ""), batch=wb)
             end
             all_auth_ids = [raw_id_of[a] for a in vcat(creators, contributors)]
             for x in 1:length(all_auth_ids), y in (x+1):length(all_auth_ids)
-                add_coauthor_link!(db, all_auth_ids[x], all_auth_ids[y])
+                add_coauthor_link!(db, all_auth_ids[x], all_auth_ids[y]; batch=wb)
             end
-            
+
             doc_refs = get(doc, "references", Dict{String, Any}[])
             if !isempty(doc_refs)
                 ref_ids = String[]
@@ -343,21 +377,21 @@ function build_search_index(;
                     ref_id = get(ref, "ref_id", "")
                     if !isempty(ref_id)
                         push!(ref_ids, ref_id)
-                        put_reference!(db, ref)
+                        put_reference!(db, ref; batch=wb)
                     end
                 end
-                set_document_references!(db, repo, doc_id, ref_ids)
+                set_document_references!(db, repo, doc_id, ref_ids; batch=wb)
             end
+
+            RocksDB.write!(rdb, wb)
+            empty!(wb)
         end
-        
+
         # Ingest author profiles into RocksDB
         for a in authors_data
-            norm_name = normalize_author_name(a["name"])
-            a["norm_name"] = norm_name
-            id = raw_id_of[a["name"]]
-            put_author_profile!(db, id, a)
-            put_author_id_mapping!(db, a["name"], id)
+            a["norm_name"] = normalize_author_name(a["name"])
         end
+        _persist_author_profiles_batched!(db, rdb, authors_data, raw_id_of)
         println("RocksDB populated with $(length(all_docs)) docs and $(length(authors_data)) author profiles.")
 
         # -------------------------------------------------------------

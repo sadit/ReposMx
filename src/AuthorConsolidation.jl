@@ -372,6 +372,30 @@ similarity is two *different* people who coauthor constantly (near-identical top
 profiles) or who simply share a common surname; the gate rejects both cases while still letting
 the join find same-name variants that the exact name-key match missed.
 
+**Tried and reverted: partitioning by surname before joining.** The obvious way to cut the cost of
+this at full-corpus scale (~100K+ raw profiles) is to bucket `authors_data` by
+[`_surname_of_name`](@ref) and join each bucket independently — since
+[`_plausibly_same_person`](@ref) requires an exact surname match anyway, a global join's
+cross-surname candidates are guaranteed to be vetoed, so bucketing looks like pure waste avoided.
+**Verified empirically on a real 10-repo rebuild that this silently breaks the join's precision**:
+merges jumped from 4 (correct) to 5,575, with consolidated groups like "garcia" swallowing 47
+raw names spanning obviously unrelated people (`"JESSICA ARBALLO GARCIA"`, `"JOEL ANTUNEZ GARCIA"`,
+`"JOSE ALBERTO ALVARADO GARCIA"`, ...). Root cause: `bichromatic_metricjoin`'s adaptive per-point
+threshold is a *quantile of the dataset it's given* — computed against the whole diverse corpus, it
+is strict (most profiles are simply unlike most other profiles); computed within one surname's
+bucket alone, that population is far more homogeneous (same language, overlapping general academic
+vocabulary, often overlapping institutions), so many merely-similar pairs looked "unusually close"
+*relative to their bucket*. That let far more pairs reach the veto, and the veto's own known-weak
+spot — a bare single-letter initial (e.g. `"J."`) is compatible with *any* given name starting with
+that letter — turned into a bridge: connected-component grouping in
+[`compute_groups`](@ref) chained dozens of different "Jaime"/"Javier"/"Jessica"/"Joel"/"Jose*"
+people together through such a bridge node. None of this showed up in the un-bucketed design
+because the (properly calibrated) join rarely proposed a candidate needing the veto's help in the
+first place. A real fix would need a similarity floor calibrated from the *whole* corpus, not
+per-bucket — worth doing if full-corpus runtime turns out to actually require it, but not without
+its own dedicated validation pass; until then this stays a single join over `authors_data` as a
+whole, correctness over speed.
+
 Returns `(name_a, name_b)` pairs meant to be folded into `overrides.merges` before calling
 `compute_groups` (see [`build_and_persist`](@ref)) — this function knows nothing about the
 override/graph machinery, it just proposes additional edges from a different signal.

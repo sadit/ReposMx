@@ -33,4 +33,4 @@ ZipArchives = "2.6.0"
 julia = "1.10, 1.11, 1.12"
 
 [apps.reposmx]
-julia_flags = ["--startup-file=no"]
+julia_flags = ["--startup-file=no", "--threads=auto"]
