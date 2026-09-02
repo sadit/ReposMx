@@ -1,6 +1,6 @@
 ---
 name: search-index-engineering
-description: Guía de diseño y decisiones para construir motores de búsqueda por índice invertido en Julia con SimilaritySearch.jl y TextSearch.jl — qué mantener en RAM vs. cargar perezoso, poda de vocabulario, formatos de serialización, patrones de integración con RocksDB. Destilado de optimizar el backend BM25 de ReposMx. Úsala para diseñar o depurar cualquier motor de búsqueda basado en estas librerías, no solo este repo.
+description: Guía de diseño y decisiones para construir motores de búsqueda por índice invertido en Julia con SimilaritySearch.jl y TextSearch.jl — qué mantener en RAM vs. cargar perezoso, poda de vocabulario, formatos de serialización, patrones de integración con RocksDB, resolución de identidad/clustering difuso de entidades (TFIDF + bichromatic_metricjoin), y esquemas de ID cortos con resolución de colisiones. Destilado de optimizar el backend BM25 y el dedupe de autores de ReposMx. Úsala para diseñar o depurar cualquier motor de búsqueda o pipeline de deduplicación de entidades basado en estas librerías, no solo este repo.
 ---
 
 # Ingeniería de índices invertidos y vocabularios
@@ -219,7 +219,126 @@ reusando una tabla de "stats" que ya existía en el esquema pero nunca se poblab
   y a veces preferible a reinventar la lógica, pero es exactamente la clase de dependencia que
   justifica fijar la versión exacta del paquete en `[compat]`.
 
-## 9. Checklist rápido para una pieza de estado del índice
+## 9. Resolución de identidad / clustering de entidades (dedupe difuso)
+
+Sección nueva, destilada de rediseñar el clustering de perfiles de autor de ReposMx: pasar de
+"solo claves de nombre exactas" a "claves de nombre + una señal de similitud de contenido (TFIDF +
+`SimilaritySearch.bichromatic_metricjoin`)". El resultado técnico funciona a la primera prueba;
+lo que costó fue la parte de **correctness**, no la de API — cada versión del veto pasó una
+revisión superficial y falló al medirla contra datos reales, tres veces seguidas.
+
+### 9.1 Una señal de similitud SIEMPRE necesita un veto independiente, y el veto necesita su propia validación empírica
+
+El patrón general: claves exactas (nombre normalizado, hash, lo que sea) para el caso fácil, más
+una señal de similitud de contenido para el caso que las claves exactas no alcanzan a ver
+(erratas, variantes de formato, campos reordenados). La señal de contenido **siempre** va a
+proponer pares que no deberían fusionarse — dos entidades distintas que se parecen mucho en su
+contenido por razones legítimas ajenas a ser "la misma cosa" (aquí: coautores frecuentes con
+perfiles de tópicos casi idénticos). El veto por nombre existe exactamente para cortar esos casos,
+pero **un veto es en sí mismo una heurística que hay que validar con la misma rigurosidad que la
+señal principal** — no basta con que "suene razonable".
+
+Tres versiones probadas en este orden, cada una descartada por evidencia real (no por revisión de
+código):
+
+1. **Apellido solo** (último token del nombre): dejaba pasar pares como
+   `("A. Alberto R. Fernandes", "PATRICIA FERNANDES")` — personas evidentemente distintas que
+   comparten un apellido común (a menudo el materno, en la convención
+   "Nombre ApellidoPaterno ApellidoMaterno", que es justo el que un criterio de "último token"
+   captura).
+2. **Apellido + misma primera letra del nombre**: sigue fallando, y de forma más peligrosa —
+   `("JHON LEANDRO PEREZ", "JULIO CESAR PEREZ PEREZ")`, `("RIGOBERTO ORTEGA PEREZ",
+   "RODOLFO ORTIZ PEREZ")`. Con apellidos muy comunes (Pérez, González, Hernández — omnipresentes
+   en el dataset), "misma letra inicial" no discrimina casi nada, y como estas personas suelen ser
+   colegas del mismo campo e institución, su contenido (keywords/tópicos) también se parece.
+3. **Apellido + primer token de nombre de pila, igual o abreviatura de un solo carácter**
+   (`"juan"` ~ `"j"`, pero `"juan"` ≁ `"julio"`): la que funcionó. La diferencia con la versión 2
+   no es cosmética — "comparten letra inicial" y "uno es abreviatura literal del otro" son
+   comprobaciones completamente distintas en poder discriminante, aunque se lean parecido en
+   prosa.
+
+**Regla práctica**: al diseñar un veto/gate para un matcher difuso, junta ejemplos **reales**
+(no inventados) de pares que el veto actual deja pasar mal, y ejemplos reales de pares que debería
+dejar pasar bien — normalmente saliendo de correr la versión actual contra datos de producción e
+inspeccionar los resultados a mano, no de razonar en abstracto. Conviértelos en tests de
+regresión permanentes con nombres/institución/campo reales (anonimizados si hace falta), porque
+el modo de falla real casi nunca es el que se te ocurre a priori.
+
+### 9.2 El poder discriminante de una heurística de "mismo valor" depende de qué tan común es ese valor
+
+"Mismo apellido" es una señal fuerte para un apellido raro y casi nula para uno común. Cualquier
+heurística de matching que compare "¿este campo es igual?" sin considerar la frecuencia del valor
+en el corpus tiene este mismo punto ciego — funciona bien en la muestra pequeña donde se probó
+(donde por azar los valores tienden a ser menos comunes) y falla en producción a mayor escala,
+donde los valores comunes dominan. Si no se quiere modelar frecuencia explícitamente (más
+complejo), la alternativa más simple y efectiva es **exigir más de un campo compatible
+simultáneamente** (aquí: apellido Y nombre de pila, no apellido solo) — cada campo adicional
+multiplica el poder discriminante aunque cada uno individualmente sea débil.
+
+### 9.3 Un índice aproximado (grafo/ANN) puede ser sensible al orden de inserción — y ese orden puede no ser determinista sin que se note
+
+Verificado en vivo: la misma función, con los mismos datos de entrada lógicos, dio resultados
+*distintos* en dos ejecuciones de `julia` separadas. La causa no fue aleatoriedad del algoritmo de
+búsqueda — fue que los datos de entrada llegaban en un orden distinto cada vez, porque venían de
+iterar un `Dict{String,...}` construido en ese proceso, y el hashing de `String` en Julia se
+inicializa con una semilla aleatoria por proceso por defecto. Un `SearchGraph` (o cualquier índice
+de grafo/ANN construido incrementalmente) puede terminar con una estructura distinta según el
+orden de inserción, y eso se propaga a qué pares encuentra `bichromatic_metricjoin`.
+
+**Regla práctica**: si el resultado de construir un índice aproximado alimenta algo que necesita
+ser reproducible entre corridas (ids derivados por hash, reportes, snapshots comparables), **ordena
+explícitamente la entrada por una clave estable** (aquí, por nombre) *dentro* de la función que
+construye el índice — no confíes en que el llamador ya lo haga, y no asumas que "mismos datos" implica
+"mismo orden" solo porque vinieron de la misma fuente. Verifícalo corriendo la misma función en dos
+procesos `julia` separados (no solo dos veces en la misma sesión — un solo proceso reusa la misma
+semilla de hash) y comparando el resultado exacto.
+
+### 9.4 Patrón de uso: `bichromatic_metricjoin` para auto-join con umbral adaptativo
+
+Para encontrar pares "suficientemente similares" en un solo conjunto sin fijar un corte de
+distancia a mano:
+
+```julia
+voc = Vocabulary(config, texts)
+model = VectorModel(IdfWeighting(), TfWeighting(), voc)
+vecs = vectorize_corpus(model, texts)   # normalize=true por default -> vectores unitarios
+db = VectorDatabase(vecs)
+
+G = SearchGraph(SimilaritySearch.Dist.NormCosine(), db)  # NormCosine: asume ya normalizado
+ctx = SearchGraphContext()
+index!(G, ctx)
+
+pairs = bichromatic_metricjoin(G, ctx, db; k=16, samedata=true)  # (a, b, dist) ya filtrados
+```
+
+`samedata=true` excluye auto-emparejamientos (`a==b`) y usa un umbral **adaptativo por punto**
+(el vecino más cercano de cada punto vota, y el corte de cada punto es el cuantil de sus votos) en
+vez de un cuantil global — más estable cuando la densidad varía entre regiones del espacio, y no
+hay que adivinar un umbral de similitud coseno a mano. `k` no tiene buen default independiente de
+los datos — es una sobreestimación deliberada, hay que pasarla explícitamente. Con corpus muy
+chicos (bajo el `mingroup` interno, default 8) cae a un fallback más ruidoso — no asumas que el
+comportamiento a escala de prueba (decenas de items) predice el de producción.
+
+### 9.5 Esquema de ID corto con resolución de colisiones (alternativa a UUID)
+
+Cuando no hace falta un espacio de hash gigantesco (UUID) sino un id corto y legible, y hay una
+partición natural del dominio (aquí, apellido):
+
+1. Particiona por la clave natural (`<partición>`) — reduce drásticamente cuántas entidades
+   compiten por el mismo sub-espacio de hash.
+2. Dentro de la partición, usa un hash corto (pocos dígitos) del contenido relevante.
+3. Antes de aceptar `<partición>_<hash>`, revisa contra un `Set` de ids ya usados. Si choca,
+   prueba sufijos `_00`, `_01`, `_02`... hasta encontrar uno libre — no agrandes el hash para
+   "casi nunca chocar" (con miles de entidades por partición común, la paradoja del cumpleaños
+   garantiza colisiones reales; hay que *resolverlas*, no evitarlas por tamaño de espacio).
+4. Procesa las entidades en un **orden fijo** (ordenado por nombre u otra clave estable) para que
+   qué entidad "gana" el hash base y cuál recibe el sufijo sea reproducible entre reconstrucciones
+   — mismo principio que §9.3.
+
+Reporta cuántos ids necesitaron sufijo (no solo "cuántos ids hay") — es la métrica real de qué
+tan ajustado está el espacio de hash al volumen de datos.
+
+## 10. Checklist rápido para una pieza de estado del índice
 
 1. ¿Cuántas veces se toca por consulta típica? (§1) → RAM / perezoso / precalculado.
 2. Si es una estructura grande con un `Dict`/tabla-hash interno: ¿mediste el formato de
@@ -236,3 +355,12 @@ reusando una tabla de "stats" que ya existía en el esquema pero nunca se poblab
    strings con riesgo de offset en UTF-8? (§6)
 8. ¿Verificaste identidad de resultados entre dos construcciones independientes del motor después
    del cambio? (§6)
+9. Si hay un matcher/veto difuso (dedupe, clustering): ¿lo validaste contra ejemplos reales
+   buenos Y malos sacados de correr la versión actual contra datos de producción, no solo contra
+   casos que imaginaste? (§9.1)
+10. ¿La heurística de matching depende de qué tan común es el valor comparado (apellido, tag,
+    categoría)? Si sí, ¿se probó específicamente contra los valores más frecuentes del corpus,
+    no solo contra una muestra al azar? (§9.2)
+11. Si el resultado de un índice aproximado (grafo/ANN) alimenta algo que debe ser reproducible
+    entre corridas: ¿se ordena la entrada por una clave estable *dentro* de la función, y se
+    verificó corriendo en dos procesos separados (no dos veces en la misma sesión)? (§9.3)
