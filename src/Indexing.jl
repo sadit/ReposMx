@@ -9,14 +9,14 @@ using ..TextModel: TextProfile, create_bilingual_profile, get_or_create_bilingua
                     refit_bilingual_profile, create_bilingual_textconfig, save_profile, load_profile
 using ..DB: Database, open_database, close_database, put_document!, put_author_profile!, put_topics!,
             put_reference!, set_document_references!, link_author_document!, add_coauthor_link!,
-            normalize_author_name, rocksdb_handle, compact_all!, precompute_all_statistics!,
+            put_author_id_mapping!, normalize_author_name, rocksdb_handle, compact_all!, precompute_all_statistics!,
             put_consolidated_profile!
 using ..LazyBM25: export_to_rocksdb!, assemble_bm25,
                   LazyDocKeys, LazyAuthorKeys, export_dockeys_to_rocksdb!, export_authorkeys_to_rocksdb!,
                   DOCS_CONTENT, DOCS_REFS, AUTHORS_NAME, AUTHORS_PROFILE
 using ..VocabIO: save_vocabulary_zip, load_vocabulary_zip
 using ..IndexShellIO: save_index_shell_zip, load_index_shell_zip
-using ..AuthorConsolidation: build_and_persist, load_all, AUTHOR_NAME_CONFIG
+using ..AuthorConsolidation: build_and_persist, load_all, AUTHOR_NAME_CONFIG, assign_raw_ids
 
 export build_search_index, rebuild_authors_index,
        load_docs_content_index, load_docs_refs_index,
@@ -162,7 +162,7 @@ function _collect_documents(; data_dir=DEFAULT_DATA_DIR, repos::Union{Vector{Str
 end
 
 """
-    _build_authors_indices!(db, rdb, authors_data, index_dir, name_textconfig) -> Int
+    _build_authors_indices!(db, rdb, authors_data, index_dir, name_textconfig, raw_id_of) -> Int
 
 Clusters `authors_data` into consolidated profiles, persists them (TOML corpus + RocksDB), and
 builds the `authors_name`/`authors_profile` BM25 indices from that consolidated corpus. Shared by
@@ -170,12 +170,14 @@ builds the `authors_name`/`authors_profile` BM25 indices from that consolidated 
 `docs_content`/`docs_refs`) — `name_textconfig` is the bilingual profile's `TextConfig`, needed for
 `authors_profile`'s vocabulary but not otherwise available without a full docs_content refit, so
 callers pass it in (`build_search_index` has it fresh; `rebuild_authors_index` reads it back from
-the already-saved profile on disk). Returns the number of consolidated profiles written.
+the already-saved profile on disk). `raw_id_of` (raw name -> short id, from `assign_raw_ids`) lets
+singleton consolidated groups reuse their one raw profile's id verbatim (see `AuthorConsolidation.rollup`).
+Returns the number of consolidated profiles written.
 """
 function _build_authors_indices!(db::Database, rdb, authors_data::Vector{<:AbstractDict},
-                                  index_dir::AbstractString, name_textconfig)
+                                  index_dir::AbstractString, name_textconfig, raw_id_of::AbstractDict)
     println("Clustering raw author profiles into consolidated profiles...")
-    n_groups = build_and_persist(authors_data, index_dir)
+    n_groups = build_and_persist(authors_data, index_dir, raw_id_of)
     consolidated = load_all(index_dir)
     println("  $(length(authors_data)) raw profiles -> $(n_groups) consolidated profiles")
     for profile in consolidated
@@ -254,15 +256,19 @@ function rebuild_authors_index(;
 
     authors_data = build_authors_index_data(all_docs)
     println("Raw author profiles: $(length(authors_data))")
+    raw_id_of, n_raw_collisions = assign_raw_ids(authors_data)
+    println("  raw ids needing disambiguation: $n_raw_collisions / $(length(authors_data))")
 
     db_path = joinpath(data_dir, "rocksdb")
     db = open_database(db_path; create_if_missing=true)
     rdb = rocksdb_handle(db)
     try
         for a in authors_data
-            put_author_profile!(db, normalize_author_name(a["name"]), a)
+            id = raw_id_of[a["name"]]
+            put_author_profile!(db, id, a)
+            put_author_id_mapping!(db, a["name"], id)
         end
-        n_groups = _build_authors_indices!(db, rdb, authors_data, index_dir, profile.model.voc.textconfig)
+        n_groups = _build_authors_indices!(db, rdb, authors_data, index_dir, profile.model.voc.textconfig, raw_id_of)
         precompute_all_statistics!(db, n_groups)
         compact_all!(db)
         println("Listo: $(length(authors_data)) perfiles raw -> $n_groups consolidados.")
@@ -298,6 +304,8 @@ function build_search_index(;
     rdb = rocksdb_handle(db)
 
     authors_data = build_authors_index_data(all_docs)
+    raw_id_of, n_raw_collisions = assign_raw_ids(authors_data)
+    println("  raw ids needing disambiguation: $n_raw_collisions / $(length(authors_data))")
 
     # `db`/`rdb` stay open through the RocksDB metadata ingestion below AND through the
     # 4 BM25 posting-list/docvec exports further down (LazyBM25.export_to_rocksdb! writes
@@ -317,15 +325,15 @@ function build_search_index(;
             
             creators = get(doc, "creators", String[])
             for a in creators
-                link_author_document!(db, a, repo, doc_id; role="Autor", year=get(doc, "date", ""))
+                link_author_document!(db, raw_id_of[a], repo, doc_id; role="Autor", year=get(doc, "date", ""))
             end
             contributors = get(doc, "contributors", String[])
             for a in contributors
-                link_author_document!(db, a, repo, doc_id; role="Colaborador / Asesor", year=get(doc, "date", ""))
+                link_author_document!(db, raw_id_of[a], repo, doc_id; role="Colaborador / Asesor", year=get(doc, "date", ""))
             end
-            all_auths = vcat(creators, contributors)
-            for x in 1:length(all_auths), y in (x+1):length(all_auths)
-                add_coauthor_link!(db, all_auths[x], all_auths[y])
+            all_auth_ids = [raw_id_of[a] for a in vcat(creators, contributors)]
+            for x in 1:length(all_auth_ids), y in (x+1):length(all_auth_ids)
+                add_coauthor_link!(db, all_auth_ids[x], all_auth_ids[y])
             end
             
             doc_refs = get(doc, "references", Dict{String, Any}[])
@@ -346,7 +354,9 @@ function build_search_index(;
         for a in authors_data
             norm_name = normalize_author_name(a["name"])
             a["norm_name"] = norm_name
-            put_author_profile!(db, norm_name, a)
+            id = raw_id_of[a["name"]]
+            put_author_profile!(db, id, a)
+            put_author_id_mapping!(db, a["name"], id)
         end
         println("RocksDB populated with $(length(all_docs)) docs and $(length(authors_data)) author profiles.")
 
@@ -403,7 +413,7 @@ function build_search_index(;
         # 3+4. Authors by Name / Profile & Citations — clustering + BM25 build shared with
         # rebuild_authors_index (see _build_authors_indices! docstring).
         # -------------------------------------------------------------
-        n_groups = _build_authors_indices!(db, rdb, authors_data, index_dir, refitted_profile.model.voc.textconfig)
+        n_groups = _build_authors_indices!(db, rdb, authors_data, index_dir, refitted_profile.model.voc.textconfig, raw_id_of)
 
         # Clean up legacy .bin files if present
         for bin_f in ["bm25.bin", "docs.bin", "authors.bin", "authors_bm25.bin", "authors_topics_bm25.bin", "references.bin", "references_bm25.bin"]

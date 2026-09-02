@@ -227,25 +227,29 @@ function query_index(
 end
 
 """
-    resolve_consolidated_profile(engine::SearchEngine, author_name_or_norm::AbstractString)
+    resolve_consolidated_profile(engine::SearchEngine, author_ref::AbstractString)
 
-Resolves a name (a raw author string, or anything close to one) to its consolidated profile.
-`engine.author_keys` holds opaque `consolidated_id`s now (see `AuthorConsolidation`), not
-normalized names, so there is no longer a name substring to match against them directly — first
-tries an exact raw-name lookup (`get_consolidated_id_for_raw`), and only if that misses falls back
-to the top hit of the `authors_name` BM25 index itself (which is exactly what it exists for:
-resolving an imprecise or partial name to the right author).
+Resolves `author_ref` — a short id (`AuthorConsolidation.assign_id`), a raw author string, or
+anything close to one — to its consolidated profile. Tries `author_ref` directly as an id first
+(cheap: a non-id string just misses, no format detection needed since ids and names never
+collide in shape); then falls back to an exact raw-name lookup (`get_consolidated_id_for_raw`);
+and only if both miss falls back to the top hit of the `authors_name` BM25 index itself (which is
+exactly what it exists for: resolving an imprecise or partial name to the right author).
 """
-function resolve_consolidated_profile(engine::SearchEngine, author_name_or_norm::AbstractString)
+function resolve_consolidated_profile(engine::SearchEngine, author_ref::AbstractString)
     engine.db === nothing && return nothing
-    cid = get_consolidated_id_for_raw(engine.db, author_name_or_norm)
+
+    profile = get_consolidated_profile(engine.db, author_ref)
+    profile !== nothing && return profile
+
+    cid = get_consolidated_id_for_raw(engine.db, author_ref)
     profile = cid === nothing ? nothing : get_consolidated_profile(engine.db, cid)
     profile !== nothing && return profile
 
     ensure_authors_loaded!(engine)
     (engine.authors_name_invfile === nothing || isempty(engine.author_keys)) && return nothing
     ctx = InvertedFileContext()
-    res = search(engine.authors_name_invfile, ctx, author_name_or_norm, knnqueue(ctx, 1))
+    res = search(engine.authors_name_invfile, ctx, author_ref, knnqueue(ctx, 1))
     isempty(res) && return nothing
     idx = first(res).id
     (idx < 1 || idx > length(engine.author_keys)) && return nothing
@@ -625,13 +629,17 @@ end
     get_coauthors(engine::SearchEngine, author_name_or_norm::AbstractString; limit::Int=50)
 
 Retrieves coauthors and collaboration frequencies from RocksDB, aggregated across every raw name
-variant in the resolved author's consolidated group.
+variant in the resolved author's consolidated group. `coauth:` edges are keyed by raw author id
+(see `AuthorConsolidation`), so each id is resolved back to its raw profile's display name here —
+callers (the TUI) get names, not ids, in this list.
 """
 function get_coauthors(engine::SearchEngine, author_name_or_norm::AbstractString; limit::Int=50)
     engine.db === nothing && return Pair{String, Int}[]
     profile = resolve_consolidated_profile(engine, author_name_or_norm)
     profile === nothing && return Pair{String, Int}[]
-    return get_coauthors_for_group(engine.db, profile["raw_names"]; limit)
+    by_id = get_coauthors_for_group(engine.db, profile["raw_names"]; limit)
+    return [(let p = get_author_profile(engine.db, id); p === nothing ? id : p["name"] end) => cnt
+            for (id, cnt) in by_id]
 end
 
 """

@@ -125,21 +125,28 @@ reposmx
 
 Dentro de la shell:
 
+Los comandos van tipo shell: `/comando <argumento> [--flags]`, con los flags después del argumento
+principal en cualquier orden (ej. `/author garcia --top 5 --repo cimat`). No hay filtros de sesión
+ni autor "en contexto" (salvo el documento abierto con `/doc <N>`): cada comando declara sus
+propios flags. Un comando no reconocido no se interpreta como búsqueda — indica el error y sugiere
+`/? `.
+
 | Comando | Qué hace |
 | :--- | :--- |
-| `<texto>` (escribir directo) | Busca en títulos, palabras clave, resúmenes y conclusiones. |
-| `/doc <N>` | Abre la ficha completa del resultado `N`. |
-| `/find <consulta>` | Busca por párrafos dentro del documento abierto. |
-| `/in <N> <consulta>` | Busca por párrafos dentro del resultado `N`. |
-| `/author <nombre>` | Busca perfiles de investigadores. |
-| `/topic-authors <tema>` | Autores que más han publicado sobre un tema. |
-| `/sim-authors <autor>` | Autores afines por acoplamiento bibliográfico. |
-| `/cited <autor\|obra>` | Documentos que citan a un autor u obra dados. |
-| `/refs [N]` | Bibliografía citada por un documento. |
-| `/repo <nombre\|all>`, `/type <...>`, `/tag <...>` | Filtran las consultas siguientes. |
-| `/top <N>` | Cambia el número de resultados devueltos. |
-| `/wiki <on\|off>`, `/explain <concepto>` | Tarjetas de contexto desde Wikipedia (ES/EN). |
-| `/status`, `/info [repo]` | Cobertura y estadísticas, sin salir de la shell. |
+| `/search <consulta> [--top N] [--repo] [--type] [--tag] [--wiki\|--no-wiki]` | Busca en títulos, palabras clave, resúmenes y conclusiones. |
+| `/doc <N>` | Abre la ficha completa del resultado `N` y la fija como contexto activo. |
+| `/doc-refs` o `/refs [N]` | Bibliografía citada por el documento en contexto (o el resultado `N`). |
+| `/doc-similar-refs [--top N]` (alias `/sim-refs`) | Documentos con bibliografía afín al documento en contexto. |
+| `/doc-search <consulta> [--top N]` | Busca por párrafos dentro del documento en contexto. |
+| `/author <nombre> [--top N] [--repo]` | Busca perfiles de investigadores; cada resultado muestra su ID corto. |
+| `/author-docs <ID\|#N> [--top N]` | Publicaciones de un autor (ID de una tarjeta, o `#N` del último `/author`). |
+| `/author-coauth <ID\|#N> [--top N]` | Red de coautoría de un autor. |
+| `/author-similar <ID\|#N\|nombre> [--top N] [--repo]` (alias `/sim-authors`) | Autores afines por acoplamiento bibliográfico y perfil temático. |
+| `/topic <tema> [--top N] [--repo]` | Documentos y autores asociados a un tópico. |
+| `/status`, `/repos` | Repositorios institucionales indexados. |
+| `/info [repo]` | Estadísticas del repositorio o del acervo global. |
+| `/clear-context` | Limpia el documento en contexto activo. |
+| `-h` / `--help` | Después de cualquier comando, muestra su ayuda en vez de ejecutarlo. |
 | `/? [comando]` | Ayuda general o de un comando específico. |
 | `/exit` | Salir. |
 

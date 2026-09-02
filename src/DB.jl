@@ -255,12 +255,39 @@ function normalize_author_name(name::AbstractString)
 end
 
 """
-    put_author_profile!(db::Database, norm_author, profile_dict; batch=nothing)
+    put_author_id_mapping!(db::Database, raw_name, id; batch=nothing)
 
-Saves an author profile in the `authors` column family.
+Records `normalize_author_name(raw_name) -> id` so a typed name can be resolved to the short id
+that actually keys everything else about that raw profile (see [`get_author_id`](@ref)).
 """
-function put_author_profile!(d::Database, norm_author::AbstractString, profile::AbstractDict; batch=nothing)
-    k = "auth:$(normalize_author_name(norm_author))"
+function put_author_id_mapping!(d::Database, raw_name::AbstractString, id::AbstractString; batch=nothing)
+    k = "name2id:$(normalize_author_name(raw_name))"
+    if batch !== nothing
+        put!(batch, k, id; cf=d.cfs["authors"])
+    else
+        put!(d.db, k, id; cf="authors")
+    end
+end
+
+"""
+    get_author_id(db::Database, raw_name) -> Union{String,Nothing}
+
+Reverse lookup for [`put_author_id_mapping!`](@ref).
+"""
+function get_author_id(d::Database, raw_name::AbstractString)
+    val = get(d.db, "name2id:$(normalize_author_name(raw_name))"; cf="authors")
+    return val === nothing ? nothing : String(val)
+end
+
+"""
+    put_author_profile!(db::Database, author_id, profile_dict; batch=nothing)
+
+Saves an author profile in the `authors` column family, keyed by its short id (see
+`AuthorConsolidation.assign_id`) — this function no longer knows anything about names or
+normalization, it just stores by whatever id the caller already resolved.
+"""
+function put_author_profile!(d::Database, author_id::AbstractString, profile::AbstractDict; batch=nothing)
+    k = "auth:$author_id"
     v = JSON.json(profile)
     if batch !== nothing
         put!(batch, k, v; cf=d.cfs["authors"])
@@ -270,24 +297,24 @@ function put_author_profile!(d::Database, norm_author::AbstractString, profile::
 end
 
 """
-    get_author_profile(db::Database, norm_author)
+    get_author_profile(db::Database, author_id)
 
-Retrieves an author profile from the `authors` column family.
+Retrieves an author profile from the `authors` column family by its short id.
 """
-function get_author_profile(d::Database, norm_author::AbstractString)
-    k = "auth:$(normalize_author_name(norm_author))"
+function get_author_profile(d::Database, author_id::AbstractString)
+    k = "auth:$author_id"
     val = get(d.db, k; cf="authors")
     val === nothing && return nothing
     return try JSON.parse(String(val)) catch; nothing end
 end
 
 """
-    link_author_document!(db::Database, norm_author, repo, doc_id; role="Autor", year="", batch=nothing)
+    link_author_document!(db::Database, author_id, repo, doc_id; role="Autor", year="", batch=nothing)
 
 Links an author to a document in the `authors` column family.
 """
-function link_author_document!(d::Database, norm_author::AbstractString, repo::AbstractString, doc_id::AbstractString; role="Autor", year="", batch=nothing)
-    k = "auth_doc:$(normalize_author_name(norm_author)):$(strip(repo)):$(normalize_id(doc_id))"
+function link_author_document!(d::Database, author_id::AbstractString, repo::AbstractString, doc_id::AbstractString; role="Autor", year="", batch=nothing)
+    k = "auth_doc:$author_id:$(strip(repo)):$(normalize_id(doc_id))"
     v = JSON.json(Dict("role" => role, "year" => year))
     if batch !== nothing
         put!(batch, k, v; cf=d.cfs["authors"])
@@ -297,21 +324,21 @@ function link_author_document!(d::Database, norm_author::AbstractString, repo::A
 end
 
 """
-    get_author_documents(db::Database, norm_author; limit::Int=500)
+    get_author_documents(db::Database, author_id; limit::Int=500)
 
 Returns all documents linked to an author via Prefix Scan.
 """
-function get_author_documents(d::Database, norm_author::AbstractString; limit::Int=500)
-    prefix = "auth_doc:$(normalize_author_name(norm_author)):"
+function get_author_documents(d::Database, author_id::AbstractString; limit::Int=500)
+    prefix = "auth_doc:$author_id:"
     results = Dict{String, Any}[]
-    
+
     iter = DBIterator(d.db; cf="authors")
     seek!(iter, prefix)
-    
+
     while valid(iter) && length(results) < limit
         k = String(key(iter))
         !startswith(k, prefix) && break
-        
+
         parts = split(k[ncodeunits(prefix)+1:end], ":"; limit=2)
         if length(parts) == 2
             repo, doc_id = parts[1], parts[2]
@@ -322,44 +349,47 @@ function get_author_documents(d::Database, norm_author::AbstractString; limit::I
         end
         advance!(iter)
     end
-    
+
     return results
 end
 
 """
-    add_coauthor_link!(db::Database, norm_a, norm_b; count=1, batch=nothing)
+    add_coauthor_link!(db::Database, id_a, id_b; count=1, batch=nothing)
 
 Records an edge in the coauthorship graph, accumulating `count` into whatever is already stored
 for this pair (read-before-write) rather than overwriting it — two authors who coauthor 10
 documents must end up with count=10, not count=1 from whichever call happened to run last.
+Writes **both** directions (`coauth:\$a:\$b` and `coauth:\$b:\$a`) so a prefix scan from either
+author's id finds the edge — a single-direction write meant whoever appeared later in a
+document's author list never saw coauthors who appeared before them.
 """
-function add_coauthor_link!(d::Database, norm_a::AbstractString, norm_b::AbstractString; count::Int=1, batch=nothing)
-    a = normalize_author_name(norm_a)
-    b = normalize_author_name(norm_b)
-    a == b && return
-    k = "coauth:$a:$b"
-    existing = get(d.db, k; cf="authors")
-    new_count = (existing === nothing ? 0 : parse(Int, String(existing))) + count
-    v = string(new_count)
-    if batch !== nothing
-        put!(batch, k, v; cf=d.cfs["authors"])
-    else
-        put!(d.db, k, v; cf="authors")
+function add_coauthor_link!(d::Database, id_a::AbstractString, id_b::AbstractString; count::Int=1, batch=nothing)
+    id_a == id_b && return
+    for (x, y) in ((id_a, id_b), (id_b, id_a))
+        k = "coauth:$x:$y"
+        existing = get(d.db, k; cf="authors")
+        new_count = (existing === nothing ? 0 : parse(Int, String(existing))) + count
+        v = string(new_count)
+        if batch !== nothing
+            put!(batch, k, v; cf=d.cfs["authors"])
+        else
+            put!(d.db, k, v; cf="authors")
+        end
     end
 end
 
 """
-    get_coauthors(db::Database, norm_author; limit::Int=50)
+    get_coauthors(db::Database, author_id; limit::Int=50)
 
 Returns top coauthors for an author via Prefix Scan.
 """
-function get_coauthors(d::Database, norm_author::AbstractString; limit::Int=50)
-    prefix = "coauth:$(normalize_author_name(norm_author)):"
+function get_coauthors(d::Database, author_id::AbstractString; limit::Int=50)
+    prefix = "coauth:$author_id:"
     coauthors = Pair{String, Int}[]
-    
+
     iter = DBIterator(d.db; cf="authors")
     seek!(iter, prefix)
-    
+
     while valid(iter) && length(coauthors) < limit
         k = String(key(iter))
         !startswith(k, prefix) && break
@@ -368,7 +398,7 @@ function get_coauthors(d::Database, norm_author::AbstractString; limit::Int=50)
         push!(coauthors, coauth => cnt)
         advance!(iter)
     end
-    
+
     sort!(coauthors, by=x->x.second, rev=true)
     return coauthors
 end
@@ -425,13 +455,16 @@ end
 
 `get_author_documents` for every raw name in a consolidated group, merged. A consolidated author's
 "my documents" view has to union across all its raw variants — `auth_doc:` links stay keyed by
-the individual raw (normalized) names, never by `consolidated_id`.
+each raw profile's own short id (see `AuthorConsolidation`), never by `consolidated_id`, so each
+raw name is first resolved to its id via [`get_author_id`](@ref).
 """
 function get_author_documents_for_group(d::Database, raw_names::AbstractVector; limit::Int=500)
     results = Dict{String, Any}[]
     seen = Set{Tuple{String,String}}()
     for raw in raw_names
-        for doc in get_author_documents(d, raw; limit)
+        id = get_author_id(d, raw)
+        id === nothing && continue
+        for doc in get_author_documents(d, id; limit)
             key = (doc["repo"], doc["doc_id"])
             key in seen && continue
             push!(seen, key)
@@ -445,15 +478,17 @@ end
     get_coauthors_for_group(db::Database, raw_names::AbstractVector{<:AbstractString}; limit::Int=50)
 
 `get_coauthors` for every raw name in a consolidated group, with counts summed across raw variants
-(excluding coauthor keys that are themselves raw names inside this same group — those would be
-"coauthored with yourself under another spelling").
+(excluding coauthor keys that are themselves raw ids inside this same group — those would be
+"coauthored with yourself under another spelling"). `coauth:` keys are keyed by raw author id, so
+each raw name is first resolved to its id via [`get_author_id`](@ref).
 """
 function get_coauthors_for_group(d::Database, raw_names::AbstractVector; limit::Int=50)
-    own_keys = Set(normalize_author_name(r) for r in raw_names)
+    ids = [id for id in (get_author_id(d, r) for r in raw_names) if id !== nothing]
+    own_ids = Set(ids)
     totals = Dict{String, Int}()
-    for raw in raw_names
-        for (coauth, cnt) in get_coauthors(d, raw; limit=typemax(Int))
-            coauth in own_keys && continue
+    for id in ids
+        for (coauth, cnt) in get_coauthors(d, id; limit=typemax(Int))
+            coauth in own_ids && continue
             totals[coauth] = get(totals, coauth, 0) + cnt
         end
     end
