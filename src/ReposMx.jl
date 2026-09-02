@@ -5,6 +5,7 @@ include("Config.jl")
 include("Storage.jl")
 include("OAI.jl")
 include("Downloader.jl")
+include("Catalogs.jl")
 include("Parser.jl")
 include("Corpus.jl")
 include("TextModel.jl")
@@ -25,6 +26,7 @@ using .Config
 using .Storage
 using .OAI
 using .Downloader
+using .Catalogs
 using .Parser
 using .Corpus
 using .TextModel
@@ -46,6 +48,7 @@ export Record, RepoInfo, SearchHit, SearchResponse, AuthorProfile, ParagraphHit,
        load_metadata_records, load_corpus_records,
        harvest_repository, harvest_all,
        download_repository_files, download_all_files,
+       fetch_cti_catalogs, resolve_cti_code,
        extract_text_from_file, parse_repository_documents, parse_all_documents,
        build_repository_corpus, build_all_corpus,
        TextProfile, create_bilingual_profile, get_or_create_bilingual_base_profile, refit_bilingual_profile, create_bilingual_textconfig,

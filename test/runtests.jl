@@ -1,10 +1,76 @@
 using Test
 using ReposMx
-using ReposMx: LazyBM25, IndexShellIO, VocabIO, AuthorConsolidation
+using ReposMx: LazyBM25, IndexShellIO, VocabIO, AuthorConsolidation, Corpus
 using RocksDB
 using SimilaritySearch, TextSearch
 
 @testset "ReposMx Tests" begin
+    @testset "Corpus keyword parsing (parse_keywords / CTI catalog resolution, isolated)" begin
+        # Guards the fix for the most common dc:subject shape in this corpus, the DRIVER/OpenAIRE
+        # "info:eu-repo/classification/<esquema>/<valor>" convention: parse_keywords used to split
+        # every ";"-joined segment further on "/" and "," too, shredding this structure into
+        # meaningless fragments (a raw CTI numeric code kept as if it were a real keyword) and
+        # breaking legitimate comma-containing free text the same way. See Corpus.jl's
+        # parse_keywords docstring for the real repos these came from.
+
+        # resolve_cti_code against a synthetic catalog (no network, no dependency on the real
+        # fetched data/catalogs) -- exercises the digit-length level dispatch and the "unknown
+        # code -> nothing" contract in isolation.
+        tmpdir = mktempdir()
+        write(joinpath(tmpdir, "cti_areacono.json"),
+              """[{"cveArea":"1","descripcion":"CIENCIAS FÍSICO MATEMÁTICAS Y CIENCIAS DE LA TIERRA"}]""")
+        write(joinpath(tmpdir, "cti_campocono.json"),
+              """[{"cveCampo":"23","descripcion":"QUÍMICA"}]""")
+        write(joinpath(tmpdir, "cti_disciplinacono.json"),
+              """[{"cveDisciplina":"2399","descripcion":"OTRAS ESPECIALIDADES QUÍMICAS"}]""")
+        write(joinpath(tmpdir, "cti_subdisciplinacono.json"),
+              """[{"cveSubdisciplina":"239999","descripcion":"OTRAS"}]""")
+
+        @test resolve_cti_code("1"; catalogs_dir=tmpdir) == "CIENCIAS FÍSICO MATEMÁTICAS Y CIENCIAS DE LA TIERRA"
+        @test resolve_cti_code("23"; catalogs_dir=tmpdir) == "QUÍMICA"
+        @test resolve_cti_code("2399"; catalogs_dir=tmpdir) == "OTRAS ESPECIALIDADES QUÍMICAS"
+        @test resolve_cti_code("239999"; catalogs_dir=tmpdir) == "OTRAS"
+        @test resolve_cti_code("9"; catalogs_dir=tmpdir) === nothing        # right length, unknown code
+        @test resolve_cti_code("12345"; catalogs_dir=tmpdir) === nothing    # no level has 5-digit codes
+        @test resolve_cti_code("1"; catalogs_dir=mktempdir()) === nothing   # catalogs not fetched at all
+
+        # parse_keywords: segment splitting and per-scheme handling. cti resolution here uses the
+        # real catalogs fetched via `reposmx fetch-catalogs` into DEFAULT_CATALOGS_DIR -- real
+        # examples pulled straight from data/repos/*/corpus.jsonl during this exploration.
+        @test Corpus.parse_keywords("") == String[]
+
+        # ciqa: a chain of cti codes at every hierarchy level, one dc:subject segment each.
+        ciqa = Corpus.parse_keywords("info:eu-repo/classification/cti/2 ; info:eu-repo/classification/cti/23 ; " *
+                               "info:eu-repo/classification/cti/2399 ; info:eu-repo/classification/cti/239999")
+        @test "BIOLOGÍA Y QUÍMICA" in ciqa
+        @test "QUÍMICA" in ciqa
+        @test "OTRAS ESPECIALIDADES QUÍMICAS" in ciqa
+        @test "OTRAS" in ciqa
+        @test !any(occursin("info:eu-repo", k) || k in ("classification", "cti") for k in ciqa)
+        @test !any(all(isdigit, k) for k in ciqa)  # no bare numeric code ever kept as a keyword
+
+        # cide: a non-cti scheme (LCSH, already free text) mixed with a cti code in the same field.
+        cide = Corpus.parse_keywords("info:eu-repo/classification/LCSH/Mexico -- Economic conditions -- Regional disparities ; " *
+                               "info:eu-repo/classification/cti/5")
+        @test "Mexico -- Economic conditions -- Regional disparities" in cide
+        @test "CIENCIAS SOCIALES" in cide
+
+        # flacso: a scheme name that itself contains commas -- must not be split apart.
+        flacso = Corpus.parse_keywords("info:eu-repo/classification/Tesauros UNESCO, POPIN, INE, OIT, CIDH, GENERO, LEMB/Producción Agrícola ; " *
+                                 "info:eu-repo/classification/Tesauros UNESCO, POPIN, INE, OIT, CIDH, GENERO, LEMB/Trabajador Agrícola")
+        @test flacso == ["Producción Agrícola", "Trabajador Agrícola"]
+
+        # uam: regression for the comma-in-free-text bug -- "Estado, el" must survive as one
+        # keyword, not be split into "Estado" and "el".
+        uam = Corpus.parse_keywords("Sindicatos ; Salario mínimo ; Estado, el")
+        @test "Estado, el" in uam
+        @test "Estado" ∉ uam
+        @test "el" ∉ uam
+
+        # an unresolvable cti code (not in any catalog) is dropped, not kept as a raw number.
+        @test Corpus.parse_keywords("info:eu-repo/classification/cti/999999") == String[]
+    end
+
     @testset "AuthorConsolidation (clustering + overrides, isolated)" begin
         # Guards the graph-based clustering that groups raw author profiles into consolidated
         # ones: full-name matches, initials-vs-full-name matches (the whole reason for the

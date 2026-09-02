@@ -2,7 +2,7 @@ module Config
 
 using JSON
 
-export DEFAULT_DATA_DIR, DEFAULT_INDEX_DIR, DEFAULT_HEADERS, DEFAULT_OAI_NS,
+export DEFAULT_DATA_DIR, DEFAULT_INDEX_DIR, DEFAULT_CATALOGS_DIR, DEFAULT_HEADERS, DEFAULT_OAI_NS,
        DEFAULT_AUTHOR_OVERRIDES_JSON, get_repositories, get_repository_url
 
 const DEFAULT_DATA_DIR = let
@@ -32,6 +32,26 @@ const DEFAULT_INDEX_DIR = let
         else
             normpath(joinpath(homedir(), ".reposmx", "data", "index"))
         end
+    end
+end
+
+"""
+    DEFAULT_CATALOGS_DIR
+
+Where reference catalogs (e.g. the CTI Área/Campo/Disciplina/Subdisciplina del Conocimiento
+classification, fetched by `Catalogs.fetch_cti_catalogs`) are saved. Derived as a sibling of
+`DEFAULT_DATA_DIR` (`.../data/repos` -> `.../data/catalogs`) rather than independently bootstrapped
+the way `DEFAULT_DATA_DIR`/`DEFAULT_INDEX_DIR` are: those two already exist on any checkout that's
+harvested anything, so their own `isdir` check reliably lands on the package directory: an
+`isdir`-only check for `data/catalogs` itself would instead fall through to `~/.reposmx/...` on
+every checkout that hasn't fetched catalogs yet (this one, right now), which is never what "save
+it next to data/repos and data/index" means.
+"""
+const DEFAULT_CATALOGS_DIR = let
+    if haskey(ENV, "REPOSMX_CATALOGS_DIR") && !isempty(ENV["REPOSMX_CATALOGS_DIR"])
+        abspath(ENV["REPOSMX_CATALOGS_DIR"])
+    else
+        joinpath(dirname(DEFAULT_DATA_DIR), "catalogs")
     end
 end
 

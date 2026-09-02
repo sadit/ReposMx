@@ -4,6 +4,7 @@ using ..Config: DEFAULT_DATA_DIR, DEFAULT_INDEX_DIR, get_repositories
 using ..Storage: get_repo_stats, list_repo_names
 using ..OAI: harvest_all, harvest_repository
 using ..Downloader: download_all_files, download_repository_files
+using ..Catalogs: fetch_cti_catalogs
 using ..Parser: parse_all_documents, parse_repository_documents
 using ..Corpus: build_all_corpus, build_repository_corpus
 using ..Indexing: build_search_index, rebuild_authors_index
@@ -34,6 +35,8 @@ SUBCOMANDOS PRINCIPALES DE FLUJO:
   serve [--port N]           Lanza el servidor HTTP y la interfaz web interactiva
 
 SUBCOMANDOS INDIVIDUALES:
+  fetch-catalogs             Descarga los catálogos CTI (Área/Campo/Disciplina/Subdisciplina del
+                             Conocimiento) usados para decodificar dc:subject -- correr una vez
   harvest [repos...]         Cosecha metadatos vía OAI-PMH (incremental)
   download [repos...]        Descarga documentos (PDFs/DOCs) enlazados
   parse [repos...]           Extrae texto estructurado desde los PDFs/documentos
@@ -315,6 +318,8 @@ function main_cli(args=ARGS)
         Base.invokelatest(update_all; repos=target_repos)
     elseif cmd == "serve" || cmd == "server"
         Base.invokelatest(start_server; port, host)
+    elseif cmd == "fetch-catalogs"
+        Base.invokelatest(fetch_cti_catalogs)
     elseif cmd == "harvest"
         Base.invokelatest(harvest_all; repos=target_repos)
     elseif cmd == "download"

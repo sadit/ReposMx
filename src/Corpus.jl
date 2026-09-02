@@ -4,6 +4,7 @@ using EzXML, JSON, SHA
 using ..Config: DEFAULT_DATA_DIR, DEFAULT_OAI_NS
 using ..Types: ReferenceRecord
 using ..Storage: get_repo_dir, load_metadata_records, save_corpus_records, list_repo_names
+using ..Catalogs: resolve_cti_code
 
 export parse_xml_metadata, parse_author_names, parse_keywords, normalize_doc_type,
        extract_conclusions, extract_reference_section, parse_individual_references,
@@ -59,18 +60,59 @@ function parse_author_names(author_str::AbstractString)
     return unique(names)
 end
 
+const DRIVER_SUBJECT_RE = r"^info:eu-repo/classification/([^/]+)/(.+)$"i
+
 """
     parse_keywords(subject_str::AbstractString)
 
 Extracts individual keywords, topics and disciplines from the Dublin Core subject string.
+
+`subject_str` is `" ; "`-joined by [`parse_xml_metadata`](@ref) -- one segment per raw
+`<dc:subject>` element -- so it's split *only* on `;`/newline/`|`, never on `/` or `,` generically.
+Splitting on those too used to shred the most common `dc:subject` shape in this corpus, the
+DRIVER/OpenAIRE `info:eu-repo/classification/<esquema>/<valor>` convention, into meaningless
+fragments (`"info:eu-repo"`, `"classification"`, the bare scheme name, and — worst — a raw numeric
+code kept as if it were a real keyword), and just as wrongly split legitimate comma-containing
+free text (e.g. `"Estado, el"`) into garbage pieces.
+
+A segment matching that DRIVER pattern is handled per scheme:
+- `cti` (CONACYT/CTI Área/Campo/Disciplina/Subdisciplina del Conocimiento): `<valor>` is a bare
+  hierarchical numeric code, meaningless on its own (`cti/1`, `cti/2399`, `cti/239999`, ...) --
+  resolved to its real name via [`Catalogs.resolve_cti_code`](@ref); the whole segment is dropped
+  if it can't be resolved (a raw number is never kept pretending to be a keyword).
+- any other scheme (`lcc`, `LCSH`, `agrovoc`, `librunam`, combined thesaurus names, ...): `<valor>`
+  is already human-readable text in this corpus -- kept as-is, only the boilerplate
+  `info:eu-repo/classification/<esquema>/` prefix is dropped.
+
+A segment that doesn't match the DRIVER pattern at all is kept whole and trimmed, never split
+further -- this is what fixes the `"Estado, el"` case. The tradeoff: a `<dc:subject>` element that
+itself crams several comma-separated keywords into one field (seen in a few repos, e.g.
+`"Asthma, Impulse Oscillometry (IOS), lung function, soft computing"`) now stays one longer
+compound keyword instead of being split into four — coarser, but still a real, searchable phrase,
+unlike the garbage this used to produce for the far more common DRIVER/comma-in-free-text cases.
 """
 function parse_keywords(subject_str::AbstractString)
     isempty(strip(subject_str)) && return String[]
-    parts = split(subject_str, r"[;\n\|/,]")
+    parts = split(subject_str, r"[;\n\|]")
     keywords = String[]
     for p in parts
         clean = strip(p)
         isempty(clean) && continue
+
+        m = match(DRIVER_SUBJECT_RE, clean)
+        if m !== nothing
+            scheme, value = m.captures
+            value = strip(value)
+            isempty(value) && continue
+            if lowercase(scheme) == "cti"
+                resolved = resolve_cti_code(value)
+                resolved === nothing && continue
+                clean = resolved
+            else
+                clean = value
+            end
+        end
+
         length(clean) < 2 && continue
         push!(keywords, clean)
     end
