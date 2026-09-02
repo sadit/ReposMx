@@ -102,7 +102,7 @@ function render_banner(state::ShellState)
     n_authors = length(state.engine.author_keys)
     
     content = """
-{bold bright_cyan}ReposMx - Buscador Interactivo de Repositorios de México{/bold bright_cyan}
+{bold bright_cyan}🔍 ReposMx - Buscador Interactivo de Repositorios de México{/bold bright_cyan}
 {dim}Búsqueda Homogénea en RocksDB: Contenido, Redes de Autores, Citas Bibliográficas y Párrafos{/dim}
 
 • {bold green}Documentos en acervo:{/bold green} $(string(n_docs))
@@ -126,15 +126,7 @@ function render_banner(state::ShellState)
   {dim}--top N | -k N        --repo <nombre>       --type <tipo>{/dim}
   {dim}--tag <keyword>       --wiki | --no-wiki    -h | --help (ayuda del comando){/dim}
 """
-    p = Panel(
-        content,
-        title="{bold bright_blue}🔍 ReposMx Shell{/bold bright_blue}",
-        style="bright_blue",
-        box=:ROUNDED,
-        padding=(2, 2, 1, 1),
-        width=min(105, displaysize(stdout)[2] - 4)
-    )
-    println(p)
+    tprintln(content)
 end
 
 function print_general_help()
@@ -170,7 +162,7 @@ function print_general_help()
 
   {dim}Los flags van después del comando y su argumento principal, en cualquier orden (ej. '/author garcia --top 5 --repo cimat'). No hay filtros de sesión ni autor en contexto: cada búsqueda y cada operación de autor declara su propio ID/nombre. Un comando no reconocido no se interpreta como búsqueda — usa '/search <consulta>' explícitamente.{/dim}
 """
-    println(Panel(content, title="Guía de Comandos Generales", style="cyan", box=:ROUNDED, width=min(105, displaysize(stdout)[2] - 4)))
+    tprintln(content)
 end
 
 const _HELP_ALIASES = Dict("find" => "search", "doc-find" => "doc-search", "sim-refs" => "doc-similar-refs", "sim-authors" => "author-similar")
@@ -261,7 +253,8 @@ Lista los documentos y autores asociados a un tópico. Con `--repo <nombre>`, re
     
     if haskey(docs, c)
         title, body = docs[c]
-        println(Panel(body, title="Ayuda: /$c - $title", style="cyan", box=:ROUNDED, width=min(95, displaysize(stdout)[2] - 4)))
+        tprintln("{bold cyan}Ayuda: /$c — $title{/bold cyan}")
+        tprintln(body)
     else
         tprintln("{bold yellow}No hay ayuda específica para el comando '$cmd'. Escribe '/?' para ver la lista de comandos.{/bold yellow}\n")
     end
@@ -293,9 +286,9 @@ function show_info_command(state::ShellState, repo_arg::Union{AbstractString, No
 🔗 {bold}Citas Bibliográficas:{/bold}  $refs_cnt
 📅 {bold}Rango de Años:{/bold}         $(stats["year_min"]) - $(stats["year_max"])
 """
-    p_summary = Panel(summary_text, title=title_str, style="bright_cyan", box=:ROUNDED, width=min(105, displaysize(stdout)[2] - 4))
-    println(p_summary)
-    
+    tprintln("{bold bright_cyan}$title_str{/bold bright_cyan}")
+    tprintln(summary_text)
+
     disciplines = get(stats, "top_disciplines", Dict{String, Any}[])
     if !isempty(disciplines)
         d_sub = first(disciplines, 10)
@@ -303,7 +296,8 @@ function show_info_command(state::ShellState, repo_arg::Union{AbstractString, No
             "Área / Disciplina" => [d["discipline"] for d in d_sub],
             "Publicaciones" => [string(d["count"]) for d in d_sub]
         ); style="magenta", box=:ROUNDED)
-        println(Panel(string(d_tab), title="🏷️ Principales Disciplinas", style="magenta", box=:ROUNDED, width=min(105, displaysize(stdout)[2] - 4)))
+        tprintln("{bold magenta}🏷️ Principales Disciplinas{/bold magenta}")
+        println(d_tab)
     end
     println()
 end
@@ -348,7 +342,7 @@ function show_author_search(state::ShellState, author_query::AbstractString; top
         kws = !isempty(a["keywords"]) ? join(first(a["keywords"], 6), " , ") : "N/A"
 
         content = """
-👤 {bold bright_white}$name{/bold bright_white}  {cyan}[$role]{/cyan}
+👤 {bold bright_white}[#$i] $name{/bold bright_white}  {cyan}[$role]{/cyan}
 🆔 {bold}ID:{/bold} {bright_magenta}$id{/bright_magenta}
 
 🏛️  {bold}Institución(es):{/bold} $repos
@@ -356,14 +350,7 @@ function show_author_search(state::ShellState, author_query::AbstractString; top
 👥 {bold}Coautores:{/bold} $coauth
 🏷️  {bold}Áreas / Keywords:{/bold} $kws
 """
-        p = Panel(
-            content,
-            title="[Autor #$i]",
-            style="bright_cyan",
-            box=:ROUNDED,
-            width=min(100, displaysize(stdout)[2] - 4)
-        )
-        println(p)
+        tprintln(content)
     end
 
     tprintln("{dim}Tip: Usa el ID o el #N con /author-docs, /author-coauth o /author-similar (ej. '/author-docs $(authors[1]["consolidated_id"])' o '/author-docs 1').{/dim}\n")
@@ -411,10 +398,10 @@ function show_author_docs(state::ShellState, author_ref::AbstractString; top::In
         role = get(d, "author_role", "Autor")
         
         card_content = """
-{bold bright_white}$title{/bold bright_white}
+{bold bright_white}[#$i] $title{/bold bright_white}
 🏛️  {cyan}$repo{/cyan} | {yellow}📑 $dtype{/yellow} | {dim}📅 $date{/dim} | {green}Rol: $role{/green}
 """
-        println(Panel(card_content, title="[#$i]", style="blue", box=:SQUARE, width=min(100, displaysize(stdout)[2] - 4)))
+        tprintln(card_content)
     end
     println()
 end
@@ -459,12 +446,11 @@ function show_similar_authors(state::ShellState, author_ref::AbstractString; top
         kws = !isempty(a["keywords"]) ? join(first(a["keywords"], 5), " , ") : "N/A"
         
         content = """
-👤 {bold bright_white}$name{/bold bright_white}  {green}(Afinidad BM25: $(round(score, digits=1))){/green}
+👤 {bold bright_white}[#$i] $name{/bold bright_white}  {green}(Afinidad BM25: $(round(score, digits=1))){/green}
 🏛️  {bold}Institución:{/bold} $repos
 🏷️  {bold}Áreas de coincidencia:{/bold} $kws
 """
-        p = Panel(content, title="[Autor Afín #$i]", style="magenta", box=:ROUNDED, width=min(100, displaysize(stdout)[2] - 4))
-        println(p)
+        tprintln(content)
     end
     println()
 end
@@ -495,7 +481,7 @@ function show_document_detail(state::ShellState, idx::Int)
     kw_str = !isempty(kws) ? join(kws, " | ") : "N/A"
     
     content = """
-{bold bright_white}$title{/bold bright_white}
+{bold bright_white}[#$idx] $title{/bold bright_white}
 
 🏛️  {bold cyan}Institución:{/bold cyan}     $repo
 📑 {bold cyan}Tipo:{/bold cyan}            $dtype
@@ -510,14 +496,7 @@ $(!isempty(contrib) ? "🤝 {bold cyan}Colaborador(es):{/bold cyan} $contrib\n" 
 {bold yellow}Resumen / Abstract:{/bold yellow}
 $desc
 """
-    p = Panel(
-        content,
-        title="[#$idx | Contexto Doc: $repo:$doc_id]",
-        style="bright_yellow",
-        box=:DOUBLE,
-        width=min(105, displaysize(stdout)[2] - 4)
-    )
-    println(p)
+    tprintln(content)
     tprintln("{bold green}✓ Contexto de documento fijado:{/bold green} {cyan}$repo:$doc_id{/cyan}. Usa {yellow}/doc-refs{/yellow}, {yellow}/doc-similar-refs{/yellow} o {yellow}/doc-search <query>{/yellow}.\n")
 end
 
@@ -548,8 +527,7 @@ function show_document_references_cli(state::ShellState, doc_idx_opt::Union{Int,
     
     for (i, r) in enumerate(refs)
         txt = r isa AbstractDict ? get(r, "text", "") : string(r)
-        p = Panel(txt, title="[Ref #$i]", style="blue", box=:SQUARE, width=min(100, displaysize(stdout)[2] - 4))
-        println(p)
+        tprintln("{bold blue}[Ref #$i]{/bold blue} $txt")
     end
     println()
 end
@@ -579,10 +557,10 @@ function show_similar_documents_by_refs(state::ShellState; top::Int=DEFAULT_TOP_
         score = get(d, "score", 0.0)
         
         card_content = """
-{bold bright_white}$title{/bold bright_white}
+{bold bright_white}[#$i] $title{/bold bright_white}
 🏛️  {cyan}$d_repo{/cyan} | {yellow}📑 $dtype{/yellow} | {dim}👤 $creator{/dim} | {green}Afinidad Bibliográfica BM25: $(round(score, digits=1)){/green}
 """
-        println(Panel(card_content, title="[Doc Afín #$i]", style="green", box=:ROUNDED, width=min(100, displaysize(stdout)[2] - 4)))
+        tprintln(card_content)
     end
     println()
 end
@@ -624,15 +602,9 @@ function search_in_document_cli(state::ShellState, query::AbstractString, doc_id
         score = ph["score"]
         txt = ph["text"]
         
-        p_card = Panel(
-            txt,
-            title="[Pasaje #$i - Párrafo $pnum | $section | Score: $(round(score, digits=1))]",
-            title_style="bold bright_cyan",
-            style="cyan",
-            box=:ROUNDED,
-            width=min(100, displaysize(stdout)[2] - 4)
-        )
-        println(p_card)
+        tprintln("{bold bright_cyan}[Pasaje #$i - Párrafo $pnum | $section | Score: $(round(score, digits=1))]{/bold bright_cyan}")
+        tprintln(txt)
+        println()
     end
     println()
 end
@@ -654,7 +626,7 @@ function show_topic_elements_cli(state::ShellState, topic_str::AbstractString; t
     if !isempty(docs)
         tprintln("📚 {bold bright_cyan}Publicaciones asociadas ($(length(docs))):{/bold bright_cyan}")
         for (i, d) in enumerate(first(docs, 6))
-            println("  [#$i] {bold bright_white}$(d["title"]){/bold bright_white} {cyan}($(d["repo"])){/cyan}")
+            tprintln("  [#$i] {bold bright_white}$(d["title"]){/bold bright_white} {cyan}($(d["repo"])){/cyan}")
         end
         println()
     end
@@ -671,13 +643,13 @@ function render_search_results(state::ShellState, res::Dict; repo::Union{Abstrac
     if haskey(res, "wiki_concept") && res["wiki_concept"] !== nothing
         w = res["wiki_concept"]
         wiki_content = """
-{bold bright_white}$(w["title"]){/bold bright_white} {dim}(Wikipedia $(uppercase(w["lang"])) - Concepto){/dim}
+💡 {bold bright_white}$(w["title"]){/bold bright_white} {dim}(Wikipedia $(uppercase(w["lang"])) - Concepto){/dim}
 
 $(w["extract"])
 
 🔗 {italic blue}$(w["url"]){/italic blue}
 """
-        println(Panel(wiki_content, title="💡 Concepto Wikipedia", style="magenta", box=:ROUNDED, width=min(100, displaysize(stdout)[2] - 4)))
+        tprintln(wiki_content)
     end
     
     q = get(res, "query", "")
@@ -712,13 +684,12 @@ $(w["extract"])
         meta_line *= " | {green}Score: $(round(score, digits=1)){/green}"
         
         card_content = """
-{bold bright_white}$title{/bold bright_white}
+{bold bright_white}[#$i] $title{/bold bright_white}
 $meta_line
 
 $snippet
 """
-        card = Panel(card_content, title="[#$i]", style="blue", box=:SQUARE, width=min(100, displaysize(stdout)[2] - 4))
-        println(card)
+        tprintln(card_content)
     end
     
     tprintln("{dim}Tip: Escribe '/doc <N>' para abrir la ficha y fijar el contexto.{/dim}\n")
