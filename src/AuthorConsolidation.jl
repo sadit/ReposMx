@@ -205,14 +205,44 @@ function _given_name_token_compatible(a::AbstractString, b::AbstractString)
 end
 
 """
+    _surnames_plausibly_match(given_a, surname_a, given_b, surname_b) -> Bool
+
+Surname half of [`_plausibly_same_person`](@ref)'s gate. This corpus mixes two real, common
+conventions for the *same* researcher's name across different raw records: the full Mexican form
+("Nombre[s] ApellidoPaterno ApellidoMaterno" — tokenized here as `given` ending with the paternal
+surname, `surname` holding the maternal one) and a single-surname form the same person is often
+recorded under internationally ("Nombre Apellido" — `given` is just the given name(s), `surname`
+holds the one reported surname). A hyphenated combined surname like `"Tellez-Avila"` tokenizes
+into the same two tokens as `"Tellez Avila"` (the tokenizer treats `-` as a separator, verified
+elsewhere in this module), so it's already the full-form case, not a third one to handle here.
+
+Mixing full and single-surname records for the same person can never share an exact last-token
+surname (`"avila" != "tellez"`), so on top of requiring an exact match, this also accepts a
+single-surname name (`length(given) == 1`) whose one surname equals the *other* name's paternal
+surname (`given[end]`, when that other name has 2+ given-position tokens) — the surname a Mexican
+researcher keeps when publishing under the single-surname convention is, by convention, the
+paternal one, never the maternal. Both sides of every comparison still require `length >= 2` (see
+[`_plausibly_same_person`](@ref)'s docstring on why: garbage data degenerating to single-character
+tokens must never count as a match).
+"""
+function _surnames_plausibly_match(given_a::Vector{String}, surname_a::AbstractString,
+                                    given_b::Vector{String}, surname_b::AbstractString)
+    length(surname_a) >= 2 && length(surname_b) >= 2 && surname_a == surname_b && return true
+    length(given_a) == 1 && length(given_b) >= 2 && length(surname_a) >= 2 && surname_a == given_b[end] && return true
+    length(given_b) == 1 && length(given_a) >= 2 && length(surname_b) >= 2 && surname_b == given_a[end] && return true
+    return false
+end
+
+"""
     _plausibly_same_person(name_a, name_b) -> Bool
 
-Name-based gate for [`compute_similarity_merges`](@ref): requires the surname (last token) to
-match exactly, and the **first given-name token** to be equal or an initial-abbreviation of the
-other's (see [`_given_name_token_compatible`](@ref)) — deliberately does not require every
-given-name token to match, since middle names are routinely dropped or added between how the
-same person's name appears in different raw records (e.g. `"Jewel Todd"` vs
-`"JEWEL NICOLE ANNA TODD"`).
+Name-based gate for [`compute_similarity_merges`](@ref): requires the surname to plausibly match
+(exact last-token match, or a full-vs-single-surname truncation — see
+[`_surnames_plausibly_match`](@ref)), and the **first given-name token** to be equal or an
+initial-abbreviation of the other's (see [`_given_name_token_compatible`](@ref)) —  deliberately
+does not require every given-name token to match, since middle names are routinely dropped or
+added between how the same person's name appears in different raw records (e.g. `"Jewel Todd"`
+vs `"JEWEL NICOLE ANNA TODD"`).
 
 Two weaker gates were tried and rejected empirically, on a real 10-repo rebuild, before landing
 on this one:
@@ -227,17 +257,19 @@ on this one:
   check, but none of those given names is actually an abbreviation of the other.
 
 This version rejects every one of those while still passing genuine variants like
-`("Juan Antonio Garcia Lopez", "J. A. Garcia-Lopez")` and citation-style forms like
-`("Alejandro Anaya", "Anaya, A. (Alejandro)")`.
+`("Juan Antonio Garcia Lopez", "J. A. Garcia-Lopez")`, citation-style forms like
+`("Alejandro Anaya", "Anaya, A. (Alejandro)")`, and — via
+[`_surnames_plausibly_match`](@ref) — a Mexican double-surname record next to that same person's
+single-surname (paternal-only) record, e.g. `("Juan Tellez Avila", "Juan Tellez")`, without also
+accepting two different people who each have one of the two surnames but in swapped
+paternal/maternal roles, e.g. `("Juan Perez Gomez", "Juan Gomez Hernandez")` (still rejected: both
+are full two-surname forms, so only the exact-match rule applies, and `"gomez" != "hernandez"`).
 """
 function _plausibly_same_person(name_a::AbstractString, name_b::AbstractString)
     given_a, surname_a = _name_tokens(name_a)
     given_b, surname_b = _name_tokens(name_b)
-    # length >= 2: a raw "name" that is actually garbage data (e.g. a bare ORCID literal, seen on
-    # a real rebuild) can tokenize down to single-character tokens like "0" — too short to carry
-    # any real identifying signal, so never treat those as a surname match.
-    (surname_a == surname_b && length(surname_a) >= 2) || return false
     (!isempty(given_a) && !isempty(given_b)) || return false
+    _surnames_plausibly_match(given_a, surname_a, given_b, surname_b) || return false
     _given_name_token_compatible(given_a[1], given_b[1])
 end
 

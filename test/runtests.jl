@@ -123,6 +123,23 @@ using SimilaritySearch, TextSearch
         # never count as a surname match no matter how identical the degenerate tokens look.
         @test !AuthorConsolidation._plausibly_same_person("0000-0001-7887-7580", "0000-0002-8080-8186")
 
+        # one of the most common patterns in this corpus: the same researcher recorded under the
+        # full Mexican double-surname convention ("Nombre ApellidoPaterno ApellidoMaterno") in
+        # some records and under the single-surname convention used internationally ("Nombre
+        # ApellidoPaterno") in others -- an exact last-token match can never catch this (the
+        # maternal surname is simply absent from the truncated form). The paternal surname is
+        # kept in both, so that's what must match. A hyphenated combined surname (e.g.
+        # "Tellez-Avila") tokenizes the same as the space-separated form, so it needs no special
+        # case of its own.
+        @test AuthorConsolidation._plausibly_same_person("Juan Tellez Avila", "Juan Tellez")
+        @test AuthorConsolidation._plausibly_same_person("Juan Tellez-Avila", "Juan Tellez")
+        @test AuthorConsolidation._plausibly_same_person("J. Tellez Avila", "Juan Tellez")
+
+        # must NOT accept two different people who each carry one of the same two surnames, but
+        # in swapped paternal/maternal roles -- both are full two-surname forms, so only the
+        # exact last-token rule applies, and it correctly tells them apart.
+        @test !AuthorConsolidation._plausibly_same_person("Juan Perez Gomez", "Juan Gomez Hernandez")
+
         merges = AuthorConsolidation.compute_similarity_merges(authors_data; k=4)
         pair_present(a, b) = any(p -> Set(p) == Set((a, b)), merges)
 
