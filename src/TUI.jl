@@ -10,19 +10,51 @@ using ..Search: SearchEngine, query_index, search_authors, find_similar_authors_
                find_similar_documents_by_references, search_references,
                get_document_references, get_author_documents, get_coauthors,
                get_topic_elements, search_document_paragraphs, get_detailed_statistics
-using ..DB: normalize_author_name
+using ..DB: normalize_author_name, get_document
 using ..Wikipedia: explain_concept
 
 export launch_interactive_shell
 
+"""
+    ShellState
+
+No search-result cache, no "last author", no "context document": every command that operates on a
+document or author profile takes its identifier as an explicit argument, copy-pasted from a
+previous result card (which always shows it, see [`format_doc_ref`](@ref)) — not a positional
+index into some prior command's output. That's a deliberate simplification, not an oversight: a
+numbered reference only works by remembering (or the shell remembering, i.e. session/context
+state) what an earlier command showed, which is exactly the kind of statefulness a line-editing
+shell — where copy/paste is cheap — doesn't need.
+"""
 mutable struct ShellState
     engine::SearchEngine
-    last_hits::Vector{Dict{String, Any}}
-    last_authors::Vector{Dict{String, Any}}
-    context_doc::Union{Tuple{String, String}, Nothing} # (repo, doc_id)
     data_dir::String
     index_dir::String
 end
+
+"""
+    parse_doc_ref(s::AbstractString) -> Union{Tuple{String,String}, Nothing}
+
+Parses a `repo:doc_id` document identifier (as shown on every document card, see
+[`format_doc_ref`](@ref)) into `(repo, doc_id)`. Splits on the *first* `:` only — `doc_id` itself
+routinely contains further colons (OAI identifiers look like
+`oai:repositorioinstitucional.buap.mx:20.500.12371/16275`). Returns `nothing` if `s` isn't a
+well-formed `repo:doc_id` pair.
+"""
+function parse_doc_ref(s::AbstractString)
+    parts = split(s, ':'; limit=2)
+    (length(parts) == 2 && !isempty(parts[1]) && !isempty(parts[2])) || return nothing
+    return (String(parts[1]), String(parts[2]))
+end
+
+"""
+    format_doc_ref(repo, doc_id) -> String
+
+The copy-pasteable document identifier shown on every card and accepted by every document command
+(`/doc`, `/doc-refs`, `/doc-similar-refs`, `/doc-search`) — the exact inverse of
+[`parse_doc_ref`](@ref).
+"""
+format_doc_ref(repo::AbstractString, doc_id::AbstractString) = "$repo:$doc_id"
 
 const DEFAULT_TOP_K = 10
 
@@ -44,8 +76,9 @@ consume every token up to the next recognized flag or the end of input, so multi
 without quoting (`--type Reporte Técnico`); `all`/`todos`/`none`/`*` as a value clears the filter
 (equivalent to omitting the flag), kept for muscle memory from the old `/repo all` style.
 `--wiki`/`--no-wiki` are boolean, no value. Flags may appear anywhere in `args`, not just at the
-end, and are matched by name — commands with their own positional argument (`/doc <N>`, `/refs
-[N]`) are unaffected as long as they parse that positional from the text `extract_flags` returns.
+end, and are matched by name — commands with their own positional argument (`/doc <repo:doc_id>`,
+`/doc-search <repo:doc_id> <consulta>`) are unaffected as long as they parse that positional from
+the text `extract_flags` returns.
 """
 function extract_flags(args::AbstractString)
     tokens = split(args)
@@ -96,6 +129,20 @@ function tprintln(str)
     println(Term.apply_style(str))
 end
 
+"""
+    print_separator()
+
+A plain colored horizontal rule, printed between successive result cards (search hits, author
+cards, document cards, ...) — the visual separation a Term.jl `Panel` used to give each item, kept
+now that panels are gone (they forced long paragraphs to hard-wrap mid-word; see the TUI panel
+removal). `{dim}` on purpose: a separator should recede, not compete with the colored content it's
+separating.
+"""
+function print_separator()
+    w = min(100, displaysize(stdout)[2])
+    tprintln("{dim}$(repeat('─', w)){/dim}")
+end
+
 function render_banner(state::ShellState)
     n_docs = length(state.engine.doc_keys)
     n_repos = length(list_repo_names(; data_dir=state.data_dir))
@@ -113,18 +160,21 @@ function render_banner(state::ShellState)
   {cyan}/?{/cyan} o {cyan}/? <cmd>{/cyan}                     Ayuda interactiva general o de un comando
   {cyan}/search <consulta> [flags]{/cyan}       Búsqueda general de publicaciones por contenido
   {cyan}/author <nombre> [flags]{/cyan}         Búsqueda de investigadores por nombre (muestra su ID)
-  {cyan}/author-docs <ID|#N> [--top N]{/cyan}   Lista publicaciones del autor indicado
-  {cyan}/author-coauth <ID|#N> [--top N]{/cyan} Muestra la red de coautores del autor indicado
-  {cyan}/author-similar <ID|#N|nombre> [flags]{/cyan} Investigadores afines por perfil y referencias
-  {cyan}/doc <N>{/cyan}                         Abre ficha de un documento y lo fija en contexto
-  {cyan}/doc-refs{/cyan}                        Referencias bibliográficas del documento en contexto
-  {cyan}/doc-similar-refs [--top N]{/cyan}      Documentos similares por referencias citadas
-  {cyan}/doc-search <query> [--top N]{/cyan}    Búsqueda profunda en párrafos del documento en contexto
+  {cyan}/author-docs <ID> [--top N]{/cyan}      Lista publicaciones del autor indicado
+  {cyan}/author-coauth <ID> [--top N]{/cyan}    Muestra la red de coautores del autor indicado
+  {cyan}/author-similar <ID> [flags]{/cyan}     Investigadores afines por perfil y referencias
+  {cyan}/doc <repo:doc_id>{/cyan}               Abre la ficha completa de un documento
+  {cyan}/doc-refs <repo:doc_id>{/cyan}          Referencias bibliográficas del documento
+  {cyan}/doc-similar-refs <repo:doc_id>{/cyan}  Documentos similares por referencias citadas
+  {cyan}/doc-search <repo:doc_id> <query>{/cyan} Búsqueda profunda en párrafos del documento
   {cyan}/topic <tema> [flags]{/cyan}            Operaciones de conjuntos (autores y docs por tema/centro)
 
 {bold yellow}Flags disponibles (después del comando, en cualquier orden):{/bold yellow}
   {dim}--top N | -k N        --repo <nombre>       --type <tipo>{/dim}
   {dim}--tag <keyword>       --wiki | --no-wiki    -h | --help (ayuda del comando){/dim}
+
+{dim}Cada tarjeta de resultado muestra su identificador (🆔) — cópialo y pégalo como argumento del
+siguiente comando. No hay números de resultado ni contexto de sesión.{/dim}
 """
     tprintln(content)
 end
@@ -133,18 +183,18 @@ function print_general_help()
     content = """
 {bold cyan}GUÍA DE COMANDOS DE REPOSMX:{/bold cyan}
 
-  {bold bright_yellow}1. BÚSQUEDA Y CONTEXTO DE DOCUMENTOS:{/bold bright_yellow}
+  {bold bright_yellow}1. BÚSQUEDA Y DOCUMENTOS:{/bold bright_yellow}
     {yellow}/search <texto> [flags]{/yellow}       Búsqueda de publicaciones por título, abstract, conclusiones y temas
-    {yellow}/doc <N>{/yellow}                     Abre ficha completa y establece el documento como {bold}Contexto Activo{/bold}
-    {yellow}/doc-refs{/yellow} o {yellow}/refs{/yellow}             Lista las citas bibliográficas del documento en contexto
-    {yellow}/doc-similar-refs{/yellow} o {yellow}/sim-refs{/yellow} {yellow}[--top N]{/yellow}  Busca artículos/tesis con bibliografía afín al documento en contexto
-    {yellow}/doc-search <texto> [--top N]{/yellow}  Búsqueda profunda de pasajes/párrafos dentro del documento en contexto
+    {yellow}/doc <repo:doc_id>{/yellow}            Abre la ficha completa de un documento
+    {yellow}/doc-refs{/yellow} o {yellow}/refs{/yellow} {yellow}<repo:doc_id>{/yellow}    Lista las citas bibliográficas del documento
+    {yellow}/doc-similar-refs{/yellow} o {yellow}/sim-refs{/yellow} {yellow}<repo:doc_id> [--top N]{/yellow}  Busca artículos/tesis con bibliografía afín
+    {yellow}/doc-search <repo:doc_id> <texto> [--top N]{/yellow}  Búsqueda profunda de pasajes/párrafos dentro del documento
 
   {bold bright_yellow}2. BÚSQUEDA Y OPERACIONES DE AUTORES:{/bold bright_yellow}
     {yellow}/author <nombre> [flags]{/yellow}      Búsqueda de investigadores por coincidencia léxica de nombre; cada tarjeta muestra su ID
-    {yellow}/author-docs <ID|#N> [--top N]{/yellow}        Lista todas las publicaciones del autor indicado (ID de una tarjeta, o #N del último /author)
-    {yellow}/author-coauth <ID|#N> [--top N]{/yellow}      Muestra la red de coautoría y pesos del autor indicado
-    {yellow}/author-similar{/yellow} o {yellow}/sim-authors{/yellow} {yellow}<ID|#N|nombre> [flags]{/yellow} Autores afines por acoplamiento bibliográfico y perfil temático
+    {yellow}/author-docs <ID> [--top N]{/yellow}           Lista todas las publicaciones del autor indicado
+    {yellow}/author-coauth <ID> [--top N]{/yellow}         Muestra la red de coautoría y pesos del autor indicado
+    {yellow}/author-similar{/yellow} o {yellow}/sim-authors{/yellow} {yellow}<ID> [flags]{/yellow} Autores afines por acoplamiento bibliográfico y perfil temático
 
   {bold bright_yellow}3. TÓPICOS Y OPERACIONES DE CONJUNTOS:{/bold bright_yellow}
     {yellow}/topic <tema> [flags]{/yellow}         Lista documentos y autores en el tema (intersecta con --repo si se da)
@@ -157,10 +207,9 @@ function print_general_help()
     {yellow}--wiki{/yellow} / {yellow}--no-wiki{/yellow}            Activa/desactiva tarjetas de Wikipedia — solo /search
     {yellow}-h{/yellow} / {yellow}--help{/yellow}                Muestra la ayuda de ese comando en vez de ejecutarlo (cualquier comando con '/')
     {yellow}/info [repo]{/yellow}                  Estadísticas detalladas del repositorio o acervo global
-    {yellow}/clear-context{/yellow}                Limpia el contexto activo de documento
     {yellow}/clear{/yellow} | {yellow}/exit{/yellow}              Limpia la pantalla o sale del shell
 
-  {dim}Los flags van después del comando y su argumento principal, en cualquier orden (ej. '/author garcia --top 5 --repo cimat'). No hay filtros de sesión ni autor en contexto: cada búsqueda y cada operación de autor declara su propio ID/nombre. Un comando no reconocido no se interpreta como búsqueda — usa '/search <consulta>' explícitamente.{/dim}
+  {dim}Los flags van después del comando y su argumento principal, en cualquier orden (ej. '/author garcia --top 5 --repo cimat'). No hay números de resultado ni contexto de sesión: cada tarjeta muestra su identificador (🆔 ID de autor, o repo:doc_id para documentos) — cópialo y pégalo como argumento del siguiente comando. Un comando no reconocido no se interpreta como búsqueda — usa '/search <consulta>' explícitamente.{/dim}
 """
     tprintln(content)
 end
@@ -187,60 +236,62 @@ hay que declararla explícitamente con `/search`.
 
 {bold}Descripción:{/bold}
 Busca perfiles de investigadores y colaboradores por coincidencia de nombre. Cada tarjeta de
-resultado muestra el {bold}ID{/bold} corto del autor (ej. `garcia_4821`) — úsalo, o el número
-`#N` de la tarjeta, para operar sobre ese autor con {italic}/author-docs{/italic},
-{italic}/author-coauth{/italic} o {italic}/author-similar{/italic}.
+resultado muestra el {bold}ID{/bold} corto del autor (ej. `garcia_4821`) — cópialo y pégalo para
+operar sobre ese autor con {italic}/author-docs{/italic}, {italic}/author-coauth{/italic} o
+{italic}/author-similar{/italic}.
 """),
         "author-docs" => ("Publicaciones de un Autor",
             """
-{bold}Sintaxis:{/bold} {cyan}/author-docs <ID|#N> [--top N]{/cyan}
+{bold}Sintaxis:{/bold} {cyan}/author-docs <ID> [--top N]{/cyan}
 
 {bold}Descripción:{/bold}
 Recupera directamente de RocksDB todas las obras, tesis y artículos registrados para el autor
-indicado (su ID, o el `#N` de la última búsqueda `/author`).
+indicado (su ID, mostrado en las tarjetas de `/author`).
 """),
         "author-coauth" => ("Red de Coautores de un Autor",
             """
-{bold}Sintaxis:{/bold} {cyan}/author-coauth <ID|#N> [--top N]{/cyan}
+{bold}Sintaxis:{/bold} {cyan}/author-coauth <ID> [--top N]{/cyan}
 
 {bold}Descripción:{/bold}
 Muestra los colaboradores y coautores más frecuentes del autor indicado.
 """),
         "author-similar" => ("Similitud de Autores por Perfil y Citas",
             """
-{bold}Sintaxis:{/bold} {cyan}/author-similar <ID|#N|nombre>{/cyan} o {cyan}/sim-authors <ID|#N|nombre> [flags]{/cyan}
+{bold}Sintaxis:{/bold} {cyan}/author-similar <ID>{/cyan} o {cyan}/sim-authors <ID> [flags]{/cyan}
 
 {bold}Descripción:{/bold}
 Evalúa el índice semántico de autores (`authors_profile_shell.zip`) para descubrir investigadores que comparten marco conceptual, tópicos y literatura citada con el autor indicado.
 """),
-        "doc" => ("Fijar Documento en Contexto y Ver Ficha",
+        "doc" => ("Ficha de un Documento",
             """
-{bold}Sintaxis:{/bold} {cyan}/doc <número_resultado>{/cyan}
+{bold}Sintaxis:{/bold} {cyan}/doc <repo:doc_id>{/cyan}
 
 {bold}Descripción:{/bold}
-Abre la ficha técnica completa del documento desde RocksDB y lo fija como contexto activo.
-Permite ejecutar {italic}/doc-refs{/italic}, {italic}/doc-similar-refs{/italic}, y {italic}/doc-search{/italic}.
+Abre la ficha técnica completa del documento desde RocksDB. `repo:doc_id` es el identificador
+mostrado en cada tarjeta de resultado (🆔) — cópialo y pégalo. Permite continuar con
+{italic}/doc-refs{/italic}, {italic}/doc-similar-refs{/italic}, y {italic}/doc-search{/italic}
+sobre el mismo `repo:doc_id`.
 """),
         "doc-refs" => ("Referencias Bibliográficas del Documento",
             """
-{bold}Sintaxis:{/bold} {cyan}/doc-refs{/cyan} o {cyan}/refs [N]{/cyan}
+{bold}Sintaxis:{/bold} {cyan}/doc-refs <repo:doc_id>{/cyan} o {cyan}/refs <repo:doc_id>{/cyan}
 
 {bold}Descripción:{/bold}
-Muestra las citas bibliográficas extraídas del documento en contexto activo.
+Muestra las citas bibliográficas extraídas del documento indicado.
 """),
         "doc-similar-refs" => ("Documentos con Bibliografía Similar",
             """
-{bold}Sintaxis:{/bold} {cyan}/doc-similar-refs [--top N]{/cyan} o {cyan}/sim-refs [--top N]{/cyan}
+{bold}Sintaxis:{/bold} {cyan}/doc-similar-refs <repo:doc_id> [--top N]{/cyan} o {cyan}/sim-refs <repo:doc_id> [--top N]{/cyan}
 
 {bold}Descripción:{/bold}
-Toma las referencias citadas por el documento en contexto y consulta el índice bibliográfico (`docs_refs_shell.zip`) para descubrir publicaciones con acoplamiento bibliográfico afín. `--top N` / `-k N` controla cuántos resultados devuelve (default $DEFAULT_TOP_K).
+Toma las referencias citadas por el documento indicado y consulta el índice bibliográfico (`docs_refs_shell.zip`) para descubrir publicaciones con acoplamiento bibliográfico afín. `--top N` / `-k N` controla cuántos resultados devuelve (default $DEFAULT_TOP_K).
 """),
         "doc-search" => ("Búsqueda Profunda en Párrafos",
             """
-{bold}Sintaxis:{/bold} {cyan}/doc-search <consulta> [--top N]{/cyan}
+{bold}Sintaxis:{/bold} {cyan}/doc-search <repo:doc_id> <consulta> [--top N]{/cyan}
 
 {bold}Descripción:{/bold}
-Realiza una búsqueda de párrafos y pasajes relevantes dentro del texto completo del documento en contexto activo (no confundir con {italic}/search{/italic}, que busca en todo el acervo). `--top N` / `-k N` controla cuántos pasajes devuelve (default $DEFAULT_TOP_K).
+Realiza una búsqueda de párrafos y pasajes relevantes dentro del texto completo del documento indicado (no confundir con {italic}/search{/italic}, que busca en todo el acervo). `--top N` / `-k N` controla cuántos pasajes devuelve (default $DEFAULT_TOP_K).
 """),
         "topic" => ("Operaciones de Conjuntos por Tópico",
             """
@@ -323,16 +374,15 @@ end
 function show_author_search(state::ShellState, author_query::AbstractString; top::Int=DEFAULT_TOP_K, repo::Union{AbstractString, Nothing}=nothing)
     res = search_authors(state.engine, author_query; top, repo)
     authors = get(res, "authors", [])
-    state.last_authors = authors
-    
+
     if isempty(authors)
         tprintln("{yellow}No se encontraron autores que coincidan con '$author_query'.{/yellow}\n")
         return
     end
-    
+
     tprintln("\n{bold green}✓{/bold green} Encontrados {bold bright_cyan}$(length(authors)) autores{/bold bright_cyan} para \"{bold bright_white}$author_query{/bold bright_white}\" en {dim}$(res["time_ms"]) ms{/dim}:\n")
-    
-    for (i, a) in enumerate(authors)
+
+    for a in authors
         name = a["name"]
         role = a["role"]
         cnt = a["doc_count"]
@@ -342,7 +392,7 @@ function show_author_search(state::ShellState, author_query::AbstractString; top
         kws = !isempty(a["keywords"]) ? join(first(a["keywords"], 6), " , ") : "N/A"
 
         content = """
-👤 {bold bright_white}[#$i] $name{/bold bright_white}  {cyan}[$role]{/cyan}
+👤 {bold bright_white}$name{/bold bright_white}  {cyan}[$role]{/cyan}
 🆔 {bold}ID:{/bold} {bright_magenta}$id{/bright_magenta}
 
 🏛️  {bold}Institución(es):{/bold} $repos
@@ -351,72 +401,50 @@ function show_author_search(state::ShellState, author_query::AbstractString; top
 🏷️  {bold}Áreas / Keywords:{/bold} $kws
 """
         tprintln(content)
+        print_separator()
     end
 
-    tprintln("{dim}Tip: Usa el ID o el #N con /author-docs, /author-coauth o /author-similar (ej. '/author-docs $(authors[1]["consolidated_id"])' o '/author-docs 1').{/dim}\n")
-end
-
-"""
-    resolve_author_ref(state::ShellState, author_ref::AbstractString) -> Union{String,Nothing}
-
-`author_ref` is either a numeric index into `state.last_authors` (the last `/author` results,
-same convention as `/doc <N>` for documents) or an id/name passed straight through to
-`resolve_consolidated_profile`. Returns the resolved reference to hand to the `Search` functions,
-or `nothing` if a numeric index was out of range.
-"""
-function resolve_author_ref(state::ShellState, author_ref::AbstractString)
-    idx = tryparse(Int, author_ref)
-    if idx !== nothing
-        if isempty(state.last_authors) || idx < 1 || idx > length(state.last_authors)
-            tprintln("{bold red}Número de autor inválido. Primero busca con '/author <nombre>'.{/bold red}\n")
-            return nothing
-        end
-        return state.last_authors[idx]["consolidated_id"]
-    end
-    return strip(author_ref)
+    tprintln("{dim}Tip: Copia el ID de una tarjeta y pégalo en /author-docs, /author-coauth o /author-similar (ej. '/author-docs $(authors[1]["consolidated_id"])').{/dim}\n")
 end
 
 function show_author_docs(state::ShellState, author_ref::AbstractString; top::Int=DEFAULT_TOP_K)
-    ref = resolve_author_ref(state, author_ref)
-    ref === nothing && return
-
-    res = get_author_documents(state.engine, ref; limit=top*2)
+    res = get_author_documents(state.engine, author_ref; limit=top*2)
     docs = get(res, "documents", Dict{String, Any}[])
 
     if isempty(docs)
-        tprintln("{yellow}No se encontraron documentos en RocksDB para el autor '$ref'.{/yellow}\n")
+        tprintln("{yellow}No se encontraron documentos en RocksDB para el autor '$author_ref'.{/yellow}\n")
         return
     end
 
     tprintln("\n{bold green}✓{/bold green} Publicaciones de {bold bright_white}$(res["author"]){/bold bright_white} ({bold bright_cyan}$(length(docs)) registros{/bold bright_cyan}):\n")
 
-    for (i, d) in enumerate(first(docs, top))
+    for d in first(docs, top)
         title = get(d, "title", "Sin título")
         repo = get(d, "repo", "")
+        doc_id = get(d, "id", "")
         date = get(d, "date", "")
         dtype = get(d, "type", "Doc")
         role = get(d, "author_role", "Autor")
-        
+
         card_content = """
-{bold bright_white}[#$i] $title{/bold bright_white}
+{bold bright_white}$title{/bold bright_white}
+🆔 {bright_magenta}$(format_doc_ref(repo, doc_id)){/bright_magenta}
 🏛️  {cyan}$repo{/cyan} | {yellow}📑 $dtype{/yellow} | {dim}📅 $date{/dim} | {green}Rol: $role{/green}
 """
         tprintln(card_content)
+        print_separator()
     end
     println()
 end
 
 function show_author_coauthors(state::ShellState, author_ref::AbstractString; top::Int=DEFAULT_TOP_K)
-    ref = resolve_author_ref(state, author_ref)
-    ref === nothing && return
-
-    coauths = get_coauthors(state.engine, ref; limit=top*2)
+    coauths = get_coauthors(state.engine, author_ref; limit=top*2)
     if isempty(coauths)
-        tprintln("{yellow}No se registraron coautorías para el autor '$ref'.{/yellow}\n")
+        tprintln("{yellow}No se registraron coautorías para el autor '$author_ref'.{/yellow}\n")
         return
     end
 
-    tprintln("\n{bold green}✓{/bold green} Red de coautoría para {bold bright_white}$ref{/bold bright_white}:\n")
+    tprintln("\n{bold green}✓{/bold green} Red de coautoría para {bold bright_white}$author_ref{/bold bright_white}:\n")
     tab = Table(Dict(
         "Coautor / Colaborador" => [c.first for c in coauths],
         "Trabajos Conjuntos" => [string(c.second) for c in coauths]
@@ -426,46 +454,44 @@ function show_author_coauthors(state::ShellState, author_ref::AbstractString; to
 end
 
 function show_similar_authors(state::ShellState, author_ref::AbstractString; top::Int=DEFAULT_TOP_K, repo::Union{AbstractString, Nothing}=nothing)
-    target = resolve_author_ref(state, author_ref)
-    target === nothing && return
-
-    res = find_similar_authors_by_profile(state.engine, target; top, repo)
+    res = find_similar_authors_by_profile(state.engine, author_ref; top, repo)
     sims = get(res, "similar_authors", [])
-    
+
     if isempty(sims)
-        tprintln("{yellow}No se encontraron investigadores afines para '$target'.{/yellow}\n")
+        tprintln("{yellow}No se encontraron investigadores afines para '$author_ref'.{/yellow}\n")
         return
     end
-    
+
     tprintln("\n{bold green}✓{/bold green} Autores afines por acoplamiento bibliográfico y perfil semántico con \"{bold bright_white}$(res["target_author"]){/bold bright_white}\" ({dim}$(res["time_ms"]) ms{/dim}):\n")
-    
-    for (i, a) in enumerate(sims)
+
+    for a in sims
         name = a["name"]
         score = a["score"]
         repos = join(a["repos"], ", ")
         kws = !isempty(a["keywords"]) ? join(first(a["keywords"], 5), " , ") : "N/A"
-        
+
         content = """
-👤 {bold bright_white}[#$i] $name{/bold bright_white}  {green}(Afinidad BM25: $(round(score, digits=1))){/green}
+👤 {bold bright_white}$name{/bold bright_white}  {green}(Afinidad BM25: $(round(score, digits=1))){/green}
 🏛️  {bold}Institución:{/bold} $repos
 🏷️  {bold}Áreas de coincidencia:{/bold} $kws
 """
         tprintln(content)
+        print_separator()
     end
     println()
 end
 
-function show_document_detail(state::ShellState, idx::Int)
-    if isempty(state.last_hits) || idx < 1 || idx > length(state.last_hits)
-        tprintln("{bold red}Número de documento inválido. Primero realiza una búsqueda y elige entre 1 y $(length(state.last_hits)).{/bold red}")
+function show_document_detail(state::ShellState, repo::AbstractString, doc_id::AbstractString)
+    if state.engine.db === nothing
+        tprintln("{bold red}Base de datos no disponible.{/bold red}\n")
         return
     end
-    
-    doc = state.last_hits[idx]
-    repo = get(doc, "repo", "")
-    doc_id = get(doc, "id", "")
-    state.context_doc = (repo, doc_id)
-    
+    doc = get_document(state.engine.db, repo, doc_id)
+    if doc === nothing
+        tprintln("{bold red}No se encontró el documento '$(format_doc_ref(repo, doc_id))'.{/bold red}\n")
+        return
+    end
+
     title = get(doc, "title", "Sin título")
     date = get(doc, "date", "N/A")
     creator = get(doc, "creator", "N/A")
@@ -476,112 +502,82 @@ function show_document_detail(state::ShellState, idx::Int)
     file = get(doc, "file", nothing)
     has_fulltext = get(doc, "has_fulltext", false)
     ref_cnt = get(doc, "reference_count", 0)
-    score = get(doc, "score", 0.0)
-    
+
     kw_str = !isempty(kws) ? join(kws, " | ") : "N/A"
-    
+    ref = format_doc_ref(repo, doc_id)
+
     content = """
-{bold bright_white}[#$idx] $title{/bold bright_white}
+{bold bright_white}$title{/bold bright_white}
+🆔 {bright_magenta}$ref{/bright_magenta}
 
 🏛️  {bold cyan}Institución:{/bold cyan}     $repo
 📑 {bold cyan}Tipo:{/bold cyan}            $dtype
 👤 {bold cyan}Autor(es):{/bold cyan}        $creator
 $(!isempty(contrib) ? "🤝 {bold cyan}Colaborador(es):{/bold cyan} $contrib\n" : "")📅 {bold cyan}Fecha:{/bold cyan}            $date
 🏷️  {bold cyan}Keywords:{/bold cyan}         $kw_str
-🎯 {bold cyan}Score BM25:{/bold cyan}       $(round(score, digits=2))
 📄 {bold cyan}PDF / Archivo:{/bold cyan}    $(file !== nothing ? file : "{dim}No descargado{/dim}")
-📖 {bold cyan}Texto Completo:{/bold cyan}   $(has_fulltext ? "{bold green}Disponible para búsqueda por párrafos (/doc-search){/bold green}" : "{dim}No disponible{/dim}")
-📚 {bold cyan}Referencias:{/bold cyan}      $(ref_cnt > 0 ? "{bold cyan}$ref_cnt citas extraídas (/doc-refs o /doc-similar-refs){/bold cyan}" : "{dim}No extraídas{/dim}")
+📖 {bold cyan}Texto Completo:{/bold cyan}   $(has_fulltext ? "{bold green}Disponible para búsqueda por párrafos (/doc-search $ref <consulta>){/bold green}" : "{dim}No disponible{/dim}")
+📚 {bold cyan}Referencias:{/bold cyan}      $(ref_cnt > 0 ? "{bold cyan}$ref_cnt citas extraídas (/doc-refs $ref o /doc-similar-refs $ref){/bold cyan}" : "{dim}No extraídas{/dim}")
 
 {bold yellow}Resumen / Abstract:{/bold yellow}
 $desc
 """
     tprintln(content)
-    tprintln("{bold green}✓ Contexto de documento fijado:{/bold green} {cyan}$repo:$doc_id{/cyan}. Usa {yellow}/doc-refs{/yellow}, {yellow}/doc-similar-refs{/yellow} o {yellow}/doc-search <query>{/yellow}.\n")
 end
 
-function show_document_references_cli(state::ShellState, doc_idx_opt::Union{Int, Nothing}=nothing)
-    target_repo, target_id = if doc_idx_opt !== nothing
-        if isempty(state.last_hits) || doc_idx_opt < 1 || doc_idx_opt > length(state.last_hits)
-            tprintln("{bold red}Número de documento inválido.{/bold red}\n")
-            return
-        end
-        d = state.last_hits[doc_idx_opt]
-        (d["repo"], d["id"])
-    elseif state.context_doc !== nothing
-        state.context_doc
-    else
-        tprintln("{bold red}Primero selecciona un documento con '/doc <N>'.{/bold red}\n")
-        return
-    end
-    
-    res = get_document_references(state.engine, target_repo, target_id)
+function show_document_references_cli(state::ShellState, repo::AbstractString, doc_id::AbstractString)
+    res = get_document_references(state.engine, repo, doc_id)
     refs = get(res, "references", [])
-    
+
     if isempty(refs)
-        tprintln("{yellow}No se encontraron referencias estructuradas para el documento '$target_repo:$target_id'.{/yellow}\n")
+        tprintln("{yellow}No se encontraron referencias estructuradas para el documento '$(format_doc_ref(repo, doc_id))'.{/yellow}\n")
         return
     end
-    
+
     tprintln("\n{bold green}✓{/bold green} Bibliografía de \"{bold bright_white}$(res["doc_title"]){/bold bright_white}\" ({bold bright_cyan}$(length(refs)) referencias{/bold bright_cyan}):\n")
-    
+
     for (i, r) in enumerate(refs)
         txt = r isa AbstractDict ? get(r, "text", "") : string(r)
         tprintln("{bold blue}[Ref #$i]{/bold blue} $txt")
+        print_separator()
     end
     println()
 end
 
-function show_similar_documents_by_refs(state::ShellState; top::Int=DEFAULT_TOP_K)
-    if state.context_doc === nothing
-        tprintln("{bold red}No hay un documento en contexto activo. Usa '/doc <N>' para seleccionar uno.{/bold red}\n")
+function show_similar_documents_by_refs(state::ShellState, repo::AbstractString, doc_id::AbstractString; top::Int=DEFAULT_TOP_K)
+    res = find_similar_documents_by_references(state.engine, repo, doc_id; top)
+    docs = get(res, "similar_documents", Dict{String, Any}[])
+
+    ref = format_doc_ref(repo, doc_id)
+    if isempty(docs)
+        tprintln("{yellow}No se encontraron documentos con referencias afines para '$ref'.{/yellow}\n")
         return
     end
 
-    repo, doc_id = state.context_doc
-    res = find_similar_documents_by_references(state.engine, repo, doc_id; top)
-    docs = get(res, "similar_documents", Dict{String, Any}[])
-    
-    if isempty(docs)
-        tprintln("{yellow}No se encontraron documentos con referencias afines para '$repo:$doc_id'.{/yellow}\n")
-        return
-    end
-    
-    tprintln("\n{bold green}✓{/bold green} Documentos con acoplamiento bibliográfico similar a {bold bright_white}$repo:$doc_id{/bold bright_white} ({dim}$(res["time_ms"]) ms{/dim}):\n")
-    
-    for (i, d) in enumerate(docs)
+    tprintln("\n{bold green}✓{/bold green} Documentos con acoplamiento bibliográfico similar a {bold bright_white}$ref{/bold bright_white} ({dim}$(res["time_ms"]) ms{/dim}):\n")
+
+    for d in docs
         title = get(d, "title", "Sin título")
         d_repo = get(d, "repo", "")
+        d_id = get(d, "id", "")
         creator = get(d, "creator", "")
         dtype = get(d, "type", "Doc")
         score = get(d, "score", 0.0)
-        
+
         card_content = """
-{bold bright_white}[#$i] $title{/bold bright_white}
+{bold bright_white}$title{/bold bright_white}
+🆔 {bright_magenta}$(format_doc_ref(d_repo, d_id)){/bright_magenta}
 🏛️  {cyan}$d_repo{/cyan} | {yellow}📑 $dtype{/yellow} | {dim}👤 $creator{/dim} | {green}Afinidad Bibliográfica BM25: $(round(score, digits=1)){/green}
 """
         tprintln(card_content)
+        print_separator()
     end
     println()
 end
 
-function search_in_document_cli(state::ShellState, query::AbstractString, doc_idx_opt::Union{Int, Nothing}=nothing; top::Int=DEFAULT_TOP_K)
-    target_repo, target_id = if doc_idx_opt !== nothing
-        if isempty(state.last_hits) || doc_idx_opt < 1 || doc_idx_opt > length(state.last_hits)
-            tprintln("{bold red}Número de documento inválido.{/bold red}\n")
-            return
-        end
-        d = state.last_hits[doc_idx_opt]
-        (d["repo"], d["id"])
-    elseif state.context_doc !== nothing
-        state.context_doc
-    else
-        tprintln("{bold red}Primero selecciona un documento con '/doc <N>'.{/bold red}\n")
-        return
-    end
-    
-    tprintln("{dim}Buscando pasajes en: $target_repo:$target_id...{/dim}")
-    res = search_document_paragraphs(state.engine, target_repo, target_id, query; top)
+function search_in_document_cli(state::ShellState, repo::AbstractString, doc_id::AbstractString, query::AbstractString; top::Int=DEFAULT_TOP_K)
+    tprintln("{dim}Buscando pasajes en: $(format_doc_ref(repo, doc_id))...{/dim}")
+    res = search_document_paragraphs(state.engine, repo, doc_id, query; top)
     
     if haskey(res, "error")
         tprintln("{bold red}$(res["error"]){/bold red}\n")
@@ -604,7 +600,7 @@ function search_in_document_cli(state::ShellState, query::AbstractString, doc_id
         
         tprintln("{bold bright_cyan}[Pasaje #$i - Párrafo $pnum | $section | Score: $(round(score, digits=1))]{/bold bright_cyan}")
         tprintln(txt)
-        println()
+        print_separator()
     end
     println()
 end
@@ -625,8 +621,8 @@ function show_topic_elements_cli(state::ShellState, topic_str::AbstractString; t
     
     if !isempty(docs)
         tprintln("📚 {bold bright_cyan}Publicaciones asociadas ($(length(docs))):{/bold bright_cyan}")
-        for (i, d) in enumerate(first(docs, 6))
-            tprintln("  [#$i] {bold bright_white}$(d["title"]){/bold bright_white} {cyan}($(d["repo"])){/cyan}")
+        for d in first(docs, 6)
+            tprintln("  🆔 {bright_magenta}$(format_doc_ref(d["repo"], d["id"])){/bright_magenta} {bold bright_white}$(d["title"]){/bold bright_white}")
         end
         println()
     end
@@ -638,8 +634,7 @@ end
 
 function render_search_results(state::ShellState, res::Dict; repo::Union{AbstractString, Nothing}=nothing, doc_type::Union{AbstractString, Nothing}=nothing, tag::Union{AbstractString, Nothing}=nothing)
     hits = get(res, "hits", [])
-    state.last_hits = hits
-    
+
     if haskey(res, "wiki_concept") && res["wiki_concept"] !== nothing
         w = res["wiki_concept"]
         wiki_content = """
@@ -669,30 +664,33 @@ $(w["extract"])
         return
     end
     
-    for (i, h) in enumerate(hits)
+    for h in hits
         title = get(h, "title", "Sin título")
         repo = get(h, "repo", "")
+        doc_id = get(h, "id", "")
         creator = get(h, "creator", "")
         date = get(h, "date", "")
         dtype = get(h, "type", "Doc")
         score = get(h, "score", 0.0)
         snippet = get(h, "snippet", "")
-        
+
         meta_line = "{cyan}🏛️  $repo{/cyan} | {yellow}📑 $dtype{/yellow}"
         !isempty(date) && (meta_line *= " | {dim}📅 $(first(date, 10)){/dim}")
         !isempty(creator) && (meta_line *= " | {dim}👤 $(first(creator, 30)){/dim}")
         meta_line *= " | {green}Score: $(round(score, digits=1)){/green}"
-        
+
         card_content = """
-{bold bright_white}[#$i] $title{/bold bright_white}
+{bold bright_white}$title{/bold bright_white}
+🆔 {bright_magenta}$(format_doc_ref(repo, doc_id)){/bright_magenta}
 $meta_line
 
 $snippet
 """
         tprintln(card_content)
+        print_separator()
     end
-    
-    tprintln("{dim}Tip: Escribe '/doc <N>' para abrir la ficha y fijar el contexto.{/dim}\n")
+
+    tprintln("{dim}Tip: Copia el 🆔 de una tarjeta y pégalo en '/doc <repo:doc_id>' para ver la ficha completa.{/dim}\n")
 end
 
 const HISTORY_FILE = joinpath(homedir(), ".reposmx_history")
@@ -748,9 +746,6 @@ function process_shell_input(state::ShellState, raw_input::AbstractString)::Bool
     elseif cmd in ("/clear", "clear", "cls")
         print("\033c")
         Base.invokelatest(render_banner, state)
-    elseif cmd in ("/clear-context", "clear-context")
-        state.context_doc = nothing
-        tprintln("{bold green}Contexto activo de documento restablecido.{/bold green}\n")
     elseif cmd == "/info"
         Base.invokelatest(show_info_command, state, isempty(strip(rest)) ? nothing : strip(rest))
     elseif cmd in ("/author-docs", "author-docs")
@@ -758,21 +753,21 @@ function process_shell_input(state::ShellState, raw_input::AbstractString)::Bool
         if !isempty(strip(clean))
             Base.invokelatest(show_author_docs, state, strip(clean); top=f.top)
         else
-            tprintln("{bold red}Uso: /author-docs <ID|#N> [--top N]{/bold red}\n")
+            tprintln("{bold red}Uso: /author-docs <ID> [--top N]{/bold red}\n")
         end
     elseif cmd in ("/author-coauth", "author-coauth", "/coauth")
         clean, f = extract_flags(rest)
         if !isempty(strip(clean))
             Base.invokelatest(show_author_coauthors, state, strip(clean); top=f.top)
         else
-            tprintln("{bold red}Uso: /author-coauth <ID|#N> [--top N]{/bold red}\n")
+            tprintln("{bold red}Uso: /author-coauth <ID> [--top N]{/bold red}\n")
         end
     elseif cmd in ("/author-similar", "/sim-authors")
         clean, f = extract_flags(rest)
         if !isempty(strip(clean))
             Base.invokelatest(show_similar_authors, state, strip(clean); top=f.top, repo=f.repo)
         else
-            tprintln("{bold red}Uso: /author-similar <ID|#N|nombre> [--top N] [--repo <nombre>]{/bold red}\n")
+            tprintln("{bold red}Uso: /author-similar <ID> [--top N] [--repo <nombre>]{/bold red}\n")
         end
     elseif cmd == "/author"
         clean, f = extract_flags(rest)
@@ -789,19 +784,29 @@ function process_shell_input(state::ShellState, raw_input::AbstractString)::Bool
             tprintln("{bold red}Uso: /topic <nombre_tema_o_disciplina> [--top N] [--repo <nombre>]{/bold red}\n")
         end
     elseif cmd in ("/doc-similar-refs", "doc-similar-refs", "/sim-refs")
-        _, f = extract_flags(rest)
-        Base.invokelatest(show_similar_documents_by_refs, state; top=f.top)
-    elseif cmd in ("/doc-refs", "doc-refs")
-        Base.invokelatest(show_document_references_cli, state, nothing)
-    elseif cmd == "/refs"
-        idx = !isempty(rest) ? tryparse(Int, split(rest)[1]) : nothing
-        Base.invokelatest(show_document_references_cli, state, idx)
+        clean, f = extract_flags(rest)
+        ref = parse_doc_ref(strip(clean))
+        if ref !== nothing
+            Base.invokelatest(show_similar_documents_by_refs, state, ref[1], ref[2]; top=f.top)
+        else
+            tprintln("{bold red}Uso: /doc-similar-refs <repo:doc_id> [--top N]{/bold red}\n")
+        end
+    elseif cmd in ("/doc-refs", "doc-refs", "/refs")
+        ref = parse_doc_ref(strip(rest))
+        if ref !== nothing
+            Base.invokelatest(show_document_references_cli, state, ref[1], ref[2])
+        else
+            tprintln("{bold red}Uso: /doc-refs <repo:doc_id>{/bold red}\n")
+        end
     elseif cmd == "/doc-search"
         clean, f = extract_flags(rest)
-        if !isempty(strip(clean))
-            Base.invokelatest(search_in_document_cli, state, strip(clean); top=f.top)
+        toks = split(clean; limit=2)
+        ref = isempty(toks) ? nothing : parse_doc_ref(toks[1])
+        query = length(toks) == 2 ? strip(toks[2]) : ""
+        if ref !== nothing && !isempty(query)
+            Base.invokelatest(search_in_document_cli, state, ref[1], ref[2], query; top=f.top)
         else
-            tprintln("{bold red}Uso: /doc-search <consulta_dentro_del_documento> [--top N]{/bold red}\n")
+            tprintln("{bold red}Uso: /doc-search <repo:doc_id> <consulta> [--top N]{/bold red}\n")
         end
     elseif cmd == "/search"
         clean, f = extract_flags(rest)
@@ -822,11 +827,11 @@ function process_shell_input(state::ShellState, raw_input::AbstractString)::Bool
             tprintln("{bold red}Uso: /search <consulta> [--top N] [--repo <nombre>] [--type <tipo>] [--tag <keyword>] [--wiki|--no-wiki]{/bold red}\n")
         end
     elseif cmd == "/doc"
-        idx = !isempty(rest) ? tryparse(Int, split(rest)[1]) : nothing
-        if idx !== nothing
-            Base.invokelatest(show_document_detail, state, idx)
+        ref = parse_doc_ref(strip(rest))
+        if ref !== nothing
+            Base.invokelatest(show_document_detail, state, ref[1], ref[2])
         else
-            tprintln("{bold red}Uso: /doc <número_resultado>{/bold red}\n")
+            tprintln("{bold red}Uso: /doc <repo:doc_id>{/bold red}\n")
         end
     elseif cmd in ("/status", "/repos", "status", "repos")
         Base.invokelatest(show_repos_table, state)
@@ -850,21 +855,11 @@ function launch_interactive_shell(; data_dir=DEFAULT_DATA_DIR, index_dir=DEFAULT
         return
     end
 
-    state = @time "ShellState init" ShellState(
-        engine,
-        Dict{String, Any}[],
-        Dict{String, Any}[],
-        nothing,  # context_doc
-        data_dir,
-        index_dir
-    )
+    state = @time "ShellState init" ShellState(engine, data_dir, index_dir)
 
     @time "render_banner" render_banner(state)
 
-    get_prompt_str = function()
-        doc_badge = state.context_doc !== nothing ? " | Doc: $(state.context_doc[1]):$(state.context_doc[2])" : ""
-        return "reposmx$doc_badge> "
-    end
+    get_prompt_str = () -> "reposmx> "
     
     if isa(stdin, Base.TTY)
         try
