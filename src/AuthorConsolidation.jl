@@ -957,16 +957,23 @@ consolidated-authors directory itself, then the bucket). `raw_id_of` (from
 computing a redundant new one. Wipes and rewrites the whole directory each call, since group
 membership/ids can change between rebuilds. Prints how many consolidated ids needed
 disambiguation (see [`assign_id`](@ref)). Returns the number of groups written.
+
+Does NOT call [`compute_similarity_merges`](@ref) — full-corpus scale (317K raw profiles) made
+its `SearchGraph` construction / `bichromatic_metricjoin` step impractically slow (a real rebuild
+attempt on the full ~93-repo corpus stalled for hours with no forward progress and no error, after
+successfully processing the 10-repo development subset in minutes). Content-similarity-based
+matching is being redesigned (tracked in
+[issue #2](https://github.com/sadit/ReposMx/issues/2)) as evidence FOR the [`compute_name_clusters`](@ref)
+oracle to justify *splitting* a cluster (a precision tool), not as a source of *merge* candidates
+(the job it does today) — clustering stays recall-oriented and name-only per that plan.
+`compute_similarity_merges`/`_plausibly_same_person` are left in place, tested, and still callable
+directly; they're just not wired into this function until that redesign lands.
 """
 function build_and_persist(authors_data::Vector{<:AbstractDict}, index_dir::AbstractString, raw_id_of::AbstractDict;
                             overrides_path::AbstractString=DEFAULT_AUTHOR_OVERRIDES_JSON)
     by_name = Dict{String,Any}(a["name"] => a for a in authors_data)
     raw_names = collect(keys(by_name))
     overrides = load_overrides(overrides_path)
-
-    sim_merges = compute_similarity_merges(authors_data)
-    println("  similarity-join merges (apellido-vetados): $(length(sim_merges)) / $(length(authors_data)) perfiles")
-    overrides = (; merges=vcat(overrides.merges, [[a, b] for (a, b) in sim_merges]), splits=overrides.splits)
 
     groups = compute_groups(raw_names, overrides)
 
