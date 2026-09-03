@@ -73,9 +73,10 @@ using SimilaritySearch, TextSearch
 
     @testset "AuthorConsolidation (clustering + overrides, isolated)" begin
         # Guards the graph-based clustering that groups raw author profiles into consolidated
-        # ones: full-name matches, initials-vs-full-name matches (the whole reason for the
-        # initials key), and human overrides (merge forces an edge the auto-key can't find;
-        # split removes one the auto-key would otherwise create) — see AuthorConsolidation.jl.
+        # ones: q-gram-based name matching (compute_name_clusters — see its own testset below for
+        # the cases it exists to get right) and human overrides (merge forces an edge the
+        # algorithm can't find; split removes one it shouldn't have made) — see
+        # AuthorConsolidation.jl.
         mk(name) = Dict{String,Any}("name" => name, "doc_count" => 1)
 
         names = ["Juan Perez Gonzalez", "J. Perez Gonzalez", "JUAN PEREZ GONZALEZ",
@@ -122,6 +123,57 @@ using SimilaritySearch, TextSearch
         # must reuse its one raw profile's own id verbatim, not compute a new one.
         pedro_profile = only(filter(p -> p["raw_names"] == ["Pedro Soto"], reloaded))
         @test pedro_profile["consolidated_id"] == raw_id_of["Pedro Soto"]
+    end
+
+    @testset "AuthorConsolidation.compute_name_clusters (q-gram + oracle, isolated)" begin
+        # Replaces the old full_key/initials_key exact-match clustering (see the
+        # project_initials_key_collision_bug note this fixes). initials_key reduced every
+        # non-final token to its first letter, so different real people sharing two initials and
+        # a surname collided into one exact-match key -- confirmed live on a real 10-repo rebuild
+        # for these three names.
+        function same_cluster(groups, a, b)
+            for g in groups
+                (a in g) && (b in g) && return true
+            end
+            return false
+        end
+
+        perez_names = ["JOSE CAMARGO PEREZ", "JUAN CONTRERAS PEREZ", "JULIO CANDELA PEREZ",
+                        "Juan Contreras Perez", "J. Contreras Perez"]
+        perez_groups = AuthorConsolidation.compute_name_clusters(perez_names)
+        @test !same_cluster(perez_groups, "JOSE CAMARGO PEREZ", "JUAN CONTRERAS PEREZ")
+        @test !same_cluster(perez_groups, "JOSE CAMARGO PEREZ", "JULIO CANDELA PEREZ")
+        @test !same_cluster(perez_groups, "JUAN CONTRERAS PEREZ", "JULIO CANDELA PEREZ")
+        # ... while genuine variants of the SAME person still merge, in the same run.
+        @test same_cluster(perez_groups, "JUAN CONTRERAS PEREZ", "Juan Contreras Perez")
+        @test same_cluster(perez_groups, "JUAN CONTRERAS PEREZ", "J. Contreras Perez")
+
+        # regression: identical DOUBLE surname, different given name -- a harder counter-example
+        # than the one above (initials_key wouldn't even have collided these; a naive q-gram bag
+        # score would have, since "chavez gonzalez" shared verbatim dominates a blended score).
+        chavez_names = ["MANUEL ALBERTO CHAVEZ GONZALEZ", "MARIA ANTONIETA CHAVEZ GONZALEZ"]
+        @test !same_cluster(AuthorConsolidation.compute_name_clusters(chavez_names),
+                             "MANUEL ALBERTO CHAVEZ GONZALEZ", "MARIA ANTONIETA CHAVEZ GONZALEZ")
+
+        # real typo/transliteration variants of one person still merge (exact-key matching, and a
+        # strict pairwise veto alone, both miss this -- it needs the generous phase-1 + oracle
+        # design specifically).
+        alexei_names = ["ALEXEI FEDOROVISH LICEA NAVARRO", "Alexei Federovish Licea Navarro"]
+        @test same_cluster(AuthorConsolidation.compute_name_clusters(alexei_names),
+                            alexei_names[1], alexei_names[2])
+
+        # compound surname ("Torres De La Cruz") truncated to just its paternal component
+        # ("Torres") must still match -- the whole point of _surname_span recognizing "de la
+        # cruz" as one maternal-surname unit instead of "la"/"de" leaking in as fake given names.
+        cruz_names = ["Victor Manuel Torres De La Cruz", "Victor Torres"]
+        @test same_cluster(AuthorConsolidation.compute_name_clusters(cruz_names),
+                            cruz_names[1], cruz_names[2])
+
+        # garbage ORCID/URL "names" collapse to identical tokens under this tokenizer (the
+        # pre-existing 117-member "_url" blob) -- must never be treated as a match.
+        orcid_names = ["https://orcid.org/0000-0001-5058-1227", "https://orcid.org/0000-0002-4870-4803"]
+        @test !same_cluster(AuthorConsolidation.compute_name_clusters(orcid_names),
+                             orcid_names[1], orcid_names[2])
     end
 
     @testset "AuthorConsolidation similarity-join merges (compute_similarity_merges, isolated)" begin

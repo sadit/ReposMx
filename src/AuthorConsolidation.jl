@@ -8,8 +8,8 @@ using JSON
 using SHA
 using ..Config: DEFAULT_AUTHOR_OVERRIDES_JSON
 
-export build_and_persist, load_all, name_keys, compute_groups, load_overrides, assign_raw_ids,
-       assign_id, compute_similarity_merges
+export build_and_persist, load_all, name_keys, compute_groups, compute_name_clusters,
+       load_overrides, assign_raw_ids, assign_id, compute_similarity_merges
 
 """
     AUTHOR_NAME_CONFIG
@@ -83,11 +83,441 @@ function load_overrides(path::AbstractString=DEFAULT_AUTHOR_OVERRIDES_JSON)
 end
 
 """
+    _SURNAME_PARTICLES
+
+Spanish/Mexican surname connector words: a compound surname like "de la Cruz" or "del Razo" is
+ONE unit, not independent tokens — used by [`_surname_span`](@ref) so those words neither leak
+into a given-name list as if they were middle names, nor get compared as if they were the
+surname's own identity. Confirmed on a real 10-repo corpus: 1,084 of 19,543 raw names (~5.5%)
+contain one of these words — common enough that this is not an edge case. Not exhaustively
+validated (e.g. `"y"` as a surname-joining conjunction, as in `"Milián y Ávila"`, is deliberately
+NOT included — untested).
+"""
+const _SURNAME_PARTICLES = Set(["de", "del", "la", "las", "los", "san", "santa"])
+
+"""
+    _surname_span(toks::Vector{String}) -> UnitRange{Int}
+
+Index range of `toks` covering the (possibly compound) surname: starts at `length(toks)` and
+walks backward absorbing [`_SURNAME_PARTICLES`](@ref) tokens, stopping at the first non-particle
+token encountered (itself included, as the surname's head word) — e.g. `[.., "torres", "de",
+"la", "cruz"]` gives a span of `"de","la","cruz"` (3 tokens); `["juan", "tellez"]` gives a span of
+just `"tellez"` (no particles to absorb).
+"""
+function _surname_span(toks::Vector{String})
+    i = length(toks)
+    while i > 1 && toks[i-1] in _SURNAME_PARTICLES
+        i -= 1
+    end
+    return i:length(toks)
+end
+
+"""
+    _collapse_self_annotations(toks::Vector{String}) -> Vector{String}
+
+A bare initial immediately followed by its own expansion within the SAME raw name (e.g.
+`"L. (Luis) Barron"` -> `[l, luis, barron]`) is one given-name concept written twice, not two
+independent given names — collapse to the expansion so it doesn't inflate the given-token count
+and force a real given name into competing for alignment against it (see
+[`_align_given_tokens`](@ref)).
+"""
+function _collapse_self_annotations(toks::Vector{String})
+    out = String[]
+    i = 1
+    while i <= length(toks)
+        if i < length(toks) && length(toks[i]) == 1 && length(toks[i+1]) > 1 && toks[i][1] == first(toks[i+1])
+            push!(out, toks[i+1])
+            i += 2
+        else
+            push!(out, toks[i])
+            i += 1
+        end
+    end
+    return out
+end
+
+"""
+    _qgram_name_tokens(raw::AbstractString) -> Vector{String}
+
+Tokenizes `raw` the same way as [`name_keys`](@ref) (order-normalized, `AUTHOR_NAME_CONFIG`), then
+[`_collapse_self_annotations`](@ref). Unlike [`_name_tokens`](@ref) (used by
+[`_plausibly_same_person`](@ref)), this does NOT strip parenthetical content: for the q-gram
+metric below, a citation-style parenthetical like `"(Alejandro)"` in `"Anaya, A. (Alejandro)"` is
+real signal (`del_punc=true` already unwraps the parens on tokenizing, keeping `"alejandro"` as
+its own token) — stripping it away was verified, while developing this metric, to tank the
+similarity score for exactly this pair.
+"""
+function _qgram_name_tokens(raw::AbstractString)
+    _collapse_self_annotations(String.(collect(tokenize(AUTHOR_NAME_CONFIG, _order_normalize(raw)))))
+end
+
+"""
+    _name_qgrams(t::AbstractString; q::Int=4) -> Set{String}
+
+Boundary-marked (`"^t\$"`) character `q`-grams of `t` — a token shorter than the padded window
+becomes one literal element (covers bare initials at any `q`).
+"""
+function _name_qgrams(t::AbstractString; q::Int=4)
+    padded = collect("^" * t * "\$")
+    length(padded) < q && return Set([String(padded)])
+    return Set(String(padded[i:i+q-1]) for i in 1:(length(padded)-q+1))
+end
+
+"""
+    _qgram_jaccard(a::AbstractString, b::AbstractString) -> Float64
+
+Jaccard similarity of `a` and `b`'s [`_name_qgrams`](@ref) — character-level, so misspellings and
+transliteration variants (e.g. `"Fedorovish"`/`"Federovish"`) still overlap meaningfully even
+without an exact match.
+"""
+function _qgram_jaccard(a::AbstractString, b::AbstractString)
+    qa, qb = _name_qgrams(a), _name_qgrams(b)
+    u = length(union(qa, qb))
+    u == 0 ? 0.0 : length(intersect(qa, qb)) / u
+end
+
+"""
+    _token_alignment_score(a::AbstractString, b::AbstractString) -> Float64
+
+Pairwise (never pooled into a bag) compatibility of two given-name tokens: exact match (`1.0`), a
+REAL (not synthetic) bare initial matching the other's first letter (`1.0`/`0.0`), or
+[`_qgram_jaccard`](@ref) for typo/spelling-variant tolerance. No position restriction on the
+bare-initial shortcut — safe here specifically because a length-1 token can only come from genuine
+raw-data abbreviation, never from a synthesized initial (this design never enriches/synthesizes
+initials from spelled-out names — an earlier, rejected bag-of-q-grams design did, and that's
+exactly what let two different people sharing a coincidental first letter collide).
+"""
+function _token_alignment_score(a::AbstractString, b::AbstractString)
+    a == b && return 1.0
+    length(a) == 1 && !isempty(b) && return a[1] == first(b) ? 1.0 : 0.0
+    length(b) == 1 && !isempty(a) && return b[1] == first(a) ? 1.0 : 0.0
+    _qgram_jaccard(a, b)
+end
+
+"""
+    _align_given_tokens(short::Vector{String}, long::Vector{String}) -> Vector{Tuple{String,String,Float64}}
+
+Bipartite greedy alignment of `short`'s tokens against `long`'s (one-to-one, tolerant of
+dropped/reordered middle names): for each token in `short`, attribute the best-scoring REMAINING
+candidate in `long` via [`_token_alignment_score`](@ref), even at score `0.0` — "no candidate beat
+the initial floor" must never collapse into "no partner exists to compare against": a token that
+matches nothing (score `0.0` against every remaining option) is itself the contradiction signal
+[`_name_cluster_contradiction`](@ref) needs, not an absence of one.
+"""
+function _align_given_tokens(short::Vector{String}, long::Vector{String})
+    used = falses(length(long))
+    pairs = Tuple{String,String,Float64}[]
+    for st in short
+        best_j, best_s = 0, -1.0
+        for (j, lt) in enumerate(long)
+            used[j] && continue
+            s = _token_alignment_score(st, lt)
+            s > best_s && ((best_s, best_j) = (s, j))
+        end
+        if best_j > 0
+            used[best_j] = true
+            push!(pairs, (st, long[best_j], best_s))
+        else
+            push!(pairs, (st, "", 0.0))
+        end
+    end
+    return pairs
+end
+
+"""
+    _is_garbage_name(nm::AbstractString) -> Bool
+
+True for a raw "name" that's actually a bare URL/ORCID literal or digit string — TextSearch's
+tokenizer normalizes any URL to a literal `"url"` placeholder and any digit run to `"0"`, so
+different garbage ORCID/URL "names" collapse to identical tokens (the root cause of a pre-existing
+117-member `"_url"` blob previously produced by `full_key`/`initials_key`). Checked at the raw-
+string level, before tokenizing, in [`_name_match_score`](@ref).
+"""
+_is_garbage_name(nm::AbstractString) = occursin(r"^https?://|orcid|^[\d\-]+$"i, nm)
+
+"""
+    _name_match_score(name_a, name_b) -> (; match, mismatch_frac, surname, pairs)
+
+Character-q-gram-based name-similarity metric backing [`compute_name_clusters`](@ref) — the
+name-based clustering signal, replacing `full_key`/`initials_key` exact matching. This does NOT
+replace [`_plausibly_same_person`](@ref), which keeps doing its own, different job: vetoing
+*content*-similarity candidates in [`compute_similarity_merges`](@ref).
+
+`surname`: exact match, truncation-aware (a full "Nombre ApellidoPaterno ApellidoMaterno" record's
+paternal surname against another record's single, truncated surname), or q-gram typo-tolerant
+score, for the (possibly compound, see [`_surname_span`](@ref)) surname. `match`: mean per-token
+alignment score ([`_align_given_tokens`](@ref)) of the SHORTER given-name list — generous to
+truncation, since extra tokens on the longer side never enter the denominator. `mismatch_frac`:
+fraction of the shorter given-name list's tokens whose best partner scored below `0.3` — a
+separate, explicit penalty axis instead of folding "found nothing" into the same ratio as "found
+something so-so". `pairs`: the raw per-position `(token_a, token_b, score)` triples, used by
+[`_name_cluster_contradiction`](@ref) to catch a hard mismatch an aggregate score can launder away
+via a shared incidental token (e.g. two different people who happen to share a middle name).
+
+Guards against garbage input (see [`_is_garbage_name`](@ref)) and against a degenerate
+single-character surname head (e.g. a digit run normalized to a literal `"0"`) ever counting as a
+match — the same failure mode [`_plausibly_same_person`](@ref) guards against.
+"""
+function _name_match_score(name_a::AbstractString, name_b::AbstractString)
+    (_is_garbage_name(name_a) || _is_garbage_name(name_b)) &&
+        return (match=0.0, mismatch_frac=1.0, surname=0.0, pairs=Tuple{String,String,Float64}[])
+    toks_a, toks_b = _qgram_name_tokens(name_a), _qgram_name_tokens(name_b)
+    (isempty(toks_a) || isempty(toks_b)) &&
+        return (match=0.0, mismatch_frac=1.0, surname=0.0, pairs=Tuple{String,String,Float64}[])
+    span_a, span_b = _surname_span(toks_a), _surname_span(toks_b)
+    surname_a, surname_b = toks_a[span_a], toks_b[span_b]  # possibly-compound surname, as a token vector
+    given_a, given_b = toks_a[1:first(span_a)-1], toks_b[1:first(span_b)-1]
+    valid_a = length(toks_a[end]) >= 2  # garbage guard: a degenerate single-char surname head
+    valid_b = length(toks_b[end]) >= 2  # (e.g. a digit-run normalized to "0") must never count as a match
+    surname_exact = (valid_a && valid_b && surname_a == surname_b) ? 1.0 : 0.0
+    trunc = 0.0
+    length(given_a) == 1 && length(surname_a) == 1 && length(given_b) >= 1 && valid_a &&
+        surname_a[1] == given_b[end] && (trunc = 1.0)
+    length(given_b) == 1 && length(surname_b) == 1 && length(given_a) >= 1 && valid_b &&
+        surname_b[1] == given_a[end] && (trunc = 1.0)
+    surname_typo = (valid_a && valid_b) ? _qgram_jaccard(join(surname_a, " "), join(surname_b, " ")) : 0.0
+    surname = max(surname_exact, trunc, surname_typo)
+    if isempty(given_a) && isempty(given_b)
+        return (match=1.0, mismatch_frac=0.0, surname=surname, pairs=Tuple{String,String,Float64}[])
+    elseif isempty(given_a) || isempty(given_b)
+        return (match=0.0, mismatch_frac=1.0, surname=surname, pairs=Tuple{String,String,Float64}[])
+    end
+    shorter, longer = length(given_a) <= length(given_b) ? (given_a, given_b) : (given_b, given_a)
+    pairs = _align_given_tokens(shorter, longer)
+    scores = [p[3] for p in pairs]
+    return (match=sum(scores) / length(scores), mismatch_frac=count(<(0.3), scores) / length(scores),
+            surname=surname, pairs=pairs)
+end
+
+"""
+    _name_cluster_keys(raw::AbstractString) -> Vector{String}
+
+Candidate-generation buckets for [`compute_name_clusters`](@ref) (efficiency only, not a
+correctness decision — the actual connect-or-not decision is [`_name_match_score`](@ref), an
+absolute fixed-threshold score unaffected by what else shares a bucket; see
+[`compute_name_clusters`](@ref)'s docstring for why that distinction matters). Two keys: (1) the
+literal last token — always correct for a record's own surname whether or not there's any
+paternal/maternal ambiguity (keeps an ordinary "First Middle Last" person, e.g. `"Allyson Lucinda
+Benton"`, correctly bucketed under `"benton"` — an earlier version of this function used ONLY a
+paternal-surname-candidate key and wrongly bucketed such names under `"lucinda"` instead, mistaking
+an ordinary middle given name for a paternal surname); and (2) the paternal-surname CANDIDATE
+(`given_and_paternal[end]`, when there are 2+ tokens before the surname span) — needed so a full
+"Nombre ApellidoPaterno ApellidoMaterno" record and its truncated single-surname form still share a
+bucket even when the maternal side is itself a compound (`"Torres De La Cruz"` — bucketing only by
+the literal last token `"cruz"` would never match a truncated `"Torres"` record; see
+[`_surname_span`](@ref)).
+"""
+function _name_cluster_keys(raw::AbstractString)
+    toks = _qgram_name_tokens(raw)
+    isempty(toks) && return String[]
+    span = _surname_span(toks)
+    given_and_paternal = toks[1:first(span)-1]
+    keys = [toks[end]]
+    length(given_and_paternal) >= 2 && push!(keys, given_and_paternal[end])
+    return unique(keys)
+end
+
+const _NAME_CLUSTER_MATCH_THRESHOLD = 0.5
+const _NAME_CLUSTER_SURNAME_THRESHOLD = 0.5
+
+"""
+    _name_cluster_edge(a, b) -> Bool
+
+Phase 1 (clustering, RECALL-oriented) test for [`compute_name_clusters`](@ref): connect `a`/`b` if
+[`_name_match_score`](@ref) clears a GENEROUS bar — tolerant of typos/transliteration variants a
+strict veto would miss (e.g. `"Fedorovish"`/`"Federovish"`, q-gram overlap only 0.38 on that one
+token, well under any "confident" bar, but not zero either).
+"""
+function _name_cluster_edge(a::AbstractString, b::AbstractString)
+    r = _name_match_score(a, b)
+    r.surname >= _NAME_CLUSTER_SURNAME_THRESHOLD && r.match >= _NAME_CLUSTER_MATCH_THRESHOLD
+end
+
+const _NAME_CLUSTER_CONTRADICTION_FLOOR = 0.2
+
+"""
+    _name_cluster_contradiction(names) -> Union{Tuple{String,String},Nothing}
+
+Phase 2 (oracle, PRECISION-oriented) for [`compute_name_clusters`](@ref): a phase-1 cluster stays
+merged by DEFAULT — this only reports a split-worthy counter-example when it finds one: two
+members whose given names, at some aligned position, are both fully spelled out (neither a bare
+initial) and score below `_NAME_CLUSTER_CONTRADICTION_FLOOR` — clearly different words, not a
+spelling variant. Checks EVERY pair in `names` (not just phase-1 edges), and per POSITION rather
+than the aggregate `match` score — a shared incidental token (e.g. a common middle name) must
+never launder away a hard mismatch elsewhere in the alignment (found live: `"MANUEL ALBERTO CHAVEZ
+GONZALEZ"` vs `"MARIA ANTONIETA CHAVEZ GONZALEZ"` share the literal token `"chavez"` in given-name
+position, which pulled the AVERAGE match score to 0.333 — above a 0.2 floor — even though
+`"manuel"`/`"maria"` at the discriminating position score near zero). This asymmetry is
+deliberate: proving two names the SAME is hard (this module's whole reason to exist); proving them
+DIFFERENT, when the evidence is this stark, is not.
+"""
+function _name_cluster_contradiction(names::Vector{String})
+    for i in 1:length(names), j in (i+1):length(names)
+        r = _name_match_score(names[i], names[j])
+        r.surname >= _NAME_CLUSTER_SURNAME_THRESHOLD || continue
+        for (ta, tb, s) in r.pairs
+            if length(ta) > 1 && length(tb) > 1 && s < _NAME_CLUSTER_CONTRADICTION_FLOOR
+                return (names[i], names[j])
+            end
+        end
+    end
+    return nothing
+end
+
+"""
+    _name_cluster_strict_compatible(a, b) -> Bool
+
+Stricter pairwise test used only by [`_name_cluster_split`](@ref), once a cluster has already been
+flagged by [`_name_cluster_contradiction`](@ref) — thresholds validated against a mined ground
+truth (2,842 good / 22,785 bad pairs, real 10-repo corpus): FP≈0.14%, FN≈0.14%.
+"""
+function _name_cluster_strict_compatible(a::AbstractString, b::AbstractString)
+    r = _name_match_score(a, b)
+    r.surname >= 0.5 && r.match >= 0.9
+end
+
+"""
+    _name_cluster_split(names::Vector{String}) -> Vector{Vector{String}}
+
+Greedy re-partition of a contradiction-flagged component using
+[`_name_cluster_strict_compatible`](@ref) as a must-link test — a name joins an EXISTING
+sub-cluster only if compatible with EVERY member already in it (not just one), which is what
+actually prevents transitive chaining through a bridge name (the exact failure mode that broke an
+earlier, rejected attempt at bucketing [`compute_similarity_merges`](@ref) by surname — see that
+function's docstring). This is a GREEDY, ORDER-DEPENDENT heuristic (processes `names` in sorted
+order, joins the first compatible existing sub-cluster) — not a general correlation-clustering
+solver; it can rarely miss an obviously-correct merge depending on processing order. Judged a lower
+priority to fix than a precision bug: a missed merge is recoverable (a later rebuild, or a manual
+`author_overrides.json` entry); a false merge is not.
+"""
+function _name_cluster_split(names::Vector{String})
+    clusters = Vector{Vector{String}}()
+    for nm in sort(names)
+        placed = false
+        for c in clusters
+            if all(m -> _name_cluster_strict_compatible(nm, m), c)
+                push!(c, nm)
+                placed = true
+                break
+            end
+        end
+        placed || push!(clusters, [nm])
+    end
+    return clusters
+end
+
+"""
+    compute_name_clusters(raw_names::Vector{String}) -> Vector{Vector{String}}
+
+Groups `raw_names` by a two-phase, name-only (no profile content — see
+[`compute_similarity_merges`](@ref) for the separate content-based signal) matching design,
+replacing `full_key`/`initials_key` exact-match clustering as [`compute_groups`](@ref)'s name-based
+signal: [`_name_cluster_edge`](@ref) (generous, recall-oriented, via q-gram similarity) proposes
+connections within cheap candidate buckets ([`_name_cluster_keys`](@ref)); every resulting
+component then goes through [`_name_cluster_contradiction`](@ref)/[`_name_cluster_split`](@ref)
+(precision-oriented) — a component stays merged UNLESS the oracle finds a genuine counter-example
+inside it.
+
+Built to replace `full_key`/`initials_key`, which silently merged different people sharing two
+initials plus a surname (e.g. `"JOSE CAMARGO PEREZ"`/`"JUAN CONTRERAS PEREZ"`/`"JULIO CANDELA
+PEREZ"` all reduced to the same `initials_key`). Validated end-to-end on a real 10-repo corpus
+(19,543 names) against a mined ground truth: this design correctly separates that exact case, plus
+the harder `"MANUEL ALBERTO CHAVEZ GONZALEZ"`/`"MARIA ANTONIETA CHAVEZ GONZALEZ"` case (identical
+double surname, different given name), while still merging real typo/transliteration variants
+(`"Fedorovish"`/`"Federovish"`) pure exact-key matching would have missed too. End-to-end error
+rate: FN≈0.35% (2,842 known-good pairs), FP≈0.18% (22,785 known-bad pairs) — both far lower than a
+standalone (non-content-gated) `_plausibly_same_person` achieves at the same job (an earlier,
+rejected replacement attempt grew max group size from ~10 to 76).
+
+`_name_cluster_keys` bucketing is an efficiency step only — the earlier surname-bucketing failure
+documented in [`compute_similarity_merges`](@ref)'s docstring does NOT apply here: that failure
+came from bucketing an ADAPTIVE, population-relative similarity signal (`bichromatic_metricjoin`'s
+per-point quantile threshold), which shifts meaning depending on what population it's given;
+[`_name_match_score`](@ref) is an ABSOLUTE fixed threshold, unaffected by what else shares a
+candidate bucket.
+
+Known, accepted limitations (not chased further without new evidence):
+- [`_name_cluster_split`](@ref)'s greedy partition is order-dependent — a rare recall cost, not a
+  precision one.
+- The "drop the paternal surname entirely, keep only the maternal" truncation direction is
+  unhandled (asymmetric with the handled direction — `"Juan Tellez Avila"` -> `"Juan Tellez"`
+  truncates correctly, keeping the paternal surname per convention, but e.g. `"Edgar Eugenio
+  Ramírez de la Cruz"` -> `"Edgar Cruz"`, dropping the paternal surname and keeping only the
+  compound maternal surname's head word, does not match).
+- [`_SURNAME_PARTICLES`](@ref) is not exhaustively validated (see its docstring).
+- Not fast: on the real 10-repo development corpus (19,543 raw names), a full
+  `reposmx consolidate-authors` run (this clustering plus everything else that command does —
+  content-similarity join, RocksDB persistence, BM25 rebuilds) took ~10 minutes. Full-corpus
+  (~95-repo) runtime has not been measured; a very large candidate bucket (a common surname across
+  the whole corpus) could make the O(bucket²) phase-1 pass slower still. Revisit if it actually
+  turns out to be a problem, same policy as [`compute_similarity_merges`](@ref)'s own bucketing
+  note — correctness came first here too.
+"""
+function compute_name_clusters(raw_names::Vector{String})
+    n = length(raw_names)
+    n == 0 && return Vector{Vector{String}}()
+    idx = Dict(nm => i for (i, nm) in enumerate(raw_names))
+
+    candidate_buckets = Dict{String,Vector{String}}()
+    for nm in raw_names
+        for k in _name_cluster_keys(nm)
+            push!(get!(candidate_buckets, k, String[]), nm)
+        end
+    end
+
+    parent = collect(1:n)
+    function uf_find(x)
+        while parent[x] != x
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        end
+        return x
+    end
+    function uf_union!(a, b)
+        ra, rb = uf_find(a), uf_find(b)
+        ra != rb && (parent[ra] = rb)
+    end
+
+    for (_, bucket) in candidate_buckets
+        bucket = unique(bucket)
+        length(bucket) < 2 && continue
+        for i in 1:length(bucket), j in (i+1):length(bucket)
+            a, b = bucket[i], bucket[j]
+            _name_cluster_edge(a, b) && uf_union!(idx[a], idx[b])
+        end
+    end
+
+    by_root = Dict{Int,Vector{String}}()
+    for nm in raw_names
+        push!(get!(by_root, uf_find(idx[nm]), String[]), nm)
+    end
+
+    groups = Vector{Vector{String}}()
+    for (_, comp) in by_root
+        if length(comp) == 1
+            push!(groups, comp)
+            continue
+        end
+        cx = _name_cluster_contradiction(comp)
+        if cx === nothing
+            push!(groups, comp)
+        else
+            append!(groups, _name_cluster_split(comp))
+        end
+    end
+    return groups
+end
+
+"""
     compute_groups(raw_names::Vector{String}, overrides) -> Vector{Vector{String}}
 
-Connected components of the graph whose nodes are `raw_names` and whose edges are: same
-`full_key`, same `initials_key`, or an explicit `merge` pair — minus any explicit `split` pair.
-Plain BFS over an adjacency `Dict`, no graph library needed.
+Connected components of the graph whose nodes are `raw_names` and whose edges are: same name
+cluster (see [`compute_name_clusters`](@ref) — replaces the earlier `full_key`/`initials_key`
+exact-match signal), or an explicit `merge` pair — minus any explicit `split` pair. Overrides are
+applied AFTER clustering, unconditionally (never re-checked by the oracle): a human `merge` forces
+an edge the algorithm couldn't find on its own, and a human `split` removes one it shouldn't have
+made — neither should be second-guessed by [`_name_cluster_contradiction`](@ref). Plain BFS over
+an adjacency `Dict`, no graph library needed.
 """
 function compute_groups(raw_names::Vector{String}, overrides)
     adj = Dict{String,Vector{String}}(n => String[] for n in raw_names)
@@ -98,18 +528,9 @@ function compute_groups(raw_names::Vector{String}, overrides)
         push!(adj[b], a)
     end
 
-    by_full = Dict{String,Vector{String}}()
-    by_init = Dict{String,Vector{String}}()
-    for n in raw_names
-        k = name_keys(n)
-        isempty(k.full_key) || push!(get!(by_full, k.full_key, String[]), n)
-        isempty(k.initials_key) || push!(get!(by_init, k.initials_key, String[]), n)
-    end
-    for bucket in (by_full, by_init)
-        for (_, group) in bucket
-            for i in 1:length(group), j in (i+1):length(group)
-                connect!(group[i], group[j])
-            end
+    for group in compute_name_clusters(raw_names)
+        for i in 1:length(group), j in (i+1):length(group)
+            connect!(group[i], group[j])
         end
     end
     for g in overrides.merges
