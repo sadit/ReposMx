@@ -146,22 +146,54 @@ metric below, a citation-style parenthetical like `"(Alejandro)"` in `"Anaya, A.
 real signal (`del_punc=true` already unwraps the parens on tokenizing, keeping `"alejandro"` as
 its own token) — stripping it away was verified, while developing this metric, to tank the
 similarity score for exactly this pair.
+
+Memoized (see [`_TOKENS_CACHE`](@ref)): [`compute_name_clusters`](@ref) calls this on the SAME
+raw name string thousands of times over (once per candidate pair it participates in within its
+surname bucket), and re-tokenizing every time was, measured on the real full corpus's largest
+bucket (`"hernandez"`, 12,615 names), most of the per-pair cost.
 """
 function _qgram_name_tokens(raw::AbstractString)
-    _collapse_self_annotations(String.(collect(tokenize(AUTHOR_NAME_CONFIG, _order_normalize(raw)))))
+    get!(_TOKENS_CACHE, raw) do
+        _collapse_self_annotations(String.(collect(tokenize(AUTHOR_NAME_CONFIG, _order_normalize(raw)))))
+    end
 end
+
+"""
+    _TOKENS_CACHE
+
+Memoization cache for [`_qgram_name_tokens`](@ref) — pure function of its input, so caching
+indefinitely (never invalidated/cleared) is always correct, not just a "for now" shortcut. Grows
+only while [`compute_name_clusters`](@ref) runs (a rebuild step, not a query-serving path), bounded
+by the corpus's number of DISTINCT raw names — not a concern for a long-running server process.
+NOT thread-safe: [`compute_name_clusters`](@ref)'s loops are sequential today; parallelizing them
+would need a thread-safe cache (or one cache per thread) instead of this plain `Dict`.
+"""
+const _TOKENS_CACHE = Dict{String,Vector{String}}()
 
 """
     _name_qgrams(t::AbstractString; q::Int=4) -> Set{String}
 
 Boundary-marked (`"^t\$"`) character `q`-grams of `t` — a token shorter than the padded window
-becomes one literal element (covers bare initials at any `q`).
+becomes one literal element (covers bare initials at any `q`). Memoized (see
+[`_QGRAMS_CACHE`](@ref)), same rationale and thread-safety caveat as [`_qgram_name_tokens`](@ref):
+a token like `"hernandez"` or `"maria"` recurs across huge numbers of candidate pairs within one
+surname bucket.
 """
 function _name_qgrams(t::AbstractString; q::Int=4)
-    padded = collect("^" * t * "\$")
-    length(padded) < q && return Set([String(padded)])
-    return Set(String(padded[i:i+q-1]) for i in 1:(length(padded)-q+1))
+    get!(_QGRAMS_CACHE, (t, q)) do
+        padded = collect("^" * t * "\$")
+        length(padded) < q ? Set([String(padded)]) :
+            Set(String(padded[i:i+q-1]) for i in 1:(length(padded)-q+1))
+    end
 end
+
+"""
+    _QGRAMS_CACHE
+
+Memoization cache for [`_name_qgrams`](@ref) — see [`_TOKENS_CACHE`](@ref)'s docstring, same
+rationale applies verbatim.
+"""
+const _QGRAMS_CACHE = Dict{Tuple{String,Int},Set{String}}()
 
 """
     _qgram_jaccard(a::AbstractString, b::AbstractString) -> Float64
@@ -186,13 +218,30 @@ bare-initial shortcut — safe here specifically because a length-1 token can on
 raw-data abbreviation, never from a synthesized initial (this design never enriches/synthesizes
 initials from spelled-out names — an earlier, rejected bag-of-q-grams design did, and that's
 exactly what let two different people sharing a coincidental first letter collide).
+
+Memoized at the level of the FULL pairwise score (see [`_TOKEN_SCORE_CACHE`](@ref)), not just the
+underlying q-gram sets: a token pair like `"maria"`/`"jose"` recurs across huge numbers of NAME
+pairs within one surname bucket (every "Maria ..." name against every "Jose ..." name sharing that
+surname), and caching only the q-gram sets still leaves the `union`/`intersect` work to redo on
+every occurrence. Measured together with [`_qgram_name_tokens`](@ref)/[`_name_qgrams`](@ref)'s
+caching, this cut real full-corpus benchmark time by ~5.75x on the largest real bucket (a 1,500-
+name sample of `"hernandez"`: 46.4s -> 8.1s, identical edge count both times).
 """
 function _token_alignment_score(a::AbstractString, b::AbstractString)
     a == b && return 1.0
     length(a) == 1 && !isempty(b) && return a[1] == first(b) ? 1.0 : 0.0
     length(b) == 1 && !isempty(a) && return b[1] == first(a) ? 1.0 : 0.0
-    _qgram_jaccard(a, b)
+    key = a <= b ? (a, b) : (b, a)  # _qgram_jaccard is symmetric; canonicalize to double the hit rate
+    get!(() -> _qgram_jaccard(a, b), _TOKEN_SCORE_CACHE, key)
 end
+
+"""
+    _TOKEN_SCORE_CACHE
+
+Memoization cache for [`_token_alignment_score`](@ref)'s non-trivial (q-gram) branch — see
+[`_TOKENS_CACHE`](@ref)'s docstring, same rationale and thread-safety caveat apply verbatim.
+"""
+const _TOKEN_SCORE_CACHE = Dict{Tuple{String,String},Float64}()
 
 """
     _align_given_tokens(short::Vector{String}, long::Vector{String}) -> Vector{Tuple{String,String,Float64}}
