@@ -12,3 +12,7 @@
 *.tmp
 *.log
 .DS_Store
+
+# Regeneratable mined ground-truth data (experiments/, derived from a local rebuild — see
+# experiments/author_matching/mine_ground_truth.jl)
+/experiments/author_matching/mined_*.txt
