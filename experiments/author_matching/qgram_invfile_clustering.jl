@@ -208,6 +208,51 @@ Two findings, in order of importance:
    the ~14% HASHED win measured in isolation above). Treat that earlier isolated result as marginal
    / possibly run-to-run variance rather than a robust effect -- it doesn't change the recommendation
    (hashed is still never worse, and composes for free), just tempers confidence in its magnitude.
+
+### `bucket_edges_searchgraph` -- SearchGraph + MaxMatchError, TRIED AND DISCARDED
+
+[`name_qgram_vec_hashed`](@ref) and [`bucket_edges_searchgraph`](@ref) exist in this file as a
+validated negative result, not a recommendation -- kept, like `compute_name_clusters_v2` above, as
+a documented dead end so the question doesn't get re-asked and re-benchmarked from scratch later.
+
+The attempt: swap `DictInvertedFile`'s exact posting-list merge for a `SearchGraph` (approximate,
+beam-search-based), over sorted `Vector{UInt64}` q-gram hashes (`Dist.Sets.Jaccard`'s cheaper
+sorted-merge `evaluate` path, relevant here because `SearchGraph` -- unlike `DictInvertedFile` --
+calls `evaluate` directly, many times, both while building and while searching), deliberately
+UNPRUNED (no `prune_stopword_elements` call), tuned with [`MaxMatchError`](@ref)`(maxerror=0.01)`
+instead of `MinRecall` (both the in-band `hyperparameters_callback` and the explicit post-hoc
+`optimize_index!` call). `MaxMatchError` needed a `git pull` of a local SimilaritySearch dev
+checkout at the time (0.12.0 -> 1.3.2); it has since appeared in the General registry too, so the
+project depends on the ordinary registered 1.3.2, not a local dev path.
+
+Measured against `DictInvertedFile`'s exact, unpruned Jaccard (ground truth) at both real scales:
+
+| bucket | index | edges | vs exact-unpruned ground truth | time |
+|---|---|---|---|---|
+| 874 | DictInvertedFile, unpruned (exact) | 25,438 | -- | 0.18s* |
+| 874 | DictInvertedFile, max_df=0.5 (validated default) | 1,787 | -- | 0.073s |
+| 874 | SearchGraph, unpruned, MaxMatchError=0.01 | 25,913 | missing 2,553 (10.0%), extra 3,028 | 5.2s* |
+| 17,789 | DictInvertedFile, unpruned (exact) | 830,482 | -- | 52.3s |
+| 17,789 | DictInvertedFile, max_df=0.5 (validated default) | 490,624 | -- | 17.9s |
+| 17,789 | SearchGraph, unpruned, MaxMatchError=0.01 | 835,898 | missing 47,575 (5.7%), extra 52,991 | 30.3s |
+
+(*874-bucket SearchGraph time is compilation-dominated -- first `SearchGraph` build in the
+process; the 17,789 number is the fair, warmed-up one.)
+
+**Discarded because it loses on both axes that matter**, not because it's broken:
+1. It beats brute-force exact-UNPRUNED `DictInvertedFile` (30.3s vs 52.3s, ~1.7x) but is still
+   slower than the already cross-validated PRUNED exact approach (17.9s at `max_df=0.5`) -- trading
+   pruning for an approximate index doesn't pay off here, at least at `k=64` / default beam
+   settings.
+2. It carries real, non-trivial approximation error relative to the exact ground truth (5.7-10% of
+   edges, both missed and spurious) -- expected, since `MaxMatchError(maxerror=0.01)` is an
+   optimization TARGET the tuner searches for (a modest budget by default: 16 initial configs x 12
+   iterations), not a guarantee it reaches, and `SearchGraph` has no exact fastpath for Jaccard the
+   way `DictInvertedFile` does (`has_exact_fastpath(::Dist.Sets.Jaccard) = true` there, not here).
+
+**How to apply**: don't reach for `SearchGraph` for this problem as configured. If revisited, the
+open knobs would be a bigger optimization budget and tuning `k`/beam parameters directly -- neither
+was tried, since the result was already clearly behind the existing validated path on the first try.
 =#
 
 using ReposMx
@@ -294,6 +339,23 @@ function name_qgram_set_hashed(raw::AbstractString; q::Int=Q, enrich::Bool=true)
 end
 
 """
+    name_qgram_vec_hashed(raw; q=Q, enrich=true) -> Vector{UInt64}
+
+Same hashed elements as [`name_qgram_set_hashed`](@ref) (deduplicated), but returned SORTED as a
+`Vector{UInt64}` instead of kept as a `Set`. `Dist.Sets.Jaccard`'s generic `evaluate` dispatches to
+a cheap sorted-merge `intersectionsize` for `AbstractVector` args, vs. a hash-lookup
+`intersectionsize` for `AbstractSet` args -- both are CORRECT, but the merge path has a much lower
+constant factor per comparison. That difference is irrelevant for `DictInvertedFile` (it never
+calls `evaluate` on a full pair -- it walks posting lists instead), which is why every `Set`-based
+representation above was fine as-is. It matters a lot for [`bucket_edges_searchgraph`](@ref)'s
+`SearchGraph`, which calls `evaluate` directly, a very large number of times, during both
+construction (neighborhood search for every insertion) and querying (`allknn`'s beam search).
+"""
+function name_qgram_vec_hashed(raw::AbstractString; q::Int=Q, enrich::Bool=true)
+    sort!(collect(name_qgram_set_hashed(raw; q, enrich)))
+end
+
+"""
     prune_stopword_elements(sets; max_df=0.5, min_n=50) -> (pruned_sets, stopword_set)
 
 Drops any element whose document frequency (fraction of `sets` containing it) exceeds `max_df` --
@@ -327,8 +389,12 @@ end
 
 Generic index construction over the same `Vector{Set{T}}` representation (`T` is `String` or
 `UInt64`, see [`name_qgram_set`](@ref)/[`name_qgram_set_hashed`](@ref)), dispatched by `backend` --
-kept swappable on purpose (see module docstring). `:searchgraph` is a placeholder for a future,
-unvalidated attempt; only `:dictinvfile` is implemented and validated here.
+kept swappable on purpose (see module docstring). Only `:dictinvfile` is implemented here; the
+`SearchGraph` alternative lives as its own dedicated function,
+[`bucket_edges_searchgraph`](@ref), rather than a `backend=:searchgraph` branch here, because it
+needs a genuinely different item type (sorted `Vector{UInt64}`, not `Set{T}`) and a different
+construction/tuning pipeline (`index!` + `optimize_index!` with `MaxMatchError`, not
+`append_items!`), not just a different index constructor call.
 """
 function build_name_index(sets::Vector{Set{T}}; backend::Symbol=:dictinvfile, dist=Dist.Sets.Jaccard()) where T
     if backend == :dictinvfile
@@ -337,8 +403,6 @@ function build_name_index(sets::Vector{Set{T}}; backend::Symbol=:dictinvfile, di
         ctx = getcontext(idx)
         append_items!(idx, ctx, db)
         return idx, ctx
-    elseif backend == :searchgraph
-        error("backend=:searchgraph is a reserved, unimplemented extension point -- see module docstring")
     else
         error("unknown backend $backend")
     end
@@ -363,6 +427,61 @@ function bucket_edges_invfile(names::Vector{String}; repr::Function=name_qgram_s
     idx, ctx = build_name_index(sets)
     kk = min(k, n - 1)
     ids, dists = allknn(idx, ctx, kk + 1)  # +1: each point is trivially its own nearest neighbor
+    edges = Tuple{Int,Int}[]
+    for j in 1:n, r in 1:size(ids, 1)
+        i = ids[r, j]
+        (i == 0 || Int(i) == j) && continue
+        sim = 1.0 - dists[r, j]
+        sim >= thr || continue
+        a, b = minmax(Int(i), j)
+        push!(edges, (a, b))
+    end
+    return unique(edges)
+end
+
+"""
+    bucket_edges_searchgraph(names; repr=name_qgram_vec_hashed, q=Q, enrich=true, k=64, thr=0.3,
+                              maxerror=0.01f0) -> Vector{Tuple{Int,Int}}
+
+Same phase-1 candidate-edge contract as [`bucket_edges_invfile`](@ref), but through a `SearchGraph`
+(an approximate, beam-search-based index) instead of `DictInvertedFile`'s exact posting-list merge.
+Two deliberate departures, both per explicit request rather than this file's earlier default
+choices:
+
+- **No stopword pruning.** `prune_stopword_elements` is never called here -- every element,
+  including the bucket's own near-universal shared surname, stays in every set. This is the
+  opposite of `bucket_edges_invfile`'s validated default (`max_df=0.5`) and is expected to cost
+  real search-time performance (see this file's `max_df` sweep section above for how much a large
+  posting list -- or, here, a large per-node neighborhood -- costs); the point of this variant is
+  to see whether `SearchGraph`'s different access pattern (approximate beam search over a graph,
+  not an exact posting-list walk) tolerates that cost differently than `DictInvertedFile` did.
+- **Tuned with [`MaxMatchError`](@ref) instead of `MinRecall`.** Both the in-band
+  `hyperparameters_callback` (fires automatically as the graph grows during `index!`) and the
+  explicit post-hoc `optimize_index!` call are set to `MaxMatchError(; maxerror)` -- no `MinRecall`
+  tuning happens anywhere in this path. `MaxMatchError` compares returned-vs-gold NEIGHBOR
+  DISTANCES at matching ranks (not neighbor identities, unlike `MinRecall`), so a correct distance
+  tie with a different-but-equally-valid neighbor still counts as a perfect match; `maxerror=0.01`
+  means "average within 1% of the gold neighborhood's own distance spread".
+
+Unlike `DictInvertedFile` (`has_exact_fastpath(::Dist.Sets.Jaccard) = true`), `SearchGraph` is
+APPROXIMATE even once tuned -- `allknn` here is not a ground truth the way it was for the invfile
+path, so edge-set comparisons against this function should be read as "how close does the tuned
+approximation get", not "is it exactly right".
+"""
+function bucket_edges_searchgraph(names::Vector{String}; repr::Function=name_qgram_vec_hashed,
+                                   q::Int=Q, enrich::Bool=true, k::Int=64, thr::Float64=0.3,
+                                   maxerror::Float32=0.01f0)
+    n = length(names)
+    n < 2 && return Tuple{Int,Int}[]
+    vecs = [repr(nm; q, enrich) for nm in names]
+    db = VectorDatabase(vecs)
+    goal = MaxMatchError(; maxerror)
+    ctx = SearchGraphContext(; hyperparameters_callback=OptimizeParameters(goal))
+    G = SearchGraph(Dist.Sets.Jaccard(), db)
+    index!(G, ctx)
+    optimize_index!(G, ctx, goal)
+    kk = min(k, n - 1)
+    ids, dists = allknn(G, ctx, kk + 1)
     edges = Tuple{Int,Int}[]
     for j in 1:n, r in 1:size(ids, 1)
         i = ids[r, j]
