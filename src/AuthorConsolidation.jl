@@ -527,8 +527,10 @@ function compute_name_clusters(raw_names::Vector{String})
         ra != rb && (parent[ra] = rb)
     end
 
+    _log(msg) = (println(msg); flush(stdout))
+
     n_buckets = length(candidate_buckets)
-    println("  compute_name_clusters: $n_buckets buckets, largest=$(isempty(candidate_buckets) ? 0 : maximum(length, values(candidate_buckets)))")
+    _log("  compute_name_clusters: $n_buckets buckets, largest=$(isempty(candidate_buckets) ? 0 : maximum(length, values(candidate_buckets)))")
     t_phase1 = time()
     for (bi, (_, bucket)) in enumerate(candidate_buckets)
         bucket = unique(bucket)
@@ -538,17 +540,17 @@ function compute_name_clusters(raw_names::Vector{String})
             _name_cluster_edge(a, b) && uf_union!(idx[a], idx[b])
         end
         if bi % 2000 == 0
-            println("  compute_name_clusters: phase1 bucket $bi/$n_buckets, elapsed=$(round(time()-t_phase1,digits=1))s")
+            _log("  compute_name_clusters: phase1 bucket $bi/$n_buckets, elapsed=$(round(time()-t_phase1,digits=1))s")
         end
     end
-    println("  compute_name_clusters: phase1 done, elapsed=$(round(time()-t_phase1,digits=1))s")
+    _log("  compute_name_clusters: phase1 done, elapsed=$(round(time()-t_phase1,digits=1))s")
 
     by_root = Dict{Int,Vector{String}}()
     for nm in raw_names
         push!(get!(by_root, uf_find(idx[nm]), String[]), nm)
     end
     comp_sizes = sort(length.(values(by_root)); rev=true)
-    println("  compute_name_clusters: $(length(by_root)) components, largest sizes=$(comp_sizes[1:min(10,end)])")
+    _log("  compute_name_clusters: $(length(by_root)) components, largest sizes=$(comp_sizes[1:min(10,end)])")
 
     groups = Vector{Vector{String}}()
     t_oracle = time()
@@ -558,7 +560,7 @@ function compute_name_clusters(raw_names::Vector{String})
             continue
         end
         big = length(comp) > 50
-        big && println("  compute_name_clusters: oracle on component #$ci, size=$(length(comp))...")
+        big && _log("  compute_name_clusters: oracle on component #$ci, size=$(length(comp))...")
         t_comp = time()
         cx = _name_cluster_contradiction(comp)
         if cx === nothing
@@ -566,9 +568,9 @@ function compute_name_clusters(raw_names::Vector{String})
         else
             append!(groups, _name_cluster_split(comp))
         end
-        big && println("  compute_name_clusters: component #$ci done, elapsed=$(round(time()-t_comp,digits=1))s")
+        big && _log("  compute_name_clusters: component #$ci done, elapsed=$(round(time()-t_comp,digits=1))s")
     end
-    println("  compute_name_clusters: oracle phase done, elapsed=$(round(time()-t_oracle,digits=1))s")
+    _log("  compute_name_clusters: oracle phase done, elapsed=$(round(time()-t_oracle,digits=1))s")
     return groups
 end
 

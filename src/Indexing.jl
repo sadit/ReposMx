@@ -182,7 +182,7 @@ Returns the number of consolidated profiles written.
 """
 function _build_authors_indices!(db::Database, rdb, authors_data::Vector{<:AbstractDict},
                                   index_dir::AbstractString, name_textconfig, raw_id_of::AbstractDict)
-    println("Clustering raw author profiles into consolidated profiles...")
+    println("Clustering raw author profiles into consolidated profiles..."); flush(stdout)
     n_groups = build_and_persist(authors_data, index_dir, raw_id_of)
     consolidated = load_all(index_dir)
     println("  $(length(authors_data)) raw profiles -> $(n_groups) consolidated profiles")
@@ -285,9 +285,9 @@ function rebuild_authors_index(;
     isempty(all_docs) && return nothing
 
     authors_data = build_authors_index_data(all_docs)
-    println("Raw author profiles: $(length(authors_data))")
+    println("Raw author profiles: $(length(authors_data))"); flush(stdout)
     raw_id_of, n_raw_collisions = assign_raw_ids(authors_data)
-    println("  raw ids needing disambiguation: $n_raw_collisions / $(length(authors_data))")
+    println("  raw ids needing disambiguation: $n_raw_collisions / $(length(authors_data))"); flush(stdout)
 
     db_path = joinpath(data_dir, "rocksdb")
     db = open_database(db_path; create_if_missing=true)
