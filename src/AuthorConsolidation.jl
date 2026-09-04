@@ -388,22 +388,44 @@ const _NAME_CLUSTER_CONTRADICTION_FLOOR = 0.2
     _name_cluster_contradiction(names) -> Union{Tuple{String,String},Nothing}
 
 Phase 2 (oracle, PRECISION-oriented) for [`compute_name_clusters`](@ref): a phase-1 cluster stays
-merged by DEFAULT — this only reports a split-worthy counter-example when it finds one: two
-members whose given names, at some aligned position, are both fully spelled out (neither a bare
-initial) and score below `_NAME_CLUSTER_CONTRADICTION_FLOOR` — clearly different words, not a
-spelling variant. Checks EVERY pair in `names` (not just phase-1 edges), and per POSITION rather
-than the aggregate `match` score — a shared incidental token (e.g. a common middle name) must
-never launder away a hard mismatch elsewhere in the alignment (found live: `"MANUEL ALBERTO CHAVEZ
-GONZALEZ"` vs `"MARIA ANTONIETA CHAVEZ GONZALEZ"` share the literal token `"chavez"` in given-name
-position, which pulled the AVERAGE match score to 0.333 — above a 0.2 floor — even though
-`"manuel"`/`"maria"` at the discriminating position score near zero). This asymmetry is
-deliberate: proving two names the SAME is hard (this module's whole reason to exist); proving them
-DIFFERENT, when the evidence is this stark, is not.
+merged by DEFAULT — this only reports a split-worthy counter-example when it finds one, checking
+EVERY pair in `names` (not just phase-1 edges) for either of two kinds of hard evidence:
+
+1. A low DIRECT [`_name_match_score`](@ref) surname score between the two specific members —
+   surname incompatibility between two names IS the contradiction, not a precondition to skip
+   before looking for one (an earlier version treated it as the latter, which missed real
+   contradictions introduced by phase-1 mechanisms that don't independently gate on surname the
+   way [`_name_cluster_edge`](@ref) does, and also under-protects the current exact-loop phase 1
+   against transitive chaining through a truncation bridge: A-B and B-C each individually
+   plausible via a different truncation relationship, but A and C incompatible with each other).
+2. Two given-name tokens, at some aligned position, both fully spelled out (neither a bare
+   initial) and scoring below `_NAME_CLUSTER_CONTRADICTION_FLOOR` — clearly different words, not a
+   spelling variant. Checked per POSITION rather than via the aggregate `match` score — a shared
+   incidental token (e.g. a common middle name) must never launder away a hard mismatch elsewhere
+   in the alignment (found live: `"MANUEL ALBERTO CHAVEZ GONZALEZ"` vs `"MARIA ANTONIETA CHAVEZ
+   GONZALEZ"` share the literal token `"chavez"` in given-name position, which pulled the AVERAGE
+   match score to 0.333 — above a 0.2 floor — even though `"manuel"`/`"maria"` at the
+   discriminating position score near zero).
+
+This asymmetry is deliberate: proving two names the SAME is hard (this module's whole reason to
+exist); proving them DIFFERENT, when the evidence is this stark, is not.
 """
 function _name_cluster_contradiction(names::Vector{String})
     for i in 1:length(names), j in (i+1):length(names)
         r = _name_match_score(names[i], names[j])
-        r.surname >= _NAME_CLUSTER_SURNAME_THRESHOLD || continue
+        # A low DIRECT surname score between two members of the SAME cluster is itself a hard
+        # contradiction, not a reason to skip this pair — found live while validating an
+        # alternative phase-1 mechanism whose connection criterion doesn't independently gate on
+        # surname the way _name_cluster_edge does: two people sharing only a coincidental
+        # paternal-surname-candidate token ("moreno") but with genuinely different real surnames
+        # ("Galván" vs "Rivas") ended up in the same component with no direct edge requiring
+        # surname compatibility between THEM specifically. This also hardens the CURRENT
+        # exact-loop phase 1 against transitive chaining through a truncation bridge (A-B and B-C
+        # each individually plausible via a different truncation relationship, but A and C
+        # incompatible with each other) — the same class of bug `initials_key`'s bare-initial
+        # bridging caused originally, just one hop further away, so worth checking regardless of
+        # how phase 1 connected this component.
+        r.surname >= _NAME_CLUSTER_SURNAME_THRESHOLD || return (names[i], names[j])
         for (ta, tb, s) in r.pairs
             if length(ta) > 1 && length(tb) > 1 && s < _NAME_CLUSTER_CONTRADICTION_FLOOR
                 return (names[i], names[j])
