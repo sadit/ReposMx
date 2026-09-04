@@ -137,6 +137,26 @@ slice through `DictInvertedFile`, leaving the rest on the direct loop.
   12,615-17,789-member buckets). That run was started and intentionally stopped mid-flight (not a
   failure) to prioritize investigating the 10-repo discrepancy first; re-run it before trusting the
   hybrid design at the scale that matters.
+
+### `name_qgram_set_hashed` -- hashing q-grams to `UInt64` instead of keeping them as `String`
+
+Tested in isolation (same bucket, same `allknn` call, only the element type changes) at both real
+scales:
+
+| bucket size (real corpus) | STRING-keyed | HASHED (UInt64)-keyed | speedup | edges identical? |
+|---|---|---|---|---|
+| 874 (10-repo `"hernandez"`) | 0.080s | 0.075s | ~6% | yes (1,787/1,787) |
+| 17,789 (93-repo `"hernandez"`) | 20.71s | 17.87s | ~14% | yes (490,624/490,624) |
+
+**Real, measurable, but modest speedup — grows with bucket size, doesn't replace the hybrid
+size-routing above (they compose: use the hashed representation ONLY for the buckets already
+being routed to `DictInvertedFile`).** No quality loss detected at either scale: the exact same set
+of edges was found both ways at both sizes -- consistent with the collision-probability math
+(64-bit hash space against a per-bucket vocabulary of at most a few thousand distinct tagged
+q-grams; the expected number of colliding pairs is negligible long before it would ever matter in
+practice). Swap `repr=name_qgram_set` for `repr=name_qgram_set_hashed` in
+`bucket_edges_invfile`/`compute_name_clusters_hybrid` to use it -- `prune_stopword_elements` and
+`build_name_index` are already generic over the element type, no other change needed.
 =#
 
 using ReposMx
@@ -191,6 +211,38 @@ function name_qgram_set(raw::AbstractString; q::Int=Q, enrich::Bool=true)
 end
 
 """
+    name_qgram_set_hashed(raw; q=Q, enrich=true) -> Set{UInt64}
+
+Same representation as [`name_qgram_set`](@ref), but each tagged q-gram STRING is hashed down to a
+`UInt64` (Julia's built-in `hash`, already a `UInt64` on 64-bit systems) before being added to the
+set. The point: integer keys are cheaper to hash/compare/store than variable-length strings, so a
+`DictInvertedFile{...,UInt64,...}` built from these should do less work per posting-list merge than
+the string-keyed version -- at the cost of a (vanishingly small, but not exactly zero) chance that
+two DIFFERENT q-grams collide onto the same 64-bit value. See this file's hashed-vs-string
+benchmark for the measured speed/quality tradeoff.
+"""
+function name_qgram_set_hashed(raw::AbstractString; q::Int=Q, enrich::Bool=true)
+    toks = AC._qgram_name_tokens(raw)
+    isempty(toks) && return Set{UInt64}()
+    span = AC._surname_span(toks)
+    given = toks[1:first(span)-1]
+    surname = toks[span]
+    elems = UInt64[]
+    for t in given
+        for g in _qgrams_padded(t; q); push!(elems, hash(g * ":g")); end
+        enrich && length(t) > 1 && push!(elems, hash("^" * string(first(t)) * "\$:g"))
+    end
+    surname_str = join(surname, " ")
+    for g in _qgrams_padded(surname_str; q); push!(elems, hash(g * ":s")); end
+    if length(given) >= 2
+        t = given[end]
+        for g in _qgrams_padded(t; q); push!(elems, hash(g * ":s")); end
+        enrich && length(t) > 1 && push!(elems, hash("^" * string(first(t)) * "\$:s"))
+    end
+    return Set(elems)
+end
+
+"""
     prune_stopword_elements(sets; max_df=0.5, min_n=50) -> (pruned_sets, stopword_set)
 
 Drops any element whose document frequency (fraction of `sets` containing it) exceeds `max_df` --
@@ -202,11 +254,15 @@ prune every bit of real signal, including the surname q-grams that are usually t
 two names share a bucket (found live: gutted the only two members of a "torres" bucket down to
 zero overlap). Skip pruning entirely below `min_n` -- small buckets are cheap enough for exact
 search anyway, so there's no performance reason to prune them in the first place.
+
+Generic over the element type (`String` for [`name_qgram_set`](@ref), `UInt64` for
+[`name_qgram_set_hashed`](@ref)) -- document-frequency counting doesn't care what the elements
+actually are.
 """
-function prune_stopword_elements(sets::Vector{Set{String}}; max_df::Float64=0.5, min_n::Int=50)
+function prune_stopword_elements(sets::Vector{Set{T}}; max_df::Float64=0.5, min_n::Int=50) where T
     n = length(sets)
-    (n == 0 || n < min_n) && return sets, Set{String}()
-    df = Dict{String,Int}()
+    (n == 0 || n < min_n) && return sets, Set{T}()
+    df = Dict{T,Int}()
     for s in sets, e in s
         df[e] = get(df, e, 0) + 1
     end
@@ -218,14 +274,15 @@ end
 """
     build_name_index(sets; backend=:dictinvfile, dist=Dist.Sets.Jaccard()) -> (index, context)
 
-Generic index construction over the same `Vector{Set{String}}` representation, dispatched by
-`backend` -- kept swappable on purpose (see module docstring). `:searchgraph` is a placeholder for
-a future, unvalidated attempt; only `:dictinvfile` is implemented and validated here.
+Generic index construction over the same `Vector{Set{T}}` representation (`T` is `String` or
+`UInt64`, see [`name_qgram_set`](@ref)/[`name_qgram_set_hashed`](@ref)), dispatched by `backend` --
+kept swappable on purpose (see module docstring). `:searchgraph` is a placeholder for a future,
+unvalidated attempt; only `:dictinvfile` is implemented and validated here.
 """
-function build_name_index(sets::Vector{Set{String}}; backend::Symbol=:dictinvfile, dist=Dist.Sets.Jaccard())
+function build_name_index(sets::Vector{Set{T}}; backend::Symbol=:dictinvfile, dist=Dist.Sets.Jaccard()) where T
     if backend == :dictinvfile
         db = VectorDatabase(sets)
-        idx = DictInvertedFile(String, dist)
+        idx = DictInvertedFile(T, dist)
         ctx = getcontext(idx)
         append_items!(idx, ctx, db)
         return idx, ctx
@@ -237,18 +294,20 @@ function build_name_index(sets::Vector{Set{String}}; backend::Symbol=:dictinvfil
 end
 
 """
-    bucket_edges_invfile(names; q=Q, enrich=true, max_df=0.5, k=64, thr=0.3) -> Vector{Tuple{Int,Int}}
+    bucket_edges_invfile(names; repr=name_qgram_set, q=Q, enrich=true, max_df=0.5, k=64, thr=0.3) -> Vector{Tuple{Int,Int}}
 
 Phase-1 candidate edges (index pairs into `names`) within one bucket, via `allknn` over a
 DictInvertedFile with exact Jaccard (parallel by default). `k` approximates a threshold/range
 query (SimilaritySearch's inverted-file `search` is k-NN shaped, not radius-shaped) -- generous by
 design, oversized relative to any expected true-cluster size, then filtered by `thr` afterward.
+`repr` selects the element representation -- pass [`name_qgram_set_hashed`](@ref) for the
+integer-keyed variant instead of the default string-keyed [`name_qgram_set`](@ref).
 """
-function bucket_edges_invfile(names::Vector{String}; q::Int=Q, enrich::Bool=true, max_df::Float64=0.5,
-                               k::Int=64, thr::Float64=0.3)
+function bucket_edges_invfile(names::Vector{String}; repr::Function=name_qgram_set, q::Int=Q, enrich::Bool=true,
+                               max_df::Float64=0.5, k::Int=64, thr::Float64=0.3)
     n = length(names)
     n < 2 && return Tuple{Int,Int}[]
-    sets_raw = [name_qgram_set(nm; q, enrich) for nm in names]
+    sets_raw = [repr(nm; q, enrich) for nm in names]
     sets, _stop = prune_stopword_elements(sets_raw; max_df)
     idx, ctx = build_name_index(sets)
     kk = min(k, n - 1)
@@ -351,7 +410,8 @@ indexed path should capture nearly all the available speedup while leaving the o
 buckets on the cheap direct loop, avoiding the per-bucket overhead that made `compute_name_clusters_v2`
 (indexed path for EVERY bucket) slower than production overall.
 """
-function compute_name_clusters_hybrid(raw_names::Vector{String}; q::Int=Q, enrich::Bool=true,
+function compute_name_clusters_hybrid(raw_names::Vector{String}; repr::Function=name_qgram_set,
+                                       q::Int=Q, enrich::Bool=true,
                                        max_df::Float64=0.5, k::Int=64, thr::Float64=0.3,
                                        size_threshold::Int=200)
     n = length(raw_names)
@@ -386,7 +446,7 @@ function compute_name_clusters_hybrid(raw_names::Vector{String}; q::Int=Q, enric
         length(bucket) < 2 && continue
         if length(bucket) >= size_threshold
             n_indexed += 1
-            for (bi, bj) in bucket_edges_invfile(bucket; q, enrich, max_df, k, thr)
+            for (bi, bj) in bucket_edges_invfile(bucket; repr, q, enrich, max_df, k, thr)
                 uf_union!(idx_of[bucket[bi]], idx_of[bucket[bj]])
             end
         else
