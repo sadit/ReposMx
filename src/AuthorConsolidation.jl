@@ -460,6 +460,20 @@ order, joins the first compatible existing sub-cluster) — not a general correl
 solver; it can rarely miss an obviously-correct merge depending on processing order. Judged a lower
 priority to fix than a precision bug: a missed merge is recoverable (a later rebuild, or a manual
 `author_overrides.json` entry); a false merge is not.
+
+A second, related source of missed merges (not just processing order): a component only reaches
+this function at all once [`_name_cluster_contradiction`](@ref) has flagged it, and reconnection
+here then requires [`_name_cluster_strict_compatible`](@ref)'s stricter `match >= 0.9` — well above
+[`_name_cluster_edge`](@ref)'s generous `match >= 0.5` that connected the pair in the first place.
+A genuine typo/transliteration variant can clear the generous phase-1 bar but not the strict
+reconnection one: found live, `"VCTOR H. BALTAZAR-HERNANDEZ"` / `"VICTOR HUGO BALTAZAR HERNANDEZ"`
+score `match=0.762` (well above 0.5, comfortably connected at phase 1) but below 0.9, so once
+their (huge, 3,815-member, real 10-repo corpus) shared component got flagged for a split by some
+OTHER unrelated contradiction inside it, these two ended up in separate final singletons despite
+being an obvious match. Confirmed the split itself is otherwise healthy in this case (the same
+3,815-member component correctly decomposed into 3,150 final groups, largest size 8 — no residual
+giant blobs) — this is a narrow, specific recall cost of the two-tier threshold design, not a sign
+the splitter is failing at its main job.
 """
 function _name_cluster_split(names::Vector{String})
     clusters = Vector{Vector{String}}()

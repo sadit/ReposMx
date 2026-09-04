@@ -86,28 +86,57 @@ to whether this file is ever integrated).
 
 ## Validation results (real 10-repo corpus, 19,543 raw names, production oracle fix applied)
 
+### `compute_name_clusters_v2` (EVERY bucket through DictInvertedFile — superseded by the hybrid below)
+
 - Hand-picked regression set (the same cases in `test/runtests.jl`'s `_plausibly_same_person`
   tests, re-expressed as cluster-membership checks): 0/12 failures, matching production exactly.
-- End-to-end group comparison against `AC.compute_name_clusters` on the full 10-repo corpus:
-  16,697 groups (v2) vs 16,625 (production) -- 430 groups differ (down from ~3,877 before the
-  oracle fix above). Spot-checking the remaining differences surfaced a THIRD, separate, still-
-  OPEN production bug this file did not introduce and does not fix: two bare initials each
-  independently matching a different given-name token by coincidental shared first letter (e.g.
-  `"ARTURO REYES RAMIREZ"` vs `"R. A. Smith Ramírez"` -- production merges them, matching `"R."`
-  against `"Reyes"`'s first letter and `"A."` against `"Arturo"`'s, entirely coincidentally, then
-  reinforced by an exact surname match; this file's bag representation does NOT make the same
-  mistake here, i.e. v2's answer looks more correct in this specific case). Filed separately -- see
+- End-to-end group comparison against `AC.compute_name_clusters`: 16,697 groups (v2) vs 16,625
+  (production) -- 430 groups differ (down from ~3,877 before the oracle fix above). Spot-checking
+  the remaining differences surfaced a THIRD, separate, still-OPEN production bug this file did
+  not introduce and does not fix: two bare initials each independently matching a different
+  given-name token by coincidental shared first letter (e.g. `"ARTURO REYES RAMIREZ"` vs `"R. A.
+  Smith Ramírez"` -- production merges them, matching `"R."` against `"Reyes"`'s first letter and
+  `"A."` against `"Arturo"`'s, entirely coincidentally, then reinforced by an exact surname match;
+  this file's bag representation does NOT make the same mistake here). Filed separately -- see
   GitHub issue #3.
-- **Speed: NOT yet a win at this scale.** 54.1s (v2) vs 44.2s (production, phase1+oracle combined)
-  on the 10-repo corpus -- v2 is SLOWER here. Root cause: building a fresh `DictInvertedFile` per
+- **Speed: NOT a win at this scale.** 54.1s (v2) vs 44.2s (production, phase1+oracle combined) on
+  the 10-repo corpus -- v2 is SLOWER here. Root cause: building a fresh `DictInvertedFile` per
   bucket has fixed overhead (allocation, batch-scheduling setup) that only pays off for large
   buckets; with 5,835 buckets and only a handful actually large, that overhead dominates for the
-  many small ones. NEXT STEP (not yet implemented): a hybrid `compute_name_clusters` that only
-  routes buckets above some size threshold (e.g. a few hundred) through `bucket_edges_invfile`,
-  keeping the current direct/memoized loop for everything smaller -- untested whether this actually
-  wins even on the pathological full-93-repo buckets (12,615-17,789 members) that motivated this
-  file in the first place; that comparison has not been run yet (would need reloading the full
-  93-repo corpus, ~2 minutes just for `_collect_documents`).
+  many small ones.
+
+### `compute_name_clusters_hybrid` (route by bucket size — the actual point of this file)
+
+Bucket-size distribution on the real corpora (see this docstring's numbers below) is extremely
+Pareto-skewed: on the full 93-repo corpus, buckets >= 200 are only ~1.2% of all buckets but already
+account for ~99.5% of total O(size²) work. `size_threshold=200` (the default) routes only that top
+slice through `DictInvertedFile`, leaving the rest on the direct loop.
+
+- Hand-picked regression set (forced through BOTH code paths via `size_threshold=3`): 0/12
+  failures.
+- 10-repo corpus, `size_threshold=200` (25 of 2,566 non-trivial buckets routed to
+  `DictInvertedFile`): **33.6s vs production's 43.9s -- a real ~23% speedup**, the first time this
+  approach has actually won overall. 16,650 groups (hybrid) vs 16,625 (production) -- 217 differ.
+- **The 217-group difference is NOT a new correctness bug** -- traced to its actual root cause by
+  direct comparison, not guessed: EVERY differing pair tested (`AC._name_cluster_edge` called
+  directly) returns `true` under BOTH mechanisms, and traces back to the SAME single pre-oracle
+  component (a 3,815-member blob, formed by transitive chaining across many unrelated surnames --
+  entirely expected and by design, see `compute_similarity_merges`'s docstring on why bucketing
+  alone over-connects). That component splits into 3,150 sane final groups either way (largest
+  size 8, no residual blobs) -- but which of two DIFFERENT initial graph shapes (hybrid's
+  Jaccard-routed large buckets vs production's exact-everywhere) gets fed into
+  `AC._name_cluster_split`'s GREEDY, ORDER- AND THRESHOLD-SENSITIVE partitioner determines the
+  exact final split, and the two mechanisms hand it different shapes. This is the SAME known,
+  already-documented `_name_cluster_split` limitation (see its docstring in `AuthorConsolidation.jl`
+  for the precise mechanism and a concrete example: `"VCTOR H. BALTAZAR-HERNANDEZ"` /
+  `"VICTOR HUGO BALTAZAR HERNANDEZ"` score `match=0.762` -- above phase-1's generous 0.5 bar, but
+  below the split's strict 0.9 reconnection bar), now made visible by comparing two different
+  phase-1 mechanisms feeding the same fragile downstream step -- not a defect introduced by this
+  file, and not (on the evidence checked) a sign either mechanism is more "correct" in general.
+- **Not yet tested on the full 93-repo corpus** -- the scale that actually motivated this file (the
+  12,615-17,789-member buckets). That run was started and intentionally stopped mid-flight (not a
+  failure) to prioritize investigating the 10-repo discrepancy first; re-run it before trusting the
+  hybrid design at the scale that matters.
 =#
 
 using ReposMx
@@ -284,6 +313,91 @@ function compute_name_clusters_v2(raw_names::Vector{String}; q::Int=Q, enrich::B
             uf_union!(idx_of[bucket[bi]], idx_of[bucket[bj]])
         end
     end
+
+    by_root = Dict{Int,Vector{String}}()
+    for nm in raw_names
+        push!(get!(by_root, uf_find(idx_of[nm]), String[]), nm)
+    end
+
+    groups = Vector{Vector{String}}()
+    for (_, comp) in by_root
+        if length(comp) == 1
+            push!(groups, comp)
+            continue
+        end
+        cx = AC._name_cluster_contradiction(comp)
+        if cx === nothing
+            push!(groups, comp)
+        else
+            append!(groups, AC._name_cluster_split(comp))
+        end
+    end
+    return groups
+end
+
+"""
+    compute_name_clusters_hybrid(raw_names; size_threshold=200, kwargs...) -> Vector{Vector{String}}
+
+The actual point of this file: route each bucket to whichever phase-1 mechanism suits its size --
+`AC._name_cluster_edge`'s direct exact loop (no index-construction overhead, cheap for the
+overwhelming majority of buckets) below `size_threshold`, `bucket_edges_invfile` (parallel
+`allknn`, worth its fixed per-bucket setup cost only once there's enough O(size²) work to amortize
+it) at or above it. Same bucketing/oracle as `compute_name_clusters_v2` -- only the routing is new.
+
+`size_threshold` picked from the real bucket-size distribution (see this module's docstring for
+the numbers): on the real 93-repo corpus, buckets >= 200 are only 1.2% of all buckets but already
+account for 99.5% of the total O(size²) work -- so routing just that top slice through the
+indexed path should capture nearly all the available speedup while leaving the other ~98.8% of
+buckets on the cheap direct loop, avoiding the per-bucket overhead that made `compute_name_clusters_v2`
+(indexed path for EVERY bucket) slower than production overall.
+"""
+function compute_name_clusters_hybrid(raw_names::Vector{String}; q::Int=Q, enrich::Bool=true,
+                                       max_df::Float64=0.5, k::Int=64, thr::Float64=0.3,
+                                       size_threshold::Int=200)
+    n = length(raw_names)
+    n == 0 && return Vector{Vector{String}}()
+    idx_of = Dict(nm => i for (i, nm) in enumerate(raw_names))
+
+    candidate_buckets = Dict{String,Vector{String}}()
+    for nm in raw_names
+        AC._is_garbage_name(nm) && continue
+        for key in AC._name_cluster_keys(nm)
+            push!(get!(candidate_buckets, key, String[]), nm)
+        end
+    end
+
+    parent = collect(1:n)
+    function uf_find(x)
+        while parent[x] != x
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        end
+        return x
+    end
+    function uf_union!(a, b)
+        ra, rb = uf_find(a), uf_find(b)
+        ra != rb && (parent[ra] = rb)
+    end
+
+    n_indexed = 0
+    n_direct = 0
+    for (_, bucket) in candidate_buckets
+        bucket = unique(bucket)
+        length(bucket) < 2 && continue
+        if length(bucket) >= size_threshold
+            n_indexed += 1
+            for (bi, bj) in bucket_edges_invfile(bucket; q, enrich, max_df, k, thr)
+                uf_union!(idx_of[bucket[bi]], idx_of[bucket[bj]])
+            end
+        else
+            n_direct += 1
+            for i in 1:length(bucket), j in (i+1):length(bucket)
+                a, b = bucket[i], bucket[j]
+                AC._name_cluster_edge(a, b) && uf_union!(idx_of[a], idx_of[b])
+            end
+        end
+    end
+    println("  compute_name_clusters_hybrid: $n_indexed bucket(s) routed to DictInvertedFile (size >= $size_threshold), $n_direct to the direct loop")
 
     by_root = Dict{Int,Vector{String}}()
     for nm in raw_names
