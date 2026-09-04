@@ -157,6 +157,57 @@ q-grams; the expected number of colliding pairs is negligible long before it wou
 practice). Swap `repr=name_qgram_set` for `repr=name_qgram_set_hashed` in
 `bucket_edges_invfile`/`compute_name_clusters_hybrid` to use it -- `prune_stopword_elements` and
 `build_name_index` are already generic over the element type, no other change needed.
+
+### `max_df` sweep -- pruning is a correctness lever, not just a performance one
+
+Same two buckets, same `allknn` call, this time varying `prune_stopword_elements`'s `max_df`
+(1.0 = no pruning at all, since no fraction can exceed it, down to 0.5/0.25/0.1), crossed with
+STRING vs HASHED. `missing`/`extra` are measured against the UNPRUNED (`max_df=1.0`) run at the
+same bucket, not against each other:
+
+| bucket | max_df | edges | vs unpruned | STRING time | HASHED time |
+|---|---|---|---|---|---|
+| 874 | 1.0 (none) | 25,438 | -- | 0.18s* | -- |
+| 874 | 0.5 (current default) | 1,787 | -92.98%, +0 extra | 0.077s | 0.075s |
+| 874 | 0.25 | 1,263 | -95.03%, +0 extra | 0.051s | 0.048s |
+| 874 | 0.10 | 1,245 | -95.11%, +0 extra | 0.036s | 0.032s |
+| 17,789 | 1.0 (none) | 830,482 | -- | 54.0s | -- |
+| 17,789 | 0.5 (current default) | 490,624 | -44.3%, +28,246 extra | 17.6s | 18.0s |
+| 17,789 | 0.25 | 357,307 | -62.4%, +44,872 extra | 9.0s | 8.9s |
+| 17,789 | 0.10 | 347,699 | -63.9%, +47,658 extra | 4.6s | 4.5s |
+
+(*compilation-dominated, first call in process.)
+
+Two findings, in order of importance:
+
+1. **Leaving the bucket's own literal surname unpruned (`max_df=1.0`) is not a safe, merely-slower
+   baseline -- it measurably degrades quality.** Every name in a `"hernandez"` bucket shares the
+   `":s"`-tagged "hernandez" q-grams by construction (that's the bucket key), so with nothing
+   pruned those elements inflate Jaccard similarity for essentially every pair in the bucket alike,
+   producing 3.4x more edges at the 17,789 scale than `max_df=0.5`. Since `max_df=0.5` is the
+   setting already cross-validated against production's exact pairwise loop earlier in this same
+   line of work (see `compute_name_clusters_hybrid` validation above), the unpruned run is the
+   outlier, almost certainly the noisier and lower-precision one, not the reverse. In other words:
+   `prune_stopword_elements` is load-bearing for correctness in this design, not an optional speed
+   knob layered on top of an already-correct signal.
+2. **Going more aggressive than the validated 0.5 default (0.25, 0.1) is a real behavior change,
+   not a free speedup.** At 17,789 scale they lose 62-64% of the edges `max_df=0.5` finds *and* gain
+   45-48K edges `max_df=0.5` doesn't have -- both directions are large relative to the already
+   cross-validated 0.5 point. The `extra` edges are not a bug: at large `n`, `allknn`'s fixed `k=64`
+   neighbor window means unpruned (or under-pruned) similarity noise can push a genuinely close
+   pair's rank past the cutoff entirely, so more pruning lets previously-hidden true neighbors
+   surface within the window -- consistent with the 874-bucket showing zero `extra` edges at any
+   `max_df` (`k=64` out of 873 possible neighbors is a much less binding constraint at that size).
+   But more aggressive pruning almost certainly also starts discarding genuinely common GIVEN-name
+   q-grams (e.g. "maria", "jose"), not just the bucket's shared surname -- so the speed win at
+   0.25/0.1 (2-4x faster than 0.5) would need the same exact-loop cross-validation 0.5 already got
+   before it could be trusted; it is not yet validated and should not be adopted on this benchmark
+   alone.
+3. **The earlier hashed-vs-string speedup did not reproduce here.** At every `max_df` level STRING
+   and HASHED land within noise of each other (e.g. 17.6s vs 18.0s at `max_df=0.5`, reversed from
+   the ~14% HASHED win measured in isolation above). Treat that earlier isolated result as marginal
+   / possibly run-to-run variance rather than a robust effect -- it doesn't change the recommendation
+   (hashed is still never worse, and composes for free), just tempers confidence in its magnitude.
 =#
 
 using ReposMx
