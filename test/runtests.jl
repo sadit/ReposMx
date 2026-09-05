@@ -1,6 +1,7 @@
 using Test
 using ReposMx
-using ReposMx: LazyBM25, IndexShellIO, VocabIO, AuthorConsolidation, Corpus, NameVocabulary
+using ReposMx: LazyBM25, IndexShellIO, VocabIO, AuthorConsolidation, Corpus, NameVocabulary,
+               PrecisionClustering
 using RocksDB
 using SimilaritySearch, TextSearch
 
@@ -232,6 +233,64 @@ using SimilaritySearch, TextSearch
         far_corrected, far_conf = NameVocabulary.correct_token(v2, "xyzzyx", :given)
         @test far_corrected == "xyzzyx"
         @test far_conf == 0.0
+    end
+
+    @testset "PrecisionClustering (precision-first, full-words-only, isolated)" begin
+        function same_cluster(groups, a, b)
+            for g in groups
+                (a in g) && (b in g) && return true
+            end
+            return false
+        end
+
+        names = ["JOSE CAMARGO PEREZ", "JUAN CONTRERAS PEREZ", "JULIO CANDELA PEREZ",
+                  "Juan Contreras Perez", "J. Contreras Perez",
+                  "MANUEL ALBERTO CHAVEZ GONZALEZ", "MARIA ANTONIETA CHAVEZ GONZALEZ",
+                  "ALEXEI FEDOROVISH LICEA NAVARRO", "Alexei Federovish Licea Navarro",
+                  "Victor Manuel Torres De La Cruz", "Victor Torres",
+                  "Juan Tellez Avila", "Juan Tellez", "J. Tellez Avila",
+                  "https://orcid.org/0000-0001-5058-1227", "https://orcid.org/0000-0002-4870-4803",
+                  "Allyson Benton", "Allyson Lucinda Benton"]
+        vocab = NameVocabulary.build_name_vocabulary(names)
+        groups = PrecisionClustering.compute_precision_clusters(names, vocab)
+
+        @test !same_cluster(groups, "JOSE CAMARGO PEREZ", "JUAN CONTRERAS PEREZ")
+        @test !same_cluster(groups, "JOSE CAMARGO PEREZ", "JULIO CANDELA PEREZ")
+        @test !same_cluster(groups, "JUAN CONTRERAS PEREZ", "JULIO CANDELA PEREZ")
+        @test same_cluster(groups, "JUAN CONTRERAS PEREZ", "Juan Contreras Perez")
+        # bare initial -- must NOT merge in this stage, unlike AC.compute_name_clusters
+        @test !same_cluster(groups, "JUAN CONTRERAS PEREZ", "J. Contreras Perez")
+        @test !same_cluster(groups, "J. Tellez Avila", "Juan Tellez")
+        @test !same_cluster(groups, "MANUEL ALBERTO CHAVEZ GONZALEZ", "MARIA ANTONIETA CHAVEZ GONZALEZ")
+        # q-gram typo tolerance (~0.38 similarity) is below this stage's 0.9 bar on purpose --
+        # deferred to imputation, unlike AC.compute_name_clusters's generous 0.5 phase-1 bar.
+        @test !same_cluster(groups, "ALEXEI FEDOROVISH LICEA NAVARRO", "Alexei Federovish Licea Navarro")
+        # compound-surname truncation, full words only -- still must merge
+        @test same_cluster(groups, "Victor Manuel Torres De La Cruz", "Victor Torres")
+        @test same_cluster(groups, "Juan Tellez Avila", "Juan Tellez")
+        @test !same_cluster(groups, "https://orcid.org/0000-0001-5058-1227", "https://orcid.org/0000-0002-4870-4803")
+        @test same_cluster(groups, "Allyson Benton", "Allyson Lucinda Benton")
+
+        # regression: the truncation rule in precision_match_score (a short single-given/
+        # single-surname name's surname equalling a longer name's LAST given-name token) scores a
+        # PERFECT match=1.0/surname=1.0 for an ACCIDENTAL collision through a common surname
+        # ("gonzalez") sitting as an unrelated longer name's paternal-surname CANDIDATE next to a
+        # totally different real surname -- found live on the real 10-repo corpus as a 32-member
+        # blob of unrelated "Carlos"/"Ricardo González ..." people. No connect threshold can catch
+        # this (both cases score identically); only precision_contradiction/precision_split (run
+        # automatically by compute_precision_clusters) does, by checking the DIRECT surname score
+        # between every pair in the resulting component, not just the pairs that formed an edge.
+        gonzalez_names = ["Carlos González", "CARLOS RICARDO GONZALEZ RUIZ", "RICARDO GONZALEZ SANCHEZ",
+                            "CARLOS ERNESTO GONZALEZ CHICAS", "Ricardo Gonzalez", "Ricardo González"]
+        gv = NameVocabulary.build_name_vocabulary(gonzalez_names)
+        ggroups = PrecisionClustering.compute_precision_clusters(gonzalez_names, gv)
+        # the three genuinely different real surnames (ruiz/sanchez/chicas) must never collapse
+        # into the same group, however the split happens to partition the rest.
+        @test !same_cluster(ggroups, "CARLOS RICARDO GONZALEZ RUIZ", "RICARDO GONZALEZ SANCHEZ")
+        @test !same_cluster(ggroups, "CARLOS RICARDO GONZALEZ RUIZ", "CARLOS ERNESTO GONZALEZ CHICAS")
+        @test !same_cluster(ggroups, "RICARDO GONZALEZ SANCHEZ", "CARLOS ERNESTO GONZALEZ CHICAS")
+        # ... while genuine same-format-and-surname duplicates still merge
+        @test same_cluster(ggroups, "Ricardo Gonzalez", "Ricardo González")
     end
 
     @testset "AuthorConsolidation similarity-join merges (compute_similarity_merges, isolated)" begin

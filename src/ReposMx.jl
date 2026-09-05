@@ -16,6 +16,7 @@ include("IndexShellIO.jl")
 include("LazyBM25.jl")
 include("AuthorConsolidation.jl")
 include("NameVocabulary.jl")
+include("PrecisionClustering.jl")
 include("Indexing.jl")
 include("Search.jl")
 include("Server.jl")
@@ -38,6 +39,7 @@ using .IndexShellIO
 using .LazyBM25
 using .AuthorConsolidation
 using .NameVocabulary
+using .PrecisionClustering
 using .Indexing
 using .Search
 using .Server
