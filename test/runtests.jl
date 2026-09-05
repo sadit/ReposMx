@@ -4,6 +4,7 @@ using ReposMx: LazyBM25, IndexShellIO, VocabIO, AuthorConsolidation, Corpus, Nam
                PrecisionClustering
 using RocksDB
 using SimilaritySearch, TextSearch
+using TOML
 
 @testset "ReposMx Tests" begin
     @testset "Corpus keyword parsing (parse_keywords / CTI catalog resolution, isolated)" begin
@@ -124,6 +125,76 @@ using SimilaritySearch, TextSearch
         # must reuse its one raw profile's own id verbatim, not compute a new one.
         pedro_profile = only(filter(p -> p["raw_names"] == ["Pedro Soto"], reloaded))
         @test pedro_profile["consolidated_id"] == raw_id_of["Pedro Soto"]
+    end
+
+    @testset "AuthorConsolidation stable leader/id across rebuilds (isolated)" begin
+        mk(name, doc_count) = Dict{String,Any}("name" => name, "doc_count" => doc_count)
+        no_ov = (merges=Vector{Vector{String}}(), splits=Tuple{String,String}[])
+
+        function rebuild(names_with_counts, tmpdir; overrides=no_ov)
+            authors_data = [mk(n, c) for (n, c) in names_with_counts]
+            raw_id_of, _ = AuthorConsolidation.assign_raw_ids(authors_data)
+            by_name = Dict{String,Any}(a["name"] => a for a in authors_data)
+            raw_names = collect(keys(by_name))
+            groups = AuthorConsolidation.compute_groups(raw_names, overrides)
+            prev_leaders = AuthorConsolidation.previous_leader_info(AuthorConsolidation.load_all(tmpdir))
+            base_dir = joinpath(tmpdir, AuthorConsolidation.CONSOLIDATED_SUBDIR)
+            isdir(base_dir) && rm(base_dir; recursive=true, force=true)
+            mkpath(base_dir)
+            for g in groups
+                profile = AuthorConsolidation.rollup(g, by_name, raw_id_of, prev_leaders)
+                dir = joinpath(base_dir, AuthorConsolidation._bucket_for(g))
+                mkpath(dir)
+                open(joinpath(dir, "$(profile["consolidated_id"]).toml"), "w") do io
+                    TOML.print(io, profile)
+                end
+            end
+            return raw_id_of, Dict(p["raw_names"] => p for p in AuthorConsolidation.load_all(tmpdir))
+        end
+
+        # unchanged corpus across two rebuilds -> identical id
+        tmp1 = mktempdir()
+        raw_id_of_1, profiles_1 = rebuild([("Juan Perez Gonzalez", 2), ("JUAN PEREZ GONZALEZ", 1)], tmp1)
+        group_key_1 = sort(["Juan Perez Gonzalez", "JUAN PEREZ GONZALEZ"])
+        first_id = profiles_1[group_key_1]["consolidated_id"]
+        @test first_id == raw_id_of_1["Juan Perez Gonzalez"]  # leader = higher doc_count
+        _, profiles_1b = rebuild([("Juan Perez Gonzalez", 2), ("JUAN PEREZ GONZALEZ", 1)], tmp1)
+        @test profiles_1b[group_key_1]["consolidated_id"] == first_id
+
+        # corpus grows (a genuine variant of the same person added) -> id unchanged
+        tmp2 = mktempdir()
+        raw_id_of_2, profiles_2 = rebuild([("Juan Perez Gonzalez", 2), ("JUAN PEREZ GONZALEZ", 1)], tmp2)
+        id_before_growth = profiles_2[group_key_1]["consolidated_id"]
+        _, profiles_2b = rebuild([("Juan Perez Gonzalez", 2), ("JUAN PEREZ GONZALEZ", 1),
+                                    ("J. Perez Gonzalez", 1)], tmp2)
+        grown_key = sort(["Juan Perez Gonzalez", "JUAN PEREZ GONZALEZ", "J. Perez Gonzalez"])
+        @test profiles_2b[grown_key]["consolidated_id"] == id_before_growth
+
+        # split: two names with NO natural key in common, together only via an override merge --
+        # the piece that keeps the old leader ("Pedro Soto", higher doc_count) keeps the old id;
+        # the other piece ("Maria Soto") gets its OWN fresh id, not a leftover of the old one.
+        tmp3 = mktempdir()
+        merge_ov = (merges=[["Pedro Soto", "Maria Soto"]], splits=Tuple{String,String}[])
+        raw_id_of_3, profiles_3 = rebuild([("Pedro Soto", 2), ("Maria Soto", 1)], tmp3; overrides=merge_ov)
+        merged_key = sort(["Pedro Soto", "Maria Soto"])
+        old_id = profiles_3[merged_key]["consolidated_id"]
+        @test old_id == raw_id_of_3["Pedro Soto"]
+        _, profiles_3b = rebuild([("Pedro Soto", 2), ("Maria Soto", 1)], tmp3)  # no merge override this time -> splits apart
+        @test profiles_3b[["Pedro Soto"]]["consolidated_id"] == old_id
+        @test profiles_3b[["Maria Soto"]]["consolidated_id"] == raw_id_of_3["Maria Soto"]
+        @test profiles_3b[["Maria Soto"]]["consolidated_id"] != old_id
+
+        # merge: two previously-separate groups (one with 2 raw names, one with 1) forced together
+        # -> the LARGER previous group's id/leader survives.
+        tmp4 = mktempdir()
+        raw_id_of_4, profiles_4 = rebuild([("Roberto Diaz", 2), ("ROBERTO DIAZ", 1), ("Elena Diaz", 1)], tmp4)
+        bigger_key = sort(["Roberto Diaz", "ROBERTO DIAZ"])
+        bigger_old_id = profiles_4[bigger_key]["consolidated_id"]
+        @test bigger_old_id == raw_id_of_4["Roberto Diaz"]
+        merge_diaz_ov = (merges=[["Roberto Diaz", "Elena Diaz"]], splits=Tuple{String,String}[])
+        _, profiles_4b = rebuild([("Roberto Diaz", 2), ("ROBERTO DIAZ", 1), ("Elena Diaz", 1)], tmp4; overrides=merge_diaz_ov)
+        all_merged_key = sort(["Roberto Diaz", "ROBERTO DIAZ", "Elena Diaz"])
+        @test profiles_4b[all_merged_key]["consolidated_id"] == bigger_old_id
     end
 
     @testset "AuthorConsolidation.compute_name_clusters (q-gram + oracle, isolated)" begin

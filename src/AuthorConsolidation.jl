@@ -863,28 +863,88 @@ function assign_raw_ids(authors_data::Vector{<:AbstractDict})
 end
 
 """
-    rollup(raw_names_in_group, by_name, raw_id_of, used_ids) -> (Dict{String,Any}, Bool)
+    PrevLeaderInfo
+
+One previous group's identity, keyed by its LEADER's raw name (see [`previous_leader_info`](@ref)):
+`id` (that group's `consolidated_id`, which — under the leader model — always equals the leader's
+own raw id), `size` (how many raw names it had) and `doc_count` (its total document count), both
+needed only as [`rollup`](@ref)'s merge tie-break, not for anything else.
+"""
+const PrevLeaderInfo = @NamedTuple{id::String, size::Int, doc_count::Int}
+
+"""
+    previous_leader_info(previous_profiles::Vector{<:AbstractDict}) -> Dict{String,PrevLeaderInfo}
+
+Reconstructs "who was the leader of which group last time" from [`load_all`](@ref)'s output, keyed
+by leader raw name — the input [`rollup`](@ref) needs to decide id continuity across rebuilds. A
+profile written before this field existed (no `"leader_raw_name"` key) is silently skipped: its
+raw names simply look "brand new" to [`rollup`](@ref) next time, which is the correct, safe
+degradation (a fresh id gets assigned exactly as it would for any other new group) rather than an
+error.
+"""
+function previous_leader_info(previous_profiles::Vector{<:AbstractDict})
+    info = Dict{String,PrevLeaderInfo}()
+    for p in previous_profiles
+        leader = get(p, "leader_raw_name", nothing)
+        leader === nothing && continue
+        info[leader] = (id=p["consolidated_id"], size=length(p["raw_names"]), doc_count=p["doc_count"])
+    end
+    return info
+end
+
+"""
+    resolve_leader(raw_names_in_group, entries, prev_leaders) -> (leader_name::String, consolidated_id::String)
+
+The core of the stable-id model: a group's `consolidated_id` IS its leader's own raw id, so
+choosing an id and choosing a leader are the same decision. `prev_leaders` is this run's
+[`previous_leader_info`](@ref) table; `entries` are `by_name[n]` for each `n` in
+`raw_names_in_group`, used only to read `doc_count`.
+
+- **No previous leader is a member of this group** (brand new group, or every previous leader that
+  touched it ended up somewhere else): the member with the highest `doc_count` becomes the leader
+  — same criterion `rollup` already used to pick the display name before this existed.
+- **Exactly one previous leader is a member**: that SAME leader/id carries over unchanged — covers
+  an ordinary continuation (group grew or shrank without splitting) AND the split case (the piece
+  that still contains the old leader keeps the id; every other piece has zero previous leaders
+  among its members, so it falls into the "brand new" case above with its own fresh leader/id).
+- **Two or more previous leaders are members** (a real merge): the LARGEST previous group wins (by
+  raw-member count, then total `doc_count`, then lexicographically smallest id, for a fully
+  deterministic tie-break) — its leader/id carries over; the other merged-in previous leader(s)
+  simply stop being anyone's leader.
+"""
+function resolve_leader(raw_names_in_group::Vector{String}, entries::Vector, prev_leaders::AbstractDict)
+    present = [nm for nm in raw_names_in_group if haskey(prev_leaders, nm)]
+    if isempty(present)
+        by_name_entry = Dict(zip(raw_names_in_group, entries))
+        leader = raw_names_in_group[argmax([by_name_entry[nm]["doc_count"] for nm in raw_names_in_group])]
+        return leader, nothing
+    elseif length(present) == 1
+        return present[1], prev_leaders[present[1]].id
+    else
+        chosen = first(sort(present; by=nm -> (-prev_leaders[nm].size, -prev_leaders[nm].doc_count, prev_leaders[nm].id)))
+        return chosen, prev_leaders[chosen].id
+    end
+end
+
+"""
+    rollup(raw_names_in_group, by_name, raw_id_of, prev_leaders) -> Dict{String,Any}
 
 Combines the raw author profiles (`by_name[raw]` for each `raw` in the group, as produced by
-`Corpus.build_authors_index_data`) into one consolidated profile — sums, unions, and an id. A
-singleton group (one raw name, no real consolidation happened) reuses that raw profile's own id
-from `raw_id_of` directly, no new hash computed; a group with 2+ raw names gets its own id via
-[`assign_id`](@ref) (4 disambiguation digits — consolidated ids are far fewer than raw ones, but
-each carries more weight, hence the extra margin), sharing `used_ids` with every other group so two
-different groups can never end up with the same id. Returns whether that id needed disambiguation.
+`Corpus.build_authors_index_data`) into one consolidated profile — sums, unions, and a STABLE id.
+`consolidated_id` is always the group's LEADER's own raw id (from `raw_id_of`) — see
+[`resolve_leader`](@ref) for how the leader is chosen/carried over using `prev_leaders`
+([`previous_leader_info`](@ref)). Since every raw name has a globally unique raw id
+([`assign_raw_ids`](@ref)) and belongs to exactly one final group, two different groups can never
+end up choosing the same leader — no hash, no disambiguation digits, no `used_ids` bookkeeping
+needed for this id anymore.
 """
-function rollup(raw_names_in_group::Vector{String}, by_name::AbstractDict, raw_id_of::AbstractDict, used_ids::Set{String})
+function rollup(raw_names_in_group::Vector{String}, by_name::AbstractDict, raw_id_of::AbstractDict, prev_leaders::AbstractDict)
     entries = [by_name[n] for n in raw_names_in_group]
     sorted_raw = sort(raw_names_in_group)
     institutions = sort(unique(vcat([collect(get(e, "institutions", String[])) for e in entries]...)))
 
-    consolidated_id, collided = if length(sorted_raw) == 1
-        id = raw_id_of[sorted_raw[1]]
-        push!(used_ids, id)
-        (id, false)
-    else
-        assign_id(sorted_raw, institutions, used_ids, 4)
-    end
+    leader_name, carried_id = resolve_leader(raw_names_in_group, entries, prev_leaders)
+    consolidated_id = carried_id === nothing ? raw_id_of[leader_name] : carried_id
 
     canonical_entry = entries[argmax([e["doc_count"] for e in entries])]
     canonical = canonical_entry["name"]
@@ -894,6 +954,7 @@ function rollup(raw_names_in_group::Vector{String}, by_name::AbstractDict, raw_i
 
     profile = Dict{String,Any}(
         "consolidated_id" => consolidated_id,
+        "leader_raw_name" => leader_name,
         "name" => canonical,
         "name_initials_form" => k.initials_text,
         "role" => get(canonical_entry, "role", "Autor"),
@@ -907,7 +968,7 @@ function rollup(raw_names_in_group::Vector{String}, by_name::AbstractDict, raw_i
         "topic_texts" => cap(unique(vcat([collect(get(e, "topic_texts", String[])) for e in entries]...)), 10),
         "cited_references" => cap(unique(vcat([collect(get(e, "cited_references", String[])) for e in entries]...)), 30),
     )
-    return profile, collided
+    return profile
 end
 
 """
@@ -1006,10 +1067,17 @@ consolidated profiles and writes one `.toml` file per group under
 `<index_dir>/authors_consolidated/<apellido_bucket>/<consolidated_id>.toml` — see this module's
 docs for why TOML, and why the bucket directory is purely organizational (2 levels: the
 consolidated-authors directory itself, then the bucket). `raw_id_of` (from
-[`assign_raw_ids`](@ref)) lets singleton groups reuse their one raw profile's own id instead of
-computing a redundant new one. Wipes and rewrites the whole directory each call, since group
-membership/ids can change between rebuilds. Prints how many consolidated ids needed
-disambiguation (see [`assign_id`](@ref)). Returns the number of groups written.
+[`assign_raw_ids`](@ref)) supplies the raw id [`rollup`](@ref) uses whenever a group's leader turns
+out to need a fresh one.
+
+STATEFUL, not a clean-slate computation: reads back the PREVIOUS run's profiles
+([`load_all`](@ref)) BEFORE wiping the directory, to know which raw name was each existing group's
+leader ([`previous_leader_info`](@ref)) — this is what lets [`rollup`](@ref)/[`resolve_leader`](@ref)
+keep a group's `consolidated_id` stable across rebuilds (same leader survives unchanged; a split's
+non-leader piece and a genuinely new group both get a fresh id; a merge keeps the larger previous
+group's id) instead of the id silently changing whenever group membership shifts even slightly.
+Still wipes and rewrites every `.toml` file each call — only the id/leader CHOICE is carried over,
+not the files themselves.
 
 Does NOT call [`compute_similarity_merges`](@ref) — full-corpus scale (317K raw profiles) made
 its `SearchGraph` construction / `bichromatic_metricjoin` step impractically slow (a real rebuild
@@ -1028,24 +1096,29 @@ function build_and_persist(authors_data::Vector{<:AbstractDict}, index_dir::Abst
     raw_names = collect(keys(by_name))
     overrides = load_overrides(overrides_path)
 
+    prev_leaders = previous_leader_info(load_all(index_dir))
+
     groups = compute_groups(raw_names, overrides)
 
     base_dir = joinpath(index_dir, CONSOLIDATED_SUBDIR)
     isdir(base_dir) && rm(base_dir; recursive=true, force=true)
     mkpath(base_dir)
 
-    used_ids = Set{String}()
-    n_collisions = 0
+    seen_ids = Set{String}()
+    n_new = 0
     for g in sort(groups; by=grp -> sort(grp)[1])
-        profile, collided = rollup(g, by_name, raw_id_of, used_ids)
-        collided && (n_collisions += 1)
+        profile = rollup(g, by_name, raw_id_of, prev_leaders)
+        cid = profile["consolidated_id"]
+        @assert cid ∉ seen_ids "duplicate consolidated_id $cid across two different groups — should be impossible under the leader model"
+        push!(seen_ids, cid)
+        haskey(prev_leaders, profile["leader_raw_name"]) || (n_new += 1)
         dir = joinpath(base_dir, _bucket_for(g))
         mkpath(dir)
-        open(joinpath(dir, "$(profile["consolidated_id"]).toml"), "w") do io
+        open(joinpath(dir, "$(cid).toml"), "w") do io
             TOML.print(io, profile)
         end
     end
-    println("  consolidated ids needing disambiguation: $n_collisions / $(length(groups))")
+    println("  consolidated groups with a freshly assigned leader/id: $n_new / $(length(groups))")
     return length(groups)
 end
 
