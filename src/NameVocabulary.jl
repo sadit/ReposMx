@@ -1,9 +1,27 @@
 module NameVocabulary
 
 using ..AuthorConsolidation: AuthorConsolidation
+using SimilaritySearch: SimilaritySearch
 const AC = AuthorConsolidation
+const Dist = SimilaritySearch.Dist
 
 export Vocabulary, build_name_vocabulary, popularity, in_vocab, correct_token
+
+"""
+    _DAMERAU
+
+Single shared `Dist.Seqs.DamerauLevenshtein()` instance (its scratch-buffer pool is built once at
+construction) -- restricted Damerau-Levenshtein (OSA): `Levenshtein` plus adjacent-character
+transposition as a FOURTH edit operation at cost 1, instead of plain Levenshtein's 2 (a
+substitution at each of the two swapped positions). Directly fixes a real, confirmed limitation
+of this module's own `:levenshtein` method: `"rcuz"` (a transposition typo of `"cruz"`) scored
+edit-distance 1 to the WRONG `"cuz"` (a deletion) but distance 2 to the intended `"cruz"` under
+plain Levenshtein, so plain Levenshtein confidently proposed the wrong correction. Under
+`DamerauLevenshtein`, `"rcuz"` is distance 1 from BOTH `"cruz"` and `"cuz"` -- correctly recognizing
+the transposition as equally cheap, though this reintroduces a tie that popularity (see
+[`correct_token`](@ref)'s tie-break) is what actually resolves in `"cruz"`'s favor.
+"""
+const _DAMERAU = Dist.Seqs.DamerauLevenshtein()
 
 """
     Vocabulary
@@ -153,8 +171,8 @@ function _levenshtein(a::AbstractString, b::AbstractString)
 end
 
 """
-    correct_token(v::Vocabulary, token, role; method=:qgram, min_popularity_ratio=2.0,
-                  max_own_popularity=1, max_distance=2, min_qgram_sim=0.5)
+    correct_token(v::Vocabulary, token, role; method=:damerau, min_popularity_ratio=2.0,
+                  max_own_popularity=1, max_distance=1, min_qgram_sim=0.5)
         -> (corrected::String, confidence::Float64)
 
 Corrects `token` (assumed to already be in the given/surname ROLE it will be compared under)
@@ -169,11 +187,19 @@ against `v`'s vocabulary for that same role -- never crosses given<->surname.
   q-gram-similar alternative is. See below for why this gate exists.
 - Only for a token that clears that bar: scores every q-gram-sharing candidate (`_candidates`) via
   `method`:
-  - `:levenshtein` -- edit distance <= `max_distance`, score = `1 - distance/max(length(token),length(cand))`.
+  - `:damerau` -- restricted Damerau-Levenshtein ([`_DAMERAU`](@ref), transposition as a 4th edit
+    op at cost 1) distance `<= max_distance`, score = `1 - distance/max(length(token),length(cand))`.
+  - `:levenshtein` -- plain edit distance <= `max_distance`, same score formula -- kept only for
+    comparison against `:damerau`; see the tuning results below for why `:damerau` should be
+    preferred over it whenever the choice is between the two.
   - `:qgram` -- `AC._qgram_jaccard(token, cand)`, kept only if `>= min_qgram_sim`.
 - A candidate is only ACCEPTED if it is ALSO meaningfully more popular than `token` itself
   (`popularity(cand) >= min_popularity_ratio * max(popularity(token), 1)`) -- a second,
   independent bar on top of the own-popularity gate above.
+- Among candidates that clear both bars, the HIGHEST-scoring one wins; a TIE is broken by
+  popularity (higher wins) rather than by `_candidates`' arbitrary `Set` iteration order -- needed
+  for `:damerau` specifically, since a transposition and e.g. a deletion can land at the exact same
+  edit distance (see [`_DAMERAU`](@ref)'s docstring for the concrete `"cruz"`/`"cuz"` case).
 - If no candidate clears both bars, `token` is returned unchanged -- `confidence=1.0` if it was
   already an exact vocabulary hit (nothing needed correcting), `confidence=0.0` otherwise (correction
   was attempted and failed to find anything plausible -- distinct from the `1.0` case, useful for
@@ -201,47 +227,100 @@ against `v`'s vocabulary for that same role -- never crosses given<->surname.
    only a spelling that's (by default) essentially unique gets subjected to the popularity-ratio
    check at all.
 
-**Known limitation, validated on the real 10-repo corpus, not silently papered over: candidate
-generation is q-gram-based for BOTH methods, so a transposition-heavy typo on a SHORT token can
-evade it entirely.** `"jsoe"` (a transposition of `"jose"`) shares ZERO 4-grams with `"jose"` --
-every 4-char window is corrupted by the swap on a word this short -- so `"jose"` never even reaches
-either method's candidate set, regardless of `method`. Separately, on a token candidate generation
-DOES surface, plain Levenshtein can pick a wrong-but-closer neighbor over the right one:
-`"marya"` (a transposition of `"maria"`) scored 0.0 (no candidate) under `:qgram` (correctly
-declining to guess) but matched `"mary"` under `:levenshtein` (edit distance 1, vs. distance 2 to
-the intended `"maria"`) -- Levenshtein has no notion that adjacent-swap is a more likely typo
-pattern than substitution/deletion (that needs Damerau-Levenshtein, not implemented here). This is
-why `:qgram` is the default: refusing a correction it isn't confident about is safer than a
-confident wrong one, even though both methods share the same transposition blind spot at candidate
-generation. If transposition typos turn out to matter in practice, the fix belongs in
+**Still a known limitation, NOT fixed by `:damerau`: candidate generation itself is q-gram-based
+for every method, so a transposition-heavy typo on a SHORT token can evade it entirely.** `"jsoe"`
+(a transposition of `"jose"`) shares ZERO 4-grams with `"jose"` -- every 4-char window is corrupted
+by the swap on a word this short -- so `"jose"` never even reaches ANY method's candidate set,
+regardless of which one scores it. If this turns out to matter in practice, the fix belongs in
 `_candidates` (widen candidate generation), not in swapping which metric scores the candidates it
 already found.
+
+**93-repo vocabulary tuning (`experiments/author_matching/tune_correction_thresholds.jl`) --
+`:qgram` was NOT the safer default it looked like at 10-repo scale; that earlier framing was
+wrong.** Two purpose-built evaluation sets (597 synthetic single-edit typos of the most popular
+tokens per role; 1,000 real pairs of DIFFERENT, q-gram-similar, BOTH-independently-established --
+popularity `>= 2` on both sides -- tokens per role, generated from `NameVocabulary`'s own candidate
+index so this stays cheap at 73K-token scale) show, at `max_own_popularity=1`:
+
+| method | recall | precision (0 real-name conflations wanted) |
+|---|---|---|
+| `:qgram` (the old default) | 12.1% (72/597) | 100% (1000/1000) |
+| `:levenshtein`, `max_distance=2` | 73.0% (436/597) | 100% (1000/1000) |
+| `:damerau`, `max_distance=1` (the new default) | **83.8% (500/597)** | **100% (1000/1000)** |
+
+`max_distance=1` gives `:damerau` the SAME recall as `max_distance=2` (both 83.8%) -- expected,
+since every synthetic test corruption is exactly one edit away and `DamerauLevenshtein` now costs
+every one of its four edit types (substitution/insertion/deletion/transposition) at 1, so
+`max_distance=1` already catches all of them; the more conservative value is the new default since
+it costs nothing here.
+
+`max_own_popularity=1` is confirmed load-bearing regardless of method: relaxing it to `2` collapses
+`:damerau`/`:levenshtein`'s precision from 100% to ~30-49% in the same test (`:qgram` degrades far
+less sharply, 100%->61-89% depending on `min_qgram_sim`, but starts from such low recall that it's
+not a useful tradeoff regardless). The earlier "`:qgram` is safer" conclusion (drawn from a much
+smaller, noisier 10-repo vocabulary) does not hold up at this scale -- `:qgram`'s low recall was
+previously read as caution, but the larger vocabulary shows the POPULARITY gate is what actually
+protects precision, not the choice of string metric; `:qgram` was just leaving most of the
+available recall on the table for no corresponding safety benefit.
+
+This is exactly why `:damerau` exists as a THIRD option rather than replacing `:levenshtein`'s
+implementation in place: plain Levenshtein's specific failure mode (a transposition typo scores
+distance-2, so a same-distance-1 WRONG neighbor -- e.g. `"rcuz"` -> `"cuz"` instead of the intended
+`"cruz"` -- confidently wins) is a real, additional cost on top of `:levenshtein`'s already-better-
+than-`:qgram` numbers (accounting for most of the recall gap between the two: 73.0% -> 83.8%), and
+`Dist.Seqs.DamerauLevenshtein` (this package's own restricted/OSA implementation) removes exactly
+that cost by costing the transposition at 1 instead of 2 -- at the price of then tying with e.g. a
+deletion at the same distance, which is why the popularity tie-break above exists: it is what
+actually resolves `"rcuz"` toward `"cruz"` over `"cuz"`, not the distance metric alone.
+
+**A real bug in `Dist.Seqs.DamerauLevenshtein.evaluate` itself, found live and worked around, not
+fixed here (this codebase doesn't own that package):** it indexes its `String` arguments byte-wise,
+which throws `StringIndexError` on any multi-byte UTF-8 content -- confirmed,
+`evaluate(DamerauLevenshtein(), "екатерина", "ekaterina")` throws, and this vocabulary has real
+Cyrillic/CJK names now. Worked around by passing `collect(token)`/`collect(cand)`
+(`Vector{Char}`, always safely/O(1)-indexable regardless of content) instead of the raw `String`s.
 """
 function correct_token(v::Vocabulary, token::AbstractString, role::Symbol;
-                        method::Symbol=:qgram,
+                        method::Symbol=:damerau,
                         min_popularity_ratio::Float64=2.0,
                         max_own_popularity::Int=1,
-                        max_distance::Int=2,
+                        max_distance::Int=1,
                         min_qgram_sim::Float64=0.5)
     length(token) <= 1 && return (token, 1.0)
 
     own_pop = popularity(v, token, role)
     own_pop > max_own_popularity && return in_vocab(v, token, role) ? (token, 1.0) : (token, 0.0)
 
-    best_tok, best_score = token, 0.0
+    best_tok, best_score, best_pop = token, 0.0, own_pop
     for cand in _candidates(v, token, role)
         score = if method == :levenshtein
             d = _levenshtein(token, cand)
+            d > max_distance ? 0.0 : 1.0 - d / max(length(token), length(cand))
+        elseif method == :damerau
+            # collect to Vector{Char} first, not raw String -- SimilaritySearch.Dist.Seqs's
+            # DamerauLevenshtein.evaluate indexes its arguments byte-wise (`a[i]`), which throws
+            # StringIndexError on any multi-byte UTF-8 content (confirmed live: this vocabulary
+            # has real Cyrillic/CJK names). Vector{Char} indexing is always O(1)/safe regardless
+            # of what the characters are, sidestepping the bug entirely -- reported upstream, not
+            # fixed here (this codebase doesn't own that package).
+            d = SimilaritySearch.evaluate(_DAMERAU, collect(token), collect(cand))
             d > max_distance ? 0.0 : 1.0 - d / max(length(token), length(cand))
         elseif method == :qgram
             s = AC._qgram_jaccard(token, cand)
             s < min_qgram_sim ? 0.0 : s
         else
-            error("unknown correction method $method (expected :levenshtein or :qgram)")
+            error("unknown correction method $method (expected :levenshtein, :damerau, or :qgram)")
         end
-        score <= best_score && continue
-        popularity(v, cand, role) >= min_popularity_ratio * max(own_pop, 1) || continue
-        best_tok, best_score = cand, score
+        score <= 0.0 && continue  # below the method's own floor -- never eligible, ties included
+        cand_pop = popularity(v, cand, role)
+        cand_pop >= min_popularity_ratio * max(own_pop, 1) || continue
+        # accept if strictly better, OR tied with strictly better popularity -- otherwise a tie is
+        # resolved by `_candidates`' arbitrary Set iteration order instead of by evidence.
+        # Necessary specifically for `:damerau`: a transposition and e.g. a deletion can land at
+        # the SAME edit distance (see `_DAMERAU`'s docstring for the concrete "cruz"/"cuz" case),
+        # and popularity is what should decide between them.
+        (score > best_score || (score == best_score && cand_pop > best_pop)) || continue
+        best_tok, best_score, best_pop = cand, score, cand_pop
     end
     best_tok != token && return (best_tok, best_score)
     return in_vocab(v, token, role) ? (token, 1.0) : (token, 0.0)

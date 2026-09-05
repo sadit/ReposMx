@@ -15,7 +15,7 @@ const PRECISION_STRICT_MATCH_THRESHOLD = 0.9     # matches AC._name_cluster_stri
 const PRECISION_CONTRADICTION_FLOOR = 0.2        # matches AC._NAME_CLUSTER_CONTRADICTION_FLOOR
 
 """
-    correct_name(vocab, raw; method=:qgram) -> (; given::Vector{String}, surname::Vector{String})
+    correct_name(vocab, raw; method=:damerau) -> (; given::Vector{String}, surname::Vector{String})
 
 Splits `raw` into given/surname tokens using the same `AC._surname_span` logic as production
 clustering, then corrects each token against `vocab` (see `NameVocabulary.correct_token`) --
@@ -23,9 +23,11 @@ EXCEPT surname particles (`AC._SURNAME_PARTICLES`, e.g. "de"/"la"), which pass t
 (they were never in the vocabulary to begin with, see `NameVocabulary.build_name_vocabulary`).
 Bare initials also pass through unchanged (`correct_token` is a no-op on them by construction) --
 this stage never fabricates a full word out of an initial, it only fixes typos in words that are
-ALREADY full words.
+ALREADY full words. `method` default matches `NameVocabulary.correct_token`'s own (validated
+against the 93-repo vocabulary artifact, see that function's docstring) rather than being pinned
+independently -- keep the two in sync if either one's default ever changes again.
 """
-function correct_name(vocab::Vocabulary, raw::AbstractString; method::Symbol=:qgram)
+function correct_name(vocab::Vocabulary, raw::AbstractString; method::Symbol=:damerau)
     toks = AC._qgram_name_tokens(raw)
     isempty(toks) && return (given=String[], surname=String[])
     span = AC._surname_span(toks)
@@ -209,7 +211,7 @@ function precision_split(names::Vector{String}, corrected)
 end
 
 """
-    compute_precision_clusters(raw_names, vocab; method=:qgram,
+    compute_precision_clusters(raw_names, vocab; method=:damerau,
                                match_threshold=PRECISION_MATCH_THRESHOLD,
                                surname_threshold=PRECISION_SURNAME_THRESHOLD) -> Vector{Vector{String}}
 
@@ -226,7 +228,7 @@ group, to be picked up by a later, separately-designed imputation stage (not par
 Garbage names (`AC._is_garbage_name`) are never bucketed -- they fall through to singleton groups
 via the union-find default, same guard as `AC.compute_name_clusters`.
 """
-function compute_precision_clusters(raw_names::Vector{String}, vocab::Vocabulary; method::Symbol=:qgram,
+function compute_precision_clusters(raw_names::Vector{String}, vocab::Vocabulary; method::Symbol=:damerau,
                                      match_threshold::Float64=PRECISION_MATCH_THRESHOLD,
                                      surname_threshold::Float64=PRECISION_SURNAME_THRESHOLD)
     n = length(raw_names)
