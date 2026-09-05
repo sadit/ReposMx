@@ -49,7 +49,7 @@ surname that merely contains one of these letter sequences. A trailing colon (`"
 colons separately, anywhere in the string, which silently corrupted a real ORCID/URL's own `":"`
 downstream (`"https://..."` -> `"https //..."`, no longer recognized as a URL at all).
 """
-const _ROLE_MARKER_RE = r"\b(co[-\s]*)?asesor[a]?\b:?|\bco[-\s]*ordinador[a]?\b:?|\bdirector[a]?\b:?|\b(dr|dra|mtro|mtra|lic|ing)\b\.?"i
+const _ROLE_MARKER_RE = r"\b(co[-\s]*)?asesor[a]?\s*tesis\b|\b(co[-\s]*)?asesor[a]?\b:?|\bco[-\s]*ordinador[a]?\b:?|\bdirector[a]?\b:?|\b(dr|dra|mtro|mtra|lic|ing)\b\.?"i
 
 """
     _ID_CODE_RE
@@ -66,8 +66,12 @@ real name. Three shapes, confirmed live on the real 93-repo corpus:
   (`"0000-0002-6380-368"`, one digit short in the last group), hence `\\d{1,4}[\\dXx]?` rather than
   requiring exactly 4.
 - CVU (Clave Única de Registro, CONACYT's separate researcher-id scheme) -- just `"CVU"` + digits.
+- RFC (Registro Federal de Contribuyentes, the Mexican tax id, a THIRD separate scheme from CURP)
+  -- 4 letters, 6-digit birthdate, 3-character alphanumeric homoclave (13 characters total, no
+  sex-letter/state-code the way CURP has -- distinguishable from CURP by checking `[HM]` right
+  after the digits fails to match, so there is no ambiguity between the two shapes).
 """
-const _ID_CODE_RE = raw"[A-Z]{4}\d{6}[HM][A-Z]{4,5}\d{0,2}|\d{4}-\d{4}-\d{4}-\d{1,4}[\dXx]?|cvu\d+"
+const _ID_CODE_RE = raw"[A-Z]{4}\d{6}[HM][A-Z]{4,5}\d{0,2}|\d{4}-\d{4}-\d{4}-\d{1,4}[\dXx]?|cvu\d+|[A-Z]{4}\d{6}[A-Z0-9]{3}"
 
 """
     _CURP_RE / _CVU_RE / _BARE_ORCID_RE

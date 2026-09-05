@@ -101,6 +101,11 @@ using TOML
         @test Corpus.parse_author_names("#/0000-0001-5587-4467") == String[]
         @test Corpus.parse_author_names("#0000-0002-6380-368") == String[]
         @test Corpus.parse_author_names("CVU102349=asesorTesis") == String[]
+        # RFC (Registro Federal de Contribuyentes, a THIRD separate Mexican id scheme from CURP)
+        # + "=asesorTesis", and the bare glued-word "asesorTesis" with no "#"/"=" at all.
+        @test Corpus.parse_author_names("JICB820212TJ0=asesorTesis") == String[]
+        @test Corpus.parse_author_names("PEHV860712R55=asesorTesis") == String[]
+        @test Corpus.parse_author_names("asesorTesis") == String[]
 
         # an id code GLUED onto an otherwise-real name via "#" (prefix/suffix/infix) is stripped,
         # keeping the real name -- unlike the whole-segment reject cases above, since there IS a
