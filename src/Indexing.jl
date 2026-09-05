@@ -264,7 +264,7 @@ end
 
 Re-runs author clustering and rebuilds only `authors_name`/`authors_profile` — not
 `docs_content`/`docs_refs`, which is the expensive part of `build_search_index` (re-tokenizing the
-whole document corpus). Meant to be re-run cheaply after editing `author_overrides.json`: overrides
+whole document corpus). Meant to be re-run cheaply after editing `author_overrides.toml`: overrides
 only change grouping, and grouping only affects these two indices. Requires that
 `build_search_index` has already run at least once (reuses its saved bilingual profile from
 `<index_dir>/profile` for `authors_profile`'s vocabulary — this command never refits it).

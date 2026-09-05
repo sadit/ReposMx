@@ -4,12 +4,11 @@ using TextSearch
 using SimilaritySearch: SearchGraph, SearchGraphContext, VectorDatabase, index!,
                         bichromatic_metricjoin, Dist
 using TOML
-using JSON
 using SHA
-using ..Config: DEFAULT_AUTHOR_OVERRIDES_JSON
+using ..Config: DEFAULT_AUTHOR_OVERRIDES_TOML
 
 export build_and_persist, load_all, name_keys, compute_groups, compute_name_clusters,
-       load_overrides, assign_raw_ids, assign_id, compute_similarity_merges
+       load_overrides, save_imputes, assign_raw_ids, assign_id, compute_similarity_merges
 
 """
     AUTHOR_NAME_CONFIG
@@ -62,24 +61,54 @@ function name_keys(raw::AbstractString)
 end
 
 """
-    load_overrides(path=DEFAULT_AUTHOR_OVERRIDES_JSON) -> (; merges, splits)
+    load_overrides(path=DEFAULT_AUTHOR_OVERRIDES_TOML) -> (; merges, splits, imputes)
 
-Reads the human-curated consolidation overrides. Missing file = no overrides (not an error) so a
-fresh checkout with no `author_overrides.json` still works.
+Reads the consolidation overrides file (TOML: `merge`/`split`, edited by hand, plus `impute`,
+written by an automatic recall pass — see [`save_imputes`](@ref)). Missing file = no overrides
+(not an error) so a fresh checkout with no `author_overrides.toml` still works. `impute` entries
+are returned in `imputes`, same shape as `merges` (`compute_groups` treats both identically — see
+its docstring for why they're two sections in the file despite being one mechanism).
 """
-function load_overrides(path::AbstractString=DEFAULT_AUTHOR_OVERRIDES_JSON)
+function load_overrides(path::AbstractString=DEFAULT_AUTHOR_OVERRIDES_TOML)
     merges = Vector{Vector{String}}()
     splits = Vector{Tuple{String,String}}()
+    imputes = Vector{Vector{String}}()
     if isfile(path)
-        d = JSON.parsefile(path)
+        d = TOML.parsefile(path)
         for g in get(d, "merge", [])
             length(g) >= 2 && push!(merges, String.(collect(g)))
         end
         for p in get(d, "split", [])
             length(p) == 2 && push!(splits, (String(p[1]), String(p[2])))
         end
+        for g in get(d, "impute", [])
+            length(g) >= 2 && push!(imputes, String.(collect(g)))
+        end
     end
-    return (; merges, splits)
+    return (; merges, splits, imputes)
+end
+
+"""
+    save_imputes(imputes::Vector{<:AbstractVector{<:AbstractString}}, path=DEFAULT_AUTHOR_OVERRIDES_TOML)
+
+Rewrites ONLY the `impute` section of the overrides file, read-modify-write: `merge`/`split` (and
+anything else already in the file) are read back verbatim and preserved untouched, since those are
+human-edited and this function must never silently clobber a hand-curated entry. Meant to be
+called once per rebuild by the (not yet implemented — interface only, see this module's docs)
+imputation pass, after [`compute_groups`](@ref) has run with the PREVIOUS `impute` contents, so
+each run's imputation proposals fully replace the last run's rather than accumulating stale ones.
+Creates the file (with empty `merge`/`split`) if it doesn't exist yet.
+"""
+function save_imputes(imputes::AbstractVector, path::AbstractString=DEFAULT_AUTHOR_OVERRIDES_TOML)
+    d = isfile(path) ? TOML.parsefile(path) : Dict{String,Any}()
+    d["merge"] = get(d, "merge", Vector{Vector{String}}())
+    d["split"] = get(d, "split", Vector{Vector{String}}())
+    d["impute"] = [String.(collect(g)) for g in imputes]
+    mkpath(dirname(path))
+    open(path, "w") do io
+        TOML.print(io, d)
+    end
+    return nothing
 end
 
 """
@@ -459,7 +488,7 @@ function's docstring). This is a GREEDY, ORDER-DEPENDENT heuristic (processes `n
 order, joins the first compatible existing sub-cluster) — not a general correlation-clustering
 solver; it can rarely miss an obviously-correct merge depending on processing order. Judged a lower
 priority to fix than a precision bug: a missed merge is recoverable (a later rebuild, or a manual
-`author_overrides.json` entry); a false merge is not.
+`author_overrides.toml` entry); a false merge is not.
 
 A second, related source of missed merges (not just processing order): a component only reaches
 this function at all once [`_name_cluster_contradiction`](@ref) has flagged it, and reconnection
@@ -615,11 +644,15 @@ end
 
 Connected components of the graph whose nodes are `raw_names` and whose edges are: same name
 cluster (see [`compute_name_clusters`](@ref) — replaces the earlier `full_key`/`initials_key`
-exact-match signal), or an explicit `merge` pair — minus any explicit `split` pair. Overrides are
-applied AFTER clustering, unconditionally (never re-checked by the oracle): a human `merge` forces
-an edge the algorithm couldn't find on its own, and a human `split` removes one it shouldn't have
-made — neither should be second-guessed by [`_name_cluster_contradiction`](@ref). Plain BFS over
-an adjacency `Dict`, no graph library needed.
+exact-match signal), or an explicit `merge`/`impute` pair — minus any explicit `split` pair.
+Overrides are applied AFTER clustering, unconditionally (never re-checked by the oracle): a human
+`merge` forces an edge the algorithm couldn't find on its own, and a human `split` removes one it
+shouldn't have made — neither should be second-guessed by [`_name_cluster_contradiction`](@ref).
+`impute` is mechanically IDENTICAL to `merge` (a forced edge, same as-is treatment) — the only
+difference is who writes that section of the overrides file: a person edits `merge`/`split` by
+hand, a separate (not-yet-implemented) recall-oriented pass computes and rewrites `impute` on its
+own each run (see [`load_overrides`](@ref)/the module docstring's persistence-format note). Plain
+BFS over an adjacency `Dict`, no graph library needed.
 """
 function compute_groups(raw_names::Vector{String}, overrides)
     adj = Dict{String,Vector{String}}(n => String[] for n in raw_names)
@@ -635,7 +668,7 @@ function compute_groups(raw_names::Vector{String}, overrides)
             connect!(group[i], group[j])
         end
     end
-    for g in overrides.merges
+    for g in Iterators.flatten((overrides.merges, overrides.imputes))
         present = filter(n -> haskey(adj, n), g)
         for i in 1:length(present), j in (i+1):length(present)
             connect!(present[i], present[j])
@@ -1060,7 +1093,7 @@ function compute_similarity_merges(authors_data::Vector{<:AbstractDict}; k::Int=
 end
 
 """
-    build_and_persist(authors_data, index_dir, raw_id_of; overrides_path=DEFAULT_AUTHOR_OVERRIDES_JSON) -> Int
+    build_and_persist(authors_data, index_dir, raw_id_of; overrides_path=DEFAULT_AUTHOR_OVERRIDES_TOML) -> Int
 
 Clusters `authors_data` (raw profiles, as returned by `Corpus.build_authors_index_data`) into
 consolidated profiles and writes one `.toml` file per group under
@@ -1091,7 +1124,7 @@ oracle to justify *splitting* a cluster (a precision tool), not as a source of *
 directly; they're just not wired into this function until that redesign lands.
 """
 function build_and_persist(authors_data::Vector{<:AbstractDict}, index_dir::AbstractString, raw_id_of::AbstractDict;
-                            overrides_path::AbstractString=DEFAULT_AUTHOR_OVERRIDES_JSON)
+                            overrides_path::AbstractString=DEFAULT_AUTHOR_OVERRIDES_TOML)
     by_name = Dict{String,Any}(a["name"] => a for a in authors_data)
     raw_names = collect(keys(by_name))
     overrides = load_overrides(overrides_path)

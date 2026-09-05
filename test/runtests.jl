@@ -85,7 +85,7 @@ using TOML
                   "Ana Ruiz", "A. Ruiz",
                   "Pedro Soto", "Maria Soto"]  # last two share no key at all -> must stay separate
 
-        no_overrides = (merges=Vector{Vector{String}}(), splits=Vector{Tuple{String,String}}())
+        no_overrides = (merges=Vector{Vector{String}}(), splits=Vector{Tuple{String,String}}(), imputes=Vector{Vector{String}}())
         groups = AuthorConsolidation.compute_groups(names, no_overrides)
         by_first = Dict(sort(g)[1] => sort(g) for g in groups)
 
@@ -95,7 +95,7 @@ using TOML
         @test any(g -> g == ["Maria Soto"], groups)
 
         # merge: force two names together that share no automatic key at all
-        merge_overrides = (merges=[["Pedro Soto", "Maria Soto"]], splits=Tuple{String,String}[])
+        merge_overrides = (merges=[["Pedro Soto", "Maria Soto"]], splits=Tuple{String,String}[], imputes=Vector{Vector{String}}())
         merged_groups = AuthorConsolidation.compute_groups(names, merge_overrides)
         @test any(g -> sort(g) == ["Maria Soto", "Pedro Soto"], merged_groups)
 
@@ -103,10 +103,10 @@ using TOML
         # transitively — with one in `names` this would stay connected via "JUAN PEREZ GONZALEZ",
         # which is the real, documented limit of a single pairwise split, not a bug)
         split_names = ["Carla Nunez", "C. Nunez"]
-        no_overrides_2 = (merges=Vector{Vector{String}}(), splits=Tuple{String,String}[])
+        no_overrides_2 = (merges=Vector{Vector{String}}(), splits=Tuple{String,String}[], imputes=Vector{Vector{String}}())
         @test length(AuthorConsolidation.compute_groups(split_names, no_overrides_2)) == 1
 
-        split_overrides = (merges=Vector{Vector{String}}(), splits=[("Carla Nunez", "C. Nunez")])
+        split_overrides = (merges=Vector{Vector{String}}(), splits=[("Carla Nunez", "C. Nunez")], imputes=Vector{Vector{String}}())
         split_groups = AuthorConsolidation.compute_groups(split_names, split_overrides)
         @test length(split_groups) == 2
         @test !any(g -> "Carla Nunez" in g && "C. Nunez" in g, split_groups)
@@ -129,7 +129,7 @@ using TOML
 
     @testset "AuthorConsolidation stable leader/id across rebuilds (isolated)" begin
         mk(name, doc_count) = Dict{String,Any}("name" => name, "doc_count" => doc_count)
-        no_ov = (merges=Vector{Vector{String}}(), splits=Tuple{String,String}[])
+        no_ov = (merges=Vector{Vector{String}}(), splits=Tuple{String,String}[], imputes=Vector{Vector{String}}())
 
         function rebuild(names_with_counts, tmpdir; overrides=no_ov)
             authors_data = [mk(n, c) for (n, c) in names_with_counts]
@@ -174,7 +174,7 @@ using TOML
         # the piece that keeps the old leader ("Pedro Soto", higher doc_count) keeps the old id;
         # the other piece ("Maria Soto") gets its OWN fresh id, not a leftover of the old one.
         tmp3 = mktempdir()
-        merge_ov = (merges=[["Pedro Soto", "Maria Soto"]], splits=Tuple{String,String}[])
+        merge_ov = (merges=[["Pedro Soto", "Maria Soto"]], splits=Tuple{String,String}[], imputes=Vector{Vector{String}}())
         raw_id_of_3, profiles_3 = rebuild([("Pedro Soto", 2), ("Maria Soto", 1)], tmp3; overrides=merge_ov)
         merged_key = sort(["Pedro Soto", "Maria Soto"])
         old_id = profiles_3[merged_key]["consolidated_id"]
@@ -191,10 +191,47 @@ using TOML
         bigger_key = sort(["Roberto Diaz", "ROBERTO DIAZ"])
         bigger_old_id = profiles_4[bigger_key]["consolidated_id"]
         @test bigger_old_id == raw_id_of_4["Roberto Diaz"]
-        merge_diaz_ov = (merges=[["Roberto Diaz", "Elena Diaz"]], splits=Tuple{String,String}[])
+        merge_diaz_ov = (merges=[["Roberto Diaz", "Elena Diaz"]], splits=Tuple{String,String}[], imputes=Vector{Vector{String}}())
         _, profiles_4b = rebuild([("Roberto Diaz", 2), ("ROBERTO DIAZ", 1), ("Elena Diaz", 1)], tmp4; overrides=merge_diaz_ov)
         all_merged_key = sort(["Roberto Diaz", "ROBERTO DIAZ", "Elena Diaz"])
         @test profiles_4b[all_merged_key]["consolidated_id"] == bigger_old_id
+    end
+
+    @testset "AuthorConsolidation overrides TOML (load_overrides/save_imputes, isolated)" begin
+        tmpdir = mktempdir()
+        path = joinpath(tmpdir, "author_overrides.toml")
+
+        # missing file: no overrides, not an error
+        empty = AuthorConsolidation.load_overrides(path)
+        @test isempty(empty.merges) && isempty(empty.splits) && isempty(empty.imputes)
+
+        # hand-authored merge/split, read back correctly, impute empty
+        open(path, "w") do io
+            TOML.print(io, Dict("merge" => [["A", "B"]], "split" => [["C", "D"]]))
+        end
+        loaded = AuthorConsolidation.load_overrides(path)
+        @test loaded.merges == [["A", "B"]]
+        @test loaded.splits == [("C", "D")]
+        @test isempty(loaded.imputes)
+
+        # save_imputes: preserves merge/split verbatim, writes only impute
+        AuthorConsolidation.save_imputes([["E", "F"], ["G", "H"]], path)
+        after = AuthorConsolidation.load_overrides(path)
+        @test after.merges == [["A", "B"]]
+        @test after.splits == [("C", "D")]
+        @test Set(after.imputes) == Set([["E", "F"], ["G", "H"]])
+
+        # a second save_imputes call fully REPLACES the previous impute contents, doesn't accumulate
+        AuthorConsolidation.save_imputes([["I", "J"]], path)
+        replaced = AuthorConsolidation.load_overrides(path)
+        @test replaced.imputes == [["I", "J"]]
+        @test replaced.merges == [["A", "B"]]  # still untouched
+
+        # compute_groups treats merge and impute identically as forced edges
+        names = ["X Y", "Z W"]
+        ov = (merges=Vector{Vector{String}}(), splits=Tuple{String,String}[], imputes=[["X Y", "Z W"]])
+        groups = AuthorConsolidation.compute_groups(names, ov)
+        @test any(g -> sort(g) == sort(names), groups)
     end
 
     @testset "AuthorConsolidation.compute_name_clusters (q-gram + oracle, isolated)" begin

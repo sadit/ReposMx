@@ -3,7 +3,7 @@ module Config
 using JSON
 
 export DEFAULT_DATA_DIR, DEFAULT_INDEX_DIR, DEFAULT_CATALOGS_DIR, DEFAULT_HEADERS, DEFAULT_OAI_NS,
-       DEFAULT_AUTHOR_OVERRIDES_JSON, get_repositories, get_repository_url
+       DEFAULT_AUTHOR_OVERRIDES_TOML, get_repositories, get_repository_url
 
 const DEFAULT_DATA_DIR = let
     if haskey(ENV, "REPOSMX_DATA_DIR") && !isempty(ENV["REPOSMX_DATA_DIR"])
@@ -71,23 +71,25 @@ const DEFAULT_REPOS_JSON = let
 end
 
 """
-    DEFAULT_AUTHOR_OVERRIDES_JSON
+    DEFAULT_AUTHOR_OVERRIDES_TOML
 
-Path to the human-curated author consolidation overrides file (explicit `merge`/`split` of raw
-author names — see [`AuthorConsolidation`](@ref)). Same resolution pattern as `DEFAULT_REPOS_JSON`:
-versioned at the repo root, never under `data/`.
+Path to the author consolidation overrides file (`merge`/`split`, human-curated by hand, plus
+`impute`, computed and rewritten by an automatic recall pass on its own — see
+[`AuthorConsolidation`](@ref)'s `load_overrides`/`save_imputes`). TOML, not JSON (converted from
+the earlier `author_overrides.json`: same `merge`/`split` shape, plain arrays-of-arrays map 1:1).
+Same resolution pattern as `DEFAULT_REPOS_JSON`: versioned at the repo root, never under `data/`.
 """
-const DEFAULT_AUTHOR_OVERRIDES_JSON = let
+const DEFAULT_AUTHOR_OVERRIDES_TOML = let
     if haskey(ENV, "REPOSMX_AUTHOR_OVERRIDES") && !isempty(ENV["REPOSMX_AUTHOR_OVERRIDES"])
         abspath(ENV["REPOSMX_AUTHOR_OVERRIDES"])
     else
         pkg = pkgdir(@__MODULE__)
-        if pkg !== nothing && isfile(joinpath(pkg, "author_overrides.json"))
-            normpath(joinpath(pkg, "author_overrides.json"))
-        elseif isfile(joinpath(pwd(), "author_overrides.json"))
-            abspath(joinpath(pwd(), "author_overrides.json"))
+        if pkg !== nothing && isfile(joinpath(pkg, "author_overrides.toml"))
+            normpath(joinpath(pkg, "author_overrides.toml"))
+        elseif isfile(joinpath(pwd(), "author_overrides.toml"))
+            abspath(joinpath(pwd(), "author_overrides.toml"))
         else
-            normpath(joinpath(homedir(), ".reposmx", "author_overrides.json"))
+            normpath(joinpath(homedir(), ".reposmx", "author_overrides.toml"))
         end
     end
 end

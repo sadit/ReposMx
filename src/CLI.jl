@@ -42,7 +42,7 @@ SUBCOMANDOS INDIVIDUALES:
   parse [repos...]           Extrae texto estructurado desde los PDFs/documentos
   build-corpus [repos...]    Genera 'corpus.jsonl' fusionando metadatos y texto
   index [repos...]           Construye el índice de búsqueda léxico y semántico
-  consolidate-authors [repos...]  Re-agrupa perfiles de autor (tras editar author_overrides.json),
+  consolidate-authors [repos...]  Re-agrupa perfiles de autor (tras editar author_overrides.toml),
                              sin re-tokenizar docs_content/docs_refs
   search "<query>"           Busca directamente en la terminal (BM25 + Wikipedia)
   info [repo]                Estadísticas detalladas de publicaciones, disciplinas y autores
