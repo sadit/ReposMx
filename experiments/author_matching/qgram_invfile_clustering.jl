@@ -248,6 +248,72 @@ harder there, at both `max_df=0.5` and `0.25` -- this tempers confidence in `max
 not only in going more aggressive than it, and reinforces not adopting either level without the
 same cross-validation rigor already applied elsewhere in this file.
 
+### Given-name-initials fingerprint enrichment (`_given_initials_fingerprint`/`_abbrev_qgrams`) -- VALIDATED, kept
+
+A preprocessing addition orthogonal to `max_df`: synthesize a `"_^A$_^B$_..."` string from the
+first letter of each given-name token (one `"^X$"` unit per token, joined/wrapped with `"_"`), then
+add ITS OWN q-grams to the representation -- UNTAGGED (no `:g`/`:s` suffix; the fingerprint's own
+`"_"` markers already keep it out of the tagged namespace, since a tagged element always contains
+`:` and the fingerprint never does). The point: whether a given-name token is spelled out in full
+or already reduced to a bare initial makes NO difference to `first(t)` -- a fully-spelled-out
+record and its all-initials counterpart for the SAME person produce the IDENTICAL fingerprint,
+something no per-token q-gram can do alone (a token's own q-grams only overlap with a different
+SPELLING of that same token, never with a bare initial of it).
+
+**A first version (gated at `length(given) >= 2`) was a measured net REGRESSION, found and fixed
+before landing.** Reasoning at the time: a single given token's own initial is already the
+`"^X$:g"` enrichment, so gating the fingerprint at 2+ tokens looked like it just avoided
+redundant work. In practice this created an ASYMMETRY that actively hurts a very common truncation
+pattern -- dropping a whole given-name token rather than abbreviating it (e.g.
+`"Jose Vicente Hernandez Villegas"` -> `"Vicente Hernandez"`, keeping only the second given name).
+The short form (1 given token) got no fingerprint at all while the long form (2+ tokens) did,
+adding elements to the long form's side alone -- growing the union without growing the
+intersection, LOWERING Jaccard for exactly the pair the feature should help. Confirmed directly:
+this pair's raw Jaccard dropped 0.417 -> 0.326, and its bucket-scale edge (`"hernandez"`, n=874,
+`max_df=0.5`) disappeared entirely (present before this feature, gone after). Measured group-level
+against production (10-repo corpus): 245 differing at `max_df=0.5` (up from a 217 no-feature
+baseline) and 223 at `0.25` (up from 212) -- a real, measured regression, not a hypothetical one.
+
+**Fix: fire the fingerprint at `length(given) >= 1` instead (any non-empty `given`), not gated
+at 2+.** The `"_^X$_"` wrapping is self-similar across positions, so a short name's single-initial
+fingerprint windows are the SAME windows a longer name's fingerprint produces at that same
+initial's position within it (e.g. `"Vicente Hernandez"`'s fingerprint windows are a subset of
+`"Jose Vicente Hernandez Villegas"`'s) -- so now BOTH sides contribute something comparable instead
+of one side contributing nothing. Re-measured group-level against production: **201 differing at
+`max_df=0.5`, 186 at `0.25` -- BETTER than the original no-feature baseline (217/212), not just a
+reversion of the v1 regression.** All 5 previously-broken cases now connect (the Vicente/Jose
+Vicente pair, both `"Salvador Gonzalez"` candidates, `"A. García García"`/`"ARIADNA GARCIA GARCIA"`,
+`"Alejandro Fernando Reyes"`/`"A. F. Reyes"`), and the 14-case hand-picked regression suite still
+passes 14/14.
+
+**Also validated against the mined ground truth** (`mine_ground_truth.jl`'s cached
+`mined_trivial_good.txt`/`mined_hard_good.txt`/`mined_bad_v2.txt`, 2,706/136/22,785 pairs), scoring
+raw phase-1 Jaccard @ thr=0.3 (not the full pipeline -- this isolates the representation change):
+
+| set | without feature | with feature (v2, fires at length(given)>=1) |
+|---|---|---|
+| trivial_good | 100.0% | 100.0% (unaffected -- exact-format duplicates connect regardless) |
+| hard_good (recall) | 94.85% (129/136) | 92.65% (126/136) |
+| bad (false-connect rate) | 5.99% (1365/22785) | 9.02% (2055/22785) |
+
+Two things worth being upfront about here too:
+- The 3 `hard_good` recall losses are all the SAME underlying pair
+  (`"Victor Manuel Contreras Toledo"` / `"Victor Toledo"`, 3 raw-string formats), an already-
+  borderline score (0.314 -> 0.289) -- a residual, smaller instance of the same asymmetric-growth
+  mechanism: a name with 2+ given tokens still contributes MORE fingerprint windows than a
+  single-initial short form can match, so some union-only growth on the longer side is inherent to
+  a windowed-fingerprint approach and not fully eliminable without dropping the feature.
+- The `bad` false-connect rate rose 51% relatively (+690 pairs) at the raw phase-1 level. Sampled 15
+  of the newly-connected pairs (e.g. `"ADRIANA GONZALEZ MARTINEZ"` / `"ALICIA GOMEZ MARTINEZ"` --
+  different given names, different second surnames, sharing only the very common "Martinez") --
+  **all 15 are still correctly rejected by the unchanged, already-validated `_name_cluster_edge`**,
+  confirming the oracle absorbs this added phase-1 noise exactly as the recall(phase1)/
+  precision(oracle) split was designed to allow, consistent with the group-level result actually
+  IMPROVING rather than degrading despite the raw noise increase.
+
+**How to apply**: keep the fingerprint gated at `length(given) >= 1` (current code) -- the 2+ gate
+is a validated-worse alternative, not a stylistic choice.
+
 ### `bucket_edges_searchgraph` -- SearchGraph + MaxMatchError, TRIED AND DISCARDED
 
 [`name_qgram_vec_hashed`](@ref) and [`bucket_edges_searchgraph`](@ref) exist in this file as a
@@ -313,10 +379,59 @@ function _qgrams_padded(t::AbstractString; q::Int=Q)
 end
 
 """
+    _given_initials_fingerprint(given) -> String
+
+Synthesizes a `"_^A\$_^B\$_..."` string from the first letter of each given-name token, one
+`"^X\$"` unit per token, joined and wrapped with `"_"` (e.g. `["antonio","alberto"]` and
+`["a","a"]` both produce `"_^A\$_^A\$_"`). Whether a given-name token is spelled out in full or
+already a bare initial makes NO difference to this fingerprint -- `first(t)` gives the same letter
+either way -- so a fully-spelled-out record and its all-initials counterpart for the SAME person
+produce the IDENTICAL fingerprint, something no per-token q-gram can do on its own (a token's own
+q-grams only overlap with a different SPELLING of that same token, never with a bare initial of
+it). See [`_abbrev_qgrams`](@ref) for how this becomes q-gram elements.
+"""
+function _given_initials_fingerprint(given::AbstractVector{<:AbstractString})
+    parts = ["^" * string(first(t)) * "\$" for t in given]
+    return "_" * join(parts, "_") * "_"
+end
+
+"""
+    _abbrev_qgrams(fingerprint; q=Q) -> Vector{String}
+
+Plain sliding-window q-grams over an already self-delimited fingerprint string (see
+[`_given_initials_fingerprint`](@ref)) -- no extra `^`/`\$` padding, unlike [`_qgrams_padded`](@ref),
+since the fingerprint already opens and closes on its own `"_"` markers.
+"""
+function _abbrev_qgrams(fingerprint::AbstractString; q::Int=Q)
+    chars = collect(fingerprint)
+    length(chars) < q && return String[String(chars)]
+    return [String(chars[i:i+q-1]) for i in 1:(length(chars)-q+1)]
+end
+
+"""
     name_qgram_set(raw; q=Q, enrich=true) -> Set{String}
 
 See module docstring for why `enrich=true` is safe (even desirable) here, unlike when this same
 representation was tried as a FINAL decision metric.
+
+When `enrich` and there is at least 1 given-name token, also adds this name's
+[`_given_initials_fingerprint`](@ref) q-grams -- UNTAGGED (no `:g`/`:s` suffix): the fingerprint's
+own leading/trailing/between `"_"` already marks these as a special abbreviation namespace, kept
+deliberately separate from the ordinary role-tagged q-grams above rather than layered onto either
+side. Fires even at `length(given) == 1` -- NOT gated at 2+ like the dual-role block below, despite
+looking like it should follow the same rule. Firing at 1 too is required for the fingerprint to
+help the (very common) truncation pattern where a full name is reduced elsewhere by DROPPING a
+whole given-name token rather than abbreviating it (`"Jose Vicente Hernandez Villegas"` ->
+`"Vicente Hernandez"`, keeping only the second given name) -- gating this at 2+ measurably HURT
+that pattern instead of helping it: only the longer name got a fingerprint, adding elements to its
+side alone that the shorter name could never share, growing the union without growing the
+intersection and so LOWERING Jaccard for exactly the pair it should help (confirmed live: this
+exact pair's Jaccard dropped 0.417 -> 0.326, and its edge disappeared at bucket scale). Firing at
+`length(given) == 1` too means a short form now contributes a (shorter) fingerprint of its own,
+whose windows are directly comparable to the corresponding position of a longer name's fingerprint
+-- the `"_^X\$_"` wrapping is self-similar, so e.g. `"Vicente Hernandez"`'s single-initial
+fingerprint windows are the SAME two windows the longer name's fingerprint produces at Vicente's
+own position within it.
 """
 function name_qgram_set(raw::AbstractString; q::Int=Q, enrich::Bool=true)
     toks = AC._qgram_name_tokens(raw)
@@ -342,6 +457,10 @@ function name_qgram_set(raw::AbstractString; q::Int=Q, enrich::Bool=true)
         for g in _qgrams_padded(t; q); push!(elems, g * ":s"); end
         enrich && length(t) > 1 && push!(elems, "^" * string(first(t)) * "\$:s")
     end
+    if enrich && !isempty(given)
+        fp = _given_initials_fingerprint(given)
+        for g in _abbrev_qgrams(fp; q); push!(elems, g); end
+    end
     return Set(elems)
 end
 
@@ -355,6 +474,11 @@ set. The point: integer keys are cheaper to hash/compare/store than variable-len
 the string-keyed version -- at the cost of a (vanishingly small, but not exactly zero) chance that
 two DIFFERENT q-grams collide onto the same 64-bit value. See this file's hashed-vs-string
 benchmark for the measured speed/quality tradeoff.
+
+Carries the same `enrich`-gated [`_given_initials_fingerprint`](@ref) q-grams as
+[`name_qgram_set`](@ref) (hashed like everything else here) -- untagged strings never collide with
+a `:g`/`:s`-tagged one since the fingerprint never contains a `:`, so no separate hash namespace is
+needed.
 """
 function name_qgram_set_hashed(raw::AbstractString; q::Int=Q, enrich::Bool=true)
     toks = AC._qgram_name_tokens(raw)
@@ -373,6 +497,10 @@ function name_qgram_set_hashed(raw::AbstractString; q::Int=Q, enrich::Bool=true)
         t = given[end]
         for g in _qgrams_padded(t; q); push!(elems, hash(g * ":s")); end
         enrich && length(t) > 1 && push!(elems, hash("^" * string(first(t)) * "\$:s"))
+    end
+    if enrich && !isempty(given)
+        fp = _given_initials_fingerprint(given)
+        for g in _abbrev_qgrams(fp; q); push!(elems, hash(g)); end
     end
     return Set(elems)
 end
