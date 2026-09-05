@@ -92,9 +92,32 @@ using TOML
         # glued/leading-underscore token downstream.
         @test Corpus.parse_author_names("Adrian Rodriguez_Garcia") == ["Adrian Rodriguez Garcia"]
 
-        # CURP-as-name and bare/hash-prefixed ORCID: never a real name, dropped entirely.
+        # CURP-as-name, CVU-as-name, and bare/hash-prefixed ORCID: never a real name, dropped
+        # entirely -- including the truncated/variant-separator ORCID forms found live at 93-repo
+        # scale ("# " with a space, "#/" with a slash, and a checksum-digit short by one).
         @test Corpus.parse_author_names("BEGC770820HDFCNR08=asesorTesis") == String[]
         @test Corpus.parse_author_names("#0000-0001-5058-804X") == String[]
+        @test Corpus.parse_author_names("# 0000-0001-5587-4467") == String[]
+        @test Corpus.parse_author_names("#/0000-0001-5587-4467") == String[]
+        @test Corpus.parse_author_names("#0000-0002-6380-368") == String[]
+        @test Corpus.parse_author_names("CVU102349=asesorTesis") == String[]
+
+        # an id code GLUED onto an otherwise-real name via "#" (prefix/suffix/infix) is stripped,
+        # keeping the real name -- unlike the whole-segment reject cases above, since there IS a
+        # real name here. Found live at 93-repo scale in all three positions.
+        @test Corpus.parse_author_names("#MARIA TERESA") == ["MARIA TERESA"]
+        @test Corpus.parse_author_names("Aguilera Garcia Hugo Armando#AUGH810413HGTGRG08") ==
+              ["Aguilera Garcia Hugo Armando"]
+        @test "Almanza Lara Omar" in Corpus.parse_author_names("Almanza Lara Omar#AALO980509HGTLRM")  # truncated homoclave
+        adolfo = Corpus.parse_author_names("Adolfo Alberto:#0000-0002-5130-5475 Cervantes Baqué")
+        @test any(nm -> occursin("Adolfo", nm) && occursin("Cervantes", nm), adolfo)
+
+        # a parenthetical ORCID annotation attached to a real name, plus "coordinador(a)" as an
+        # additional role marker (both found live at 93-repo scale together in the same record).
+        coord = Corpus.parse_author_names(
+            "Bernardez de la Granja, Maria del Carmen, coordinadora (https://orcid.org/0000-0001-5114-9225)")
+        @test any(nm -> occursin("Bernardez", nm) && occursin("Carmen", nm) && !occursin("orcid", lowercase(nm)) &&
+                        !occursin("coordinadora", lowercase(nm)), coord)
 
         # regression: role-marker/colon cleanup must NEVER corrupt a real URL/ORCID elsewhere in
         # the corpus (an earlier version's blanket colon-strip turned "https://" into "https //").

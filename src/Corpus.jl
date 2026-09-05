@@ -49,29 +49,54 @@ surname that merely contains one of these letter sequences. A trailing colon (`"
 colons separately, anywhere in the string, which silently corrupted a real ORCID/URL's own `":"`
 downstream (`"https://..."` -> `"https //..."`, no longer recognized as a URL at all).
 """
-const _ROLE_MARKER_RE = r"\b(co[-\s]*)?asesor[a]?\b:?|\bdirector[a]?\b:?|\b(dr|dra|mtro|mtra|lic|ing)\b\.?"i
+const _ROLE_MARKER_RE = r"\b(co[-\s]*)?asesor[a]?\b:?|\bco[-\s]*ordinador[a]?\b:?|\bdirector[a]?\b:?|\b(dr|dra|mtro|mtra|lic|ing)\b\.?"i
 
 """
-    _CURP_RE
+    _ID_CODE_RE
 
-Mexican CURP (Clave Única de Registro de Población) national-id format -- 4 letters, 6-digit
-birthdate, sex letter (H/M), 5-letter state/consonant code, 2-digit homoclave (18 characters,
-matched as a PREFIX since a suffix sometimes follows, see below) -- confirmed live: some theses
-store the ADVISOR's CURP instead of/alongside their name, tagged with a literal `"=asesorTesis"`-
-style suffix (e.g. `"BEGC770820HDFCNR08=asesorTesis"`). Never a real name -- rejected outright, the
-same way a bare ORCID is (see [`_BARE_ORCID_RE`](@ref)).
+The core shape of a Mexican researcher/student id code, matched WITHOUT any `"#"`/position
+anchor -- reused both as a whole-segment reject ([`_CURP_RE`](@ref)/[`_CVU_RE`](@ref)) and as the
+payload [`_EMBEDDED_ID_RE`](@ref) strips out when the SAME kind of code is glued onto an otherwise
+real name. Three shapes, confirmed live on the real 93-repo corpus:
+- CURP (Clave Única de Registro de Población): 4 letters, 6-digit birthdate, sex letter (H/M),
+  4-5 letter state/consonant code, 0-2 digit homoclave -- the last piece is sometimes truncated
+  entirely in the source data (`"...HGTLRM"`, no homoclave digits at all), hence `\\d{0,2}` rather
+  than requiring exactly 2.
+- A bare ORCID (4-4-4-4 digit/`X`-checksum grouping) -- also sometimes truncated
+  (`"0000-0002-6380-368"`, one digit short in the last group), hence `\\d{1,4}[\\dXx]?` rather than
+  requiring exactly 4.
+- CVU (Clave Única de Registro, CONACYT's separate researcher-id scheme) -- just `"CVU"` + digits.
 """
-const _CURP_RE = r"^[A-Z]{4}\d{6}[HM][A-Z]{5}\d{2}"i
+const _ID_CODE_RE = raw"[A-Z]{4}\d{6}[HM][A-Z]{4,5}\d{0,2}|\d{4}-\d{4}-\d{4}-\d{1,4}[\dXx]?|cvu\d+"
 
 """
-    _BARE_ORCID_RE
+    _CURP_RE / _CVU_RE / _BARE_ORCID_RE
 
-A bare ORCID identifier (the canonical 4-4-4-4 digit/`X`-checksum grouping), with or without a
-leading `"#"` -- confirmed live: some records use `"#0000-0001-...-...X"` instead of the full
-`"https://orcid.org/..."` URL, which the URL/substring-based garbage check elsewhere in this
-codebase (`AuthorConsolidation._is_garbage_name`) does not recognize.
+Whole-segment reject patterns -- when, after splitting/stripping, an entire author segment IS just
+one of [`_ID_CODE_RE`](@ref)'s shapes (matched as a PREFIX since a suffix like `"=asesorTesis"`
+sometimes follows, e.g. `"BEGC770820HDFCNR08=asesorTesis"`, `"CVU102349=asesorTesis"`), it is
+dropped entirely -- never a name under any circumstance.
 """
-const _BARE_ORCID_RE = r"^#?\d{4}-\d{4}-\d{4}-\d{3}[\dXx]$"
+const _CURP_RE = Regex("^(?:$(_ID_CODE_RE))", "i")
+const _CVU_RE = r"^cvu\d+"i
+const _BARE_ORCID_RE = Regex("^#?(?:$(_ID_CODE_RE))\$", "i")
+
+"""
+    _EMBEDDED_ID_RE
+
+An id code glued directly onto an otherwise-real name via a literal `"#"` -- confirmed live in all
+three positions: prefix (`"#MARIA TERESA"` -- no code at all here, just a stray `"#"`, see below),
+suffix (`"Aguilera Garcia Hugo Armando#AUGH810413HGTGRG08"`), and infix
+(`"Adolfo Alberto:#0000-0002-5130-5475 Cervantes Baqué"`). Unlike [`_CURP_RE`](@ref) et al., this
+does NOT reject the whole segment -- it strips just the `"#" [+ optional separator] [+ id code] [+
+optional "=asesorTesis" suffix]` chunk, keeping the real name text around it. The leading `"#"` is
+REQUIRED in the match (not `#?`) -- everything after it is optional, so making `"#"` itself
+optional too would let the whole pattern match a zero-width empty string at every position, which
+`replace` would then "substitute" between every single character. A bare stray `"#"` with no code
+following it (`"#MARIA TERESA"`) is still removed by this same replace call: the code and suffix
+groups simply match nothing, leaving only the required `"#"` (and any separator chars) consumed.
+"""
+const _EMBEDDED_ID_RE = Regex("#[\\s/:]*(?:$(_ID_CODE_RE))?(=?\\s*asesor\\s*tesis)?", "i")
 
 """
     parse_author_names(author_str::AbstractString)
@@ -80,17 +105,18 @@ Splits and cleans authors or contributors separated by ';' or commas, extracting
 normalized names. Preprocessing happens here, on the raw harvested string, BEFORE any library
 tokenization/normalization ever sees it (`AuthorConsolidation`'s `TextSearch`-based tokenizer runs
 much later, on a name that's already gone through `build_authors_index_data`) -- catching garbage
-and embedded role markers this early means they never become a raw author profile at all, instead
-of relying on downstream consumers to filter them back out one at a time.
+and embedded role markers/id codes this early means they never become a raw author profile at all,
+instead of relying on downstream consumers to filter them back out one at a time.
 
-- A segment matching [`_CURP_RE`](@ref) or [`_BARE_ORCID_RE`](@ref) is dropped entirely -- not a
-  name under any circumstance.
-- Underscores are normalized to spaces before anything else: some repositories join a compound
-  surname with `"_"` instead of a space (`"Adrian Rodriguez_Garcia"`), which without this step
-  survives tokenization as a single glued, leading-underscore token (`"_garcia"`) instead of two
-  clean ones.
-- [`_ROLE_MARKER_RE`](@ref) is stripped wherever it appears (not just as a prefix), then
-  whitespace/stray leading-or-trailing commas left behind are squeezed/trimmed.
+- A segment matching [`_CURP_RE`](@ref), [`_CVU_RE`](@ref), or [`_BARE_ORCID_RE`](@ref) (the WHOLE
+  segment is just an id code, nothing else) is dropped entirely.
+- Otherwise: a parenthetical URL annotation (`"(https://orcid.org/...)"`) is dropped:
+  [`_EMBEDDED_ID_RE`](@ref) strips an id code glued on with `"#"` (prefix/suffix/infix, keeping the
+  surrounding real name); underscores become spaces (some repositories join a compound surname
+  with `"_"` instead of a space, e.g. `"Rodriguez_Garcia"`, which survives tokenization as one
+  glued, leading-underscore token otherwise); [`_ROLE_MARKER_RE`](@ref) is stripped wherever it
+  appears (not just as a prefix); whitespace/stray leading-or-trailing commas left behind are
+  squeezed/trimmed.
 """
 function parse_author_names(author_str::AbstractString)
     isempty(strip(author_str)) && return String[]
@@ -101,7 +127,10 @@ function parse_author_names(author_str::AbstractString)
         isempty(clean) && continue
         length(clean) < 3 && continue
         occursin(_CURP_RE, clean) && continue
+        occursin(_CVU_RE, clean) && continue
         occursin(_BARE_ORCID_RE, clean) && continue
+        clean = replace(clean, r"\([^)]*https?://[^)]*\)" => " ")
+        clean = replace(clean, _EMBEDDED_ID_RE => " ")
         clean = replace(clean, '_' => ' ')
         clean = replace(clean, _ROLE_MARKER_RE => " ")
         clean = replace(clean, r"\s+" => " ")
