@@ -16,3 +16,7 @@
 # Regeneratable mined ground-truth data (experiments/, derived from a local rebuild — see
 # experiments/author_matching/mine_ground_truth.jl)
 /experiments/author_matching/mined_*.txt
+
+# Regeneratable vocabulary artifact (experiments/, derived from a local 93-repo rebuild — see
+# experiments/author_matching/build_vocabulary_93repos.jl)
+/experiments/author_matching/vocab_93repos.txt

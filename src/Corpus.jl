@@ -35,9 +35,62 @@ function normalize_author_name(name::AbstractString)
 end
 
 """
+    _ROLE_MARKER_RE
+
+Thesis-metadata role/title markers (advisor, co-advisor, director, and common academic-title
+abbreviations) that some repositories embed INSIDE the author/contributor name field itself, not
+only as a string PREFIX -- confirmed live on the real 93-repo corpus, in all three positions:
+`"Adrián, asesor Acosta Silva"` (middle), `"Ana Verónica Asesor Charles Rodríguez"` (middle, no
+commas at all), `"Ayala López, Carmen Leticia Co-Asesor"` (end), `"ASESOR DE LA CRUZ BRETÓN"`
+(inside a longer garbled field). A narrower prefix-only version of this regex existed before and
+missed all of these. Case-insensitive, whole-word matched (`\\b`) so it can never eat into a real
+surname that merely contains one of these letter sequences. A trailing colon (`"Director:"`,
+`"Asesor:"`) is consumed as part of the SAME match, deliberately -- an earlier version stripped
+colons separately, anywhere in the string, which silently corrupted a real ORCID/URL's own `":"`
+downstream (`"https://..."` -> `"https //..."`, no longer recognized as a URL at all).
+"""
+const _ROLE_MARKER_RE = r"\b(co[-\s]*)?asesor[a]?\b:?|\bdirector[a]?\b:?|\b(dr|dra|mtro|mtra|lic|ing)\b\.?"i
+
+"""
+    _CURP_RE
+
+Mexican CURP (Clave Única de Registro de Población) national-id format -- 4 letters, 6-digit
+birthdate, sex letter (H/M), 5-letter state/consonant code, 2-digit homoclave (18 characters,
+matched as a PREFIX since a suffix sometimes follows, see below) -- confirmed live: some theses
+store the ADVISOR's CURP instead of/alongside their name, tagged with a literal `"=asesorTesis"`-
+style suffix (e.g. `"BEGC770820HDFCNR08=asesorTesis"`). Never a real name -- rejected outright, the
+same way a bare ORCID is (see [`_BARE_ORCID_RE`](@ref)).
+"""
+const _CURP_RE = r"^[A-Z]{4}\d{6}[HM][A-Z]{5}\d{2}"i
+
+"""
+    _BARE_ORCID_RE
+
+A bare ORCID identifier (the canonical 4-4-4-4 digit/`X`-checksum grouping), with or without a
+leading `"#"` -- confirmed live: some records use `"#0000-0001-...-...X"` instead of the full
+`"https://orcid.org/..."` URL, which the URL/substring-based garbage check elsewhere in this
+codebase (`AuthorConsolidation._is_garbage_name`) does not recognize.
+"""
+const _BARE_ORCID_RE = r"^#?\d{4}-\d{4}-\d{4}-\d{3}[\dXx]$"
+
+"""
     parse_author_names(author_str::AbstractString)
 
-Splits and cleans authors or contributors separated by ';' or commas, extracting original and normalized names.
+Splits and cleans authors or contributors separated by ';' or commas, extracting original and
+normalized names. Preprocessing happens here, on the raw harvested string, BEFORE any library
+tokenization/normalization ever sees it (`AuthorConsolidation`'s `TextSearch`-based tokenizer runs
+much later, on a name that's already gone through `build_authors_index_data`) -- catching garbage
+and embedded role markers this early means they never become a raw author profile at all, instead
+of relying on downstream consumers to filter them back out one at a time.
+
+- A segment matching [`_CURP_RE`](@ref) or [`_BARE_ORCID_RE`](@ref) is dropped entirely -- not a
+  name under any circumstance.
+- Underscores are normalized to spaces before anything else: some repositories join a compound
+  surname with `"_"` instead of a space (`"Adrian Rodriguez_Garcia"`), which without this step
+  survives tokenization as a single glued, leading-underscore token (`"_garcia"`) instead of two
+  clean ones.
+- [`_ROLE_MARKER_RE`](@ref) is stripped wherever it appears (not just as a prefix), then
+  whitespace/stray leading-or-trailing commas left behind are squeezed/trimmed.
 """
 function parse_author_names(author_str::AbstractString)
     isempty(strip(author_str)) && return String[]
@@ -47,14 +100,18 @@ function parse_author_names(author_str::AbstractString)
         clean = strip(p)
         isempty(clean) && continue
         length(clean) < 3 && continue
-        clean = replace(clean, r"^(Dr\.|Dra\.|Mtro\.|Mtra\.|Lic\.|Ing\.|Director(a)?\s*:?|Asesor(a)?\s*:?)\s*"i => "")
-        clean = strip(clean)
-        if !isempty(clean)
-            push!(names, clean)
-            norm = normalize_author_name(clean)
-            if norm != clean && !isempty(norm)
-                push!(names, norm)
-            end
+        occursin(_CURP_RE, clean) && continue
+        occursin(_BARE_ORCID_RE, clean) && continue
+        clean = replace(clean, '_' => ' ')
+        clean = replace(clean, _ROLE_MARKER_RE => " ")
+        clean = replace(clean, r"\s+" => " ")
+        clean = strip(strip(clean), [',', ' '])
+        isempty(clean) && continue
+        length(clean) < 3 && continue
+        push!(names, clean)
+        norm = normalize_author_name(clean)
+        if norm != clean && !isempty(norm)
+            push!(names, norm)
         end
     end
     return unique(names)
