@@ -1,6 +1,6 @@
 using Test
 using ReposMx
-using ReposMx: LazyBM25, IndexShellIO, VocabIO, AuthorConsolidation, Corpus
+using ReposMx: LazyBM25, IndexShellIO, VocabIO, AuthorConsolidation, Corpus, NameVocabulary
 using RocksDB
 using SimilaritySearch, TextSearch
 
@@ -174,6 +174,64 @@ using SimilaritySearch, TextSearch
         orcid_names = ["https://orcid.org/0000-0001-5058-1227", "https://orcid.org/0000-0002-4870-4803"]
         @test !same_cluster(AuthorConsolidation.compute_name_clusters(orcid_names),
                              orcid_names[1], orcid_names[2])
+    end
+
+    @testset "NameVocabulary (vocabulary + correction, isolated)" begin
+        names = ["ALEXEI FEDOROVISH LICEA NAVARRO", "Juan Contreras Perez",
+                  "MARIA GUADALUPE LOPEZ", "Guadalupe Lopez De La Cruz",
+                  "https://orcid.org/0000-0001-5058-1227"]
+        v = NameVocabulary.build_name_vocabulary(names)
+
+        # compound names split into individual per-token popularity, not one joint unit
+        @test NameVocabulary.popularity(v, "alexei", :given) == 1
+        @test NameVocabulary.popularity(v, "guadalupe", :given) == 2  # "Maria Guadalupe" + "Guadalupe Lopez..."
+        @test NameVocabulary.popularity(v, "juan", :given) == 1
+        @test NameVocabulary.popularity(v, "cruz", :surname) == 1
+
+        # bare initials never enter the vocabulary, even if the raw name has one
+        @test !NameVocabulary.in_vocab(v, "j", :given)
+        @test NameVocabulary.popularity(v, "j", :given) == 0
+
+        # surname particles (de/la/...) are part of the surname SPAN but never their own entry
+        @test !NameVocabulary.in_vocab(v, "de", :surname)
+        @test !NameVocabulary.in_vocab(v, "la", :surname)
+
+        # garbage (ORCID/URL) names contribute nothing
+        @test NameVocabulary.popularity(v, "url", :given) == 0
+        @test NameVocabulary.popularity(v, "url", :surname) == 0
+
+        # exact vocabulary hit: returned as-is, full confidence
+        @test NameVocabulary.correct_token(v, "guadalupe", :given) == ("guadalupe", 1.0)
+        # bare initial: never corrected, never looked up
+        @test NameVocabulary.correct_token(v, "j", :given) == ("j", 1.0)
+
+        # real typo correction against a slightly larger vocabulary (needs enough tokens for the
+        # popularity-ratio gate to have somewhere to point at)
+        bigger = vcat(names, ["Jose Ramirez", "Jose Torres", "Jose Martinez", "Jose Alvarez",
+                                "Jose Gutierrez", "Jose Ruiz", "Jose Flores"])
+        v2 = NameVocabulary.build_name_vocabulary(bigger)
+        # documented limitation (see correct_token's docstring): a transposition on a short token
+        # shares zero q-grams with the correct spelling, so it's never even considered a candidate.
+        # Characterizes CURRENT behavior on purpose -- a future fix to `_candidates` should update
+        # this test, not silently leave it unnoticed.
+        @test NameVocabulary.correct_token(v2, "jsoe", :given) == ("jsoe", 0.0)
+        # "guadalup" (missing trailing "e") must correct to "guadalupe" -- a real truncation typo,
+        # not a transposition, so q-gram candidate generation actually finds it.
+        c2, conf2 = NameVocabulary.correct_token(v2, "guadalup", :given)
+        @test c2 == "guadalupe"
+        @test conf2 > 0.0
+
+        # a token that's ALREADY a distinct, real, independently-popular name must NOT be
+        # "corrected" into a different real name just because they're similar (e.g. must not
+        # rewrite "juan" into anything else) -- correction never fires when there's no exact-vocab
+        # gap to fill.
+        @test NameVocabulary.correct_token(v2, "juan", :given) == ("juan", 1.0)
+
+        # nothing plausible in the vocabulary: left unchanged, confidence 0.0 (not 1.0 -- distinct
+        # from "nothing needed correcting")
+        far_corrected, far_conf = NameVocabulary.correct_token(v2, "xyzzyx", :given)
+        @test far_corrected == "xyzzyx"
+        @test far_conf == 0.0
     end
 
     @testset "AuthorConsolidation similarity-join merges (compute_similarity_merges, isolated)" begin
