@@ -17,6 +17,7 @@ include("LazyBM25.jl")
 include("AuthorConsolidation.jl")
 include("NameVocabulary.jl")
 include("PrecisionClustering.jl")
+include("Imputation.jl")
 include("Indexing.jl")
 include("Search.jl")
 include("Server.jl")
@@ -40,6 +41,7 @@ using .LazyBM25
 using .AuthorConsolidation
 using .NameVocabulary
 using .PrecisionClustering
+using .Imputation
 using .Indexing
 using .Search
 using .Server

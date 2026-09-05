@@ -1,7 +1,7 @@
 using Test
 using ReposMx
 using ReposMx: LazyBM25, IndexShellIO, VocabIO, AuthorConsolidation, Corpus, NameVocabulary,
-               PrecisionClustering
+               PrecisionClustering, Imputation
 using RocksDB
 using SimilaritySearch, TextSearch
 using TOML
@@ -71,6 +71,39 @@ using TOML
 
         # an unresolvable cti code (not in any catalog) is dropped, not kept as a raw number.
         @test Corpus.parse_keywords("info:eu-repo/classification/cti/999999") == String[]
+    end
+
+    @testset "Corpus.parse_author_names (role-marker/CURP/ORCID cleanup, isolated)" begin
+        # Found live on the real 93-repo corpus while building experiments/author_matching's
+        # vocabulary artifact: role markers embedded INSIDE the name field (not just as a prefix,
+        # the only case an earlier version of this function handled), in all three positions.
+        @test Corpus.parse_author_names("Acosta Silva, Adrián, asesor") ==
+              ["Acosta Silva, Adrián", "Adrián Acosta Silva"]
+        @test "Ana Verónica Charles Rodríguez" in Corpus.parse_author_names("Ana Verónica Asesor Charles Rodríguez")
+        @test "Ana Verónica Charles Rodríguez" in Corpus.parse_author_names("Ana Verónica Co-Asesor Charles Rodríguez")
+        @test Corpus.parse_author_names("Ayala López, Carmen Leticia Co-Asesor") ==
+              ["Ayala López, Carmen Leticia", "Carmen Leticia Ayala López"]
+        # a trailing colon right after the marker is consumed too, without corrupting anything
+        # ELSE in the string (see the ORCID/URL regression check below).
+        @test "Juan Perez" in Corpus.parse_author_names("Director: Juan Perez")
+        @test "Juan Perez" in Corpus.parse_author_names("Asesor: Juan Perez")
+
+        # underscore-joined compound surname (some repos' export convention) -> real space, not a
+        # glued/leading-underscore token downstream.
+        @test Corpus.parse_author_names("Adrian Rodriguez_Garcia") == ["Adrian Rodriguez Garcia"]
+
+        # CURP-as-name and bare/hash-prefixed ORCID: never a real name, dropped entirely.
+        @test Corpus.parse_author_names("BEGC770820HDFCNR08=asesorTesis") == String[]
+        @test Corpus.parse_author_names("#0000-0001-5058-804X") == String[]
+
+        # regression: role-marker/colon cleanup must NEVER corrupt a real URL/ORCID elsewhere in
+        # the corpus (an earlier version's blanket colon-strip turned "https://" into "https //").
+        @test Corpus.parse_author_names("https://orcid.org/0000-0001-5058-1227") ==
+              ["https://orcid.org/0000-0001-5058-1227"]
+
+        # plain real names and the existing comma-order-swap must be completely untouched.
+        @test Corpus.parse_author_names("Juan Perez") == ["Juan Perez"]
+        @test Corpus.parse_author_names("Perez, Juan") == ["Perez, Juan", "Juan Perez"]
     end
 
     @testset "AuthorConsolidation (clustering + overrides, isolated)" begin
@@ -341,6 +374,31 @@ using TOML
         far_corrected, far_conf = NameVocabulary.correct_token(v2, "xyzzyx", :given)
         @test far_corrected == "xyzzyx"
         @test far_conf == 0.0
+
+        # regression: an earlier version short-circuited on ANY exact vocabulary hit before ever
+        # searching for a more popular candidate -- a no-op whenever the vocabulary is built from
+        # the SAME corpus being corrected, since every token (even a one-off typo) is trivially
+        # "in vocabulary" against itself. Confirmed live: this changed ZERO of 19,412 raw names on
+        # the real 10-repo corpus under the old logic. "hernandes" (s/z typo, popularity 1, q-gram
+        # similarity 0.6 to "hernandez" -- long enough a token that a single-letter change still
+        # leaves most 4-grams intact, unlike a short name) appears once against 5 "hernandez"s.
+        v3 = NameVocabulary.build_name_vocabulary(vcat(bigger,
+            ["Ana Hernandes", "Luis Hernandez", "Rosa Hernandez", "Pedro Hernandez",
+             "Sofia Hernandez", "Marco Hernandez"]))
+        @test NameVocabulary.in_vocab(v3, "hernandes", :surname)  # exact hit against itself, by construction
+        c3, conf3 = NameVocabulary.correct_token(v3, "hernandes", :surname)
+        @test c3 == "hernandez"
+        @test conf3 > 0.0
+
+        # the max_own_popularity gate: a token seen MORE than once is treated as an established,
+        # real spelling and never touched, no matter how popular a q-gram-similar alternative is --
+        # found live: without this gate, genuinely distinct real names (not typos) got flattened
+        # into a more-common one (e.g. "Alejandra"->"alejandro") purely from a 2x popularity edge.
+        v4 = NameVocabulary.build_name_vocabulary(vcat(bigger,
+            ["Ana Hernandes", "Eva Hernandes", "Luis Hernandez", "Rosa Hernandez", "Pedro Hernandez",
+             "Sofia Hernandez", "Marco Hernandez"]))
+        @test NameVocabulary.popularity(v4, "hernandes", :surname) == 2
+        @test NameVocabulary.correct_token(v4, "hernandes", :surname) == ("hernandes", 1.0)
     end
 
     @testset "PrecisionClustering (precision-first, full-words-only, isolated)" begin
@@ -399,6 +457,42 @@ using TOML
         @test !same_cluster(ggroups, "RICARDO GONZALEZ SANCHEZ", "CARLOS ERNESTO GONZALEZ CHICAS")
         # ... while genuine same-format-and-surname duplicates still merge
         @test same_cluster(ggroups, "Ricardo Gonzalez", "Ricardo González")
+    end
+
+    @testset "Imputation (first heuristic: recover initials via production's strict test, isolated)" begin
+        function same_cluster(groups, a, b)
+            for g in groups
+                (a in g) && (b in g) && return true
+            end
+            return false
+        end
+
+        names = ["JUAN CONTRERAS PEREZ", "Juan Contreras Perez", "J. Contreras Perez",
+                  "ALEXEI FEDOROVISH LICEA NAVARRO", "Alexei Federovish Licea Navarro",
+                  "MANUEL ALBERTO CHAVEZ GONZALEZ", "MARIA ANTONIETA CHAVEZ GONZALEZ",
+                  "https://orcid.org/0000-0001-5058-1227", "https://orcid.org/0000-0002-4870-4803"]
+        vocab = NameVocabulary.build_name_vocabulary(names)
+        groups = PrecisionClustering.compute_precision_clusters(names, vocab)
+        # precision clustering defers the initials-only pair (see PrecisionClustering's own tests)
+        @test !same_cluster(groups, "JUAN CONTRERAS PEREZ", "J. Contreras Perez")
+
+        proposals = Imputation.impute_candidates(groups)
+        # recovers the initials case -- AC._name_cluster_strict_compatible's bare-initial shortcut
+        # scores "J." against "Juan"/"JUAN" a perfect match, unlike precision clustering's own
+        # initial-blind scoring.
+        @test any(p -> "JUAN CONTRERAS PEREZ" in p && "J. Contreras Perez" in p, proposals)
+        # must NEVER propose the known false-positive pair (different given names, same double
+        # surname) -- AC._name_cluster_strict_compatible correctly rejects it just like production.
+        @test !any(p -> "MANUEL ALBERTO CHAVEZ GONZALEZ" in p && "MARIA ANTONIETA CHAVEZ GONZALEZ" in p, proposals)
+        # garbage names are never touched
+        @test !any(p -> any(occursin("orcid", x) for x in p), proposals)
+        # documented current limitation, not a bug: a genuine q-gram-typo-tolerant pair
+        # ("Fedorovish"/"Federovish", mean match~=0.69) is BELOW the strict test's 0.9 bar --
+        # AC._name_cluster_strict_compatible's own docstring already documents this class of missed
+        # recall (the "VCTOR H. BALTAZAR-HERNANDEZ" example); this first heuristic inherits it
+        # rather than fixing it. A future heuristic iteration is the place to address this, not a
+        # silent gap here.
+        @test !any(p -> "ALEXEI FEDOROVISH LICEA NAVARRO" in p && "Alexei Federovish Licea Navarro" in p, proposals)
     end
 
     @testset "AuthorConsolidation similarity-join merges (compute_similarity_merges, isolated)" begin

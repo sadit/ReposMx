@@ -24,6 +24,27 @@ struct Vocabulary
 end
 
 """
+    Vocabulary(counts::Dict{Tuple{String,Symbol},Int}) -> Vocabulary
+
+Builds a `Vocabulary` directly from an already-computed `(token, role) -> count` table -- the
+q-gram index is derived from `counts` alone, so this is all [`build_name_vocabulary`](@ref) does
+beyond scanning raw names for `counts` in the first place. Meant for reloading a vocabulary saved
+as a plain counts artifact (e.g. built once over a large corpus for threshold-tuning experiments)
+without re-scanning any raw names.
+"""
+function Vocabulary(counts::Dict{Tuple{String,Symbol},Int})
+    qgram_index = Dict{Symbol,Dict{String,Vector{String}}}(:given => Dict{String,Vector{String}}(),
+                                                             :surname => Dict{String,Vector{String}}())
+    for ((tok, role), _) in counts
+        idx = qgram_index[role]
+        for g in AC._name_qgrams(tok)
+            push!(get!(idx, g, String[]), tok)
+        end
+    end
+    return Vocabulary(counts, qgram_index)
+end
+
+"""
     _tokens_by_role(raw::AbstractString) -> (; given, surname)
 
 Splits `raw` into given-name and surname tokens using the SAME logic already validated for name
@@ -68,16 +89,7 @@ function build_name_vocabulary(raw_names::Vector{String})
             counts[key] = get(counts, key, 0) + 1
         end
     end
-
-    qgram_index = Dict{Symbol,Dict{String,Vector{String}}}(:given => Dict{String,Vector{String}}(),
-                                                             :surname => Dict{String,Vector{String}}())
-    for ((tok, role), _) in counts
-        idx = qgram_index[role]
-        for g in AC._name_qgrams(tok)
-            push!(get!(idx, g, String[]), tok)
-        end
-    end
-    return Vocabulary(counts, qgram_index)
+    return Vocabulary(counts)
 end
 
 """
@@ -142,26 +154,52 @@ end
 
 """
     correct_token(v::Vocabulary, token, role; method=:qgram, min_popularity_ratio=2.0,
-                  max_distance=2, min_qgram_sim=0.5) -> (corrected::String, confidence::Float64)
+                  max_own_popularity=1, max_distance=2, min_qgram_sim=0.5)
+        -> (corrected::String, confidence::Float64)
 
 Corrects `token` (assumed to already be in the given/surname ROLE it will be compared under)
 against `v`'s vocabulary for that same role -- never crosses given<->surname.
 
-- Exact vocabulary hit, or a bare initial (`length(token) <= 1`, never in the vocabulary by
-  construction): returned as-is, `confidence=1.0` -- nothing to correct, or nothing correctable.
-- Otherwise, scores every q-gram-sharing candidate (`_candidates`) via `method`:
+- A bare initial (`length(token) <= 1`, never in the vocabulary by construction): returned as-is,
+  `confidence=1.0`, no candidate search at all -- nothing correctable.
+- **`token`'s OWN popularity must be at or below `max_own_popularity` (default 1 -- essentially a
+  singleton spelling) before ANY candidate search happens at all.** This is a necessary
+  precondition, not just a tie-break: a token that already occurs more than once in the corpus is
+  treated as an established, real spelling and is NEVER touched, no matter how popular some
+  q-gram-similar alternative is. See below for why this gate exists.
+- Only for a token that clears that bar: scores every q-gram-sharing candidate (`_candidates`) via
+  `method`:
   - `:levenshtein` -- edit distance <= `max_distance`, score = `1 - distance/max(length(token),length(cand))`.
   - `:qgram` -- `AC._qgram_jaccard(token, cand)`, kept only if `>= min_qgram_sim`.
-- A candidate is only ACCEPTED if it is also meaningfully more popular than `token` itself
-  (`popularity(cand) >= min_popularity_ratio * max(popularity(token), 1)`) -- distance/similarity
-  alone is not enough evidence to overwrite a token that might be a genuine, rare, correctly-spelled
-  name; popularity is the tie-breaker that keeps correction from destroying real signal (see this
-  module's docstring / the design rationale carried over from this session's `max_df`-pruning
-  lessons: "fixing" something rare into something merely coincidentally similar is a precision
-  regression, not an improvement).
-- No candidate clears both bars: `token` is returned unchanged, `confidence=0.0` (distinct from the
-  `1.0` "nothing needed correcting" case -- this one means "correction was attempted and failed",
-  useful for diagnostics).
+- A candidate is only ACCEPTED if it is ALSO meaningfully more popular than `token` itself
+  (`popularity(cand) >= min_popularity_ratio * max(popularity(token), 1)`) -- a second,
+  independent bar on top of the own-popularity gate above.
+- If no candidate clears both bars, `token` is returned unchanged -- `confidence=1.0` if it was
+  already an exact vocabulary hit (nothing needed correcting), `confidence=0.0` otherwise (correction
+  was attempted and failed to find anything plausible -- distinct from the `1.0` case, useful for
+  diagnostics).
+
+**Two real bugs, found live via the 10-repo corpus, both fixed before this shipped.**
+
+1. An earlier version short-circuited on ANY exact vocabulary hit, before ever searching for a
+   more popular candidate. That's silently a no-op whenever the vocabulary is built from the SAME
+   corpus being corrected (the common case, e.g. `PrecisionClustering`'s use) -- every token,
+   including a one-off misspelling, is trivially "in vocabulary" against itself, since building the
+   vocabulary recorded it too. Confirmed: correction changed ZERO of 19,412 non-garbage raw names
+   on the real 10-repo corpus under that logic.
+2. Removing that short-circuit on its own (without the `max_own_popularity` gate) turned out to be
+   its own bug: with only `min_popularity_ratio=2.0` guarding acceptance, correction started
+   flattening genuinely DIFFERENT, both-real Spanish names into whichever one happened to be more
+   common in the corpus -- Spanish names have a small phonetic space, so pairs like
+   `"fernandez"`/`"hernandez"`, `"adalberto"`/`"alberto"`, `"arcos"`/`"marcos"` are one q-gram edit
+   apart while BOTH sides are legitimate, common names. Confirmed live and clearly wrong:
+   `"A. . (Alejandra) Ríos C."` (the record's OWN parenthetical explicitly says "Alejandra",
+   feminine) got "corrected" to `"alejandro"` (masculine) purely because that spelling is more
+   popular corpus-wide and one edit away -- a 2x popularity ratio is nowhere near enough evidence to
+   overrule that. `max_own_popularity` fixes this: a token appearing MORE than once in the corpus
+   already has independent corroborating evidence it's a real, intentional spelling, not a slip --
+   only a spelling that's (by default) essentially unique gets subjected to the popularity-ratio
+   check at all.
 
 **Known limitation, validated on the real 10-repo corpus, not silently papered over: candidate
 generation is q-gram-based for BOTH methods, so a transposition-heavy typo on a SHORT token can
@@ -182,12 +220,14 @@ already found.
 function correct_token(v::Vocabulary, token::AbstractString, role::Symbol;
                         method::Symbol=:qgram,
                         min_popularity_ratio::Float64=2.0,
+                        max_own_popularity::Int=1,
                         max_distance::Int=2,
                         min_qgram_sim::Float64=0.5)
     length(token) <= 1 && return (token, 1.0)
-    in_vocab(v, token, role) && return (token, 1.0)
 
     own_pop = popularity(v, token, role)
+    own_pop > max_own_popularity && return in_vocab(v, token, role) ? (token, 1.0) : (token, 0.0)
+
     best_tok, best_score = token, 0.0
     for cand in _candidates(v, token, role)
         score = if method == :levenshtein
@@ -203,7 +243,8 @@ function correct_token(v::Vocabulary, token::AbstractString, role::Symbol;
         popularity(v, cand, role) >= min_popularity_ratio * max(own_pop, 1) || continue
         best_tok, best_score = cand, score
     end
-    return best_score > 0.0 ? (best_tok, best_score) : (token, 0.0)
+    best_tok != token && return (best_tok, best_score)
+    return in_vocab(v, token, role) ? (token, 1.0) : (token, 0.0)
 end
 
 end # module
