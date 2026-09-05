@@ -209,6 +209,45 @@ Two findings, in order of importance:
    / possibly run-to-run variance rather than a robust effect -- it doesn't change the recommendation
    (hashed is still never worse, and composes for free), just tempers confidence in its magnitude.
 
+### Root cause: `"A. García García"` / `"ARIADNA GARCIA GARCIA"` -- and a correction to the above
+
+A group-level cross-validation of `max_df=0.25` against production (10-repo corpus) initially
+looked reassuring in aggregate (212 differing groups vs. `max_df=0.5`'s already-accepted 217), with
+one flagged casualty: production correctly groups `"A. García García"`, `"García García, A."`, and
+`"ARIADNA GARCIA GARCIA"` together (`_name_match_score` gives the first two a perfect
+`match=1.0`), reported at the time as lost specifically by `max_df=0.25`. Tracing it down in the
+`"garcia"` bucket (n=862, keyed by the literal surname) shows that read was WRONG in an important
+way:
+
+`"A."`'s and `"ARIADNA"`'s q-gram sets are almost entirely SURNAME q-grams for the compound
+"garcia garcia" -- near-universal in this bucket by construction (df 51.2%-100%, since the bucket
+key IS that token). The only other element either carries is the enrichment marker `"^a$:g"`
+("given name starts with a"), at df=222/862=**25.8%**.
+
+- **At `max_df=0.5`** (this file's "validated" default): every surname q-gram is pruned from both,
+  leaving `"A."` with just `{"^a$:g"}`; `"ARIADNA"` keeps extra "ariadna"-only q-grams too, so
+  intersection=1, union=7, Jaccard=0.143 -- **already below the 0.3 edge threshold. This pair was
+  ALREADY broken at `max_df=0.5`, not a new failure introduced by 0.25.** The tuple-level
+  set-diff used to hunt for "new" 0.25-only discrepancies missed this because the SAME underlying
+  pair was broken at both levels, just with different collateral damage (next point) -- comparing
+  whole-group tuples across two already-flawed runs can hide a shared failure.
+- **At `max_df=0.25`**: 25.8% > 25%, so `"^a$:g"` gets pruned too. `"A. García García"` and its
+  format-duplicate `"García García, A."` -- pruning-immune at 0.5, since two identical sets always
+  agree regardless of what's pruned -- both collapse to the EMPTY set.
+  `evaluate(Jaccard(), ∅, ∅) = NaN` (confirmed directly:
+  `SimilaritySearch.evaluate(Dist.Sets.Jaccard(), Int[], Int[])` returns `NaN`), and `NaN >= 0.3` is
+  `false` in Julia, so even that trivial duplicate pair separates too.
+
+**Generalizes beyond this one pair.** DF-based pruning is structurally hostile to any bucket where
+the bucket-defining surname is itself compound (both surname tokens ARE the bucket key, so
+virtually a member's whole representation is near-universal within its own bucket) -- it hits
+initials-heavy names hardest, since they carry almost no other signal. This is a weakness of the
+`DictInvertedFile` + pruning design here specifically, not of production (which never prunes
+anything). Since common surnames get proportionally BIGGER at 93-repo scale, expect this to bite
+harder there, at both `max_df=0.5` and `0.25` -- this tempers confidence in `max_df=0.5` itself,
+not only in going more aggressive than it, and reinforces not adopting either level without the
+same cross-validation rigor already applied elsewhere in this file.
+
 ### `bucket_edges_searchgraph` -- SearchGraph + MaxMatchError, TRIED AND DISCARDED
 
 [`name_qgram_vec_hashed`](@ref) and [`bucket_edges_searchgraph`](@ref) exist in this file as a
