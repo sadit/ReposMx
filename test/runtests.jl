@@ -458,9 +458,11 @@ using TOML
         @test !same_cluster(groups, "JUAN CONTRERAS PEREZ", "J. Contreras Perez")
         @test !same_cluster(groups, "J. Tellez Avila", "Juan Tellez")
         @test !same_cluster(groups, "MANUEL ALBERTO CHAVEZ GONZALEZ", "MARIA ANTONIETA CHAVEZ GONZALEZ")
-        # q-gram typo tolerance (~0.38 similarity) is below this stage's 0.9 bar on purpose --
-        # deferred to imputation, unlike AC.compute_name_clusters's generous 0.5 phase-1 bar.
-        @test !same_cluster(groups, "ALEXEI FEDOROVISH LICEA NAVARRO", "Alexei Federovish Licea Navarro")
+        # a genuine transposition typo ("Fedorovish"/"Federovish", distance 1 under :damerau,
+        # length 10 -> score 1-1/10=0.9, right at this stage's threshold) DOES connect here --
+        # this is exactly what motivated switching this stage's default scoring metric from
+        # :qgram (where the same pair only scored ~0.79, comfortably below 0.9) to :damerau.
+        @test same_cluster(groups, "ALEXEI FEDOROVISH LICEA NAVARRO", "Alexei Federovish Licea Navarro")
         # compound-surname truncation, full words only -- still must merge
         @test same_cluster(groups, "Victor Manuel Torres De La Cruz", "Victor Torres")
         @test same_cluster(groups, "Juan Tellez Avila", "Juan Tellez")
