@@ -2,7 +2,7 @@
 
 julia_version = "1.12.7"
 manifest_format = "2.0"
-project_hash = "1503c653205cd26e47b03fee76fd37a29c25804e"
+project_hash = "05659e9f27911c533c600a658659bc62ea0a4bca"
 
 [[deps.AbstractFFTs]]
 deps = ["LinearAlgebra"]
@@ -738,7 +738,7 @@ version = "1.11.0"
 deps = ["Accessors", "Dates", "Distances", "Distributions", "Hadamard", "JSON", "LinearAlgebra", "Mmap", "MultivariateStats", "ProgressMeter", "Random", "SIMD", "SearchModels", "SparseArrays", "Statistics", "StatsBase"]
 path = "/home/sadit/.julia/dev/SimilaritySearch"
 uuid = "053f045d-5466-53fd-b400-a066f88fe02a"
-version = "1.3.3"
+version = "1.3.4"
 
 [[deps.Sockets]]
 uuid = "6462fe0b-24de-5631-8697-dd941f90decc"
