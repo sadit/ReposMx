@@ -380,11 +380,13 @@ using TOML
         bigger = vcat(names, ["Jose Ramirez", "Jose Torres", "Jose Martinez", "Jose Alvarez",
                                 "Jose Gutierrez", "Jose Ruiz", "Jose Flores"])
         v2 = NameVocabulary.build_name_vocabulary(bigger)
-        # documented limitation (see correct_token's docstring): a transposition on a short token
-        # shares zero q-grams with the correct spelling, so it's never even considered a candidate.
-        # Characterizes CURRENT behavior on purpose -- a future fix to `_candidates` should update
-        # this test, not silently leave it unnoticed.
-        @test NameVocabulary.correct_token(v2, "jsoe", :given) == ("jsoe", 0.0)
+        # "jsoe" is a single transposition of "jose" (distance 1 under :damerau) -- the BK-tree
+        # candidate generation finds it directly by edit-distance radius, fixing a real limitation
+        # q-gram-index candidate generation had (a transposition on a token this short shares ZERO
+        # q-grams with the correct spelling, so :qgram never even considers it a candidate).
+        @test NameVocabulary.correct_token(v2, "jsoe", :given) == ("jose", 0.5)
+        # :qgram is unaffected -- still uses the q-gram index, still has the old limitation.
+        @test NameVocabulary.correct_token(v2, "jsoe", :given; method=:qgram) == ("jsoe", 0.0)
         # "guadalup" (missing trailing "e") must correct to "guadalupe" -- a real truncation typo,
         # not a transposition, so q-gram candidate generation actually finds it.
         c2, conf2 = NameVocabulary.correct_token(v2, "guadalup", :given)
