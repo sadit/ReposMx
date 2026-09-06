@@ -35,31 +35,44 @@ not forced into one. Bare initials (`length(token) == 1`) never appear here at a
 
 `qgram_index` is a per-role inverted index (q-gram -> tokens containing it) built once, used by
 [`correct_token`](@ref) to avoid scanning the whole vocabulary for every correction.
+
+`chars` is a `token -> Vector{Char}` cache, built once here, shared across roles (a token's
+character decomposition doesn't depend on whether it's currently playing `:given` or `:surname`).
+`Dist.Seqs.DamerauLevenshtein.evaluate` takes `Vector{Char}` arguments, not raw `String` --
+`String` is a UTF-8 byte buffer in Julia, and safe O(1) codepoint indexing needs the decoded
+`Vector{Char}` form, so this is the metric's intended calling convention, not a workaround. Every
+vocabulary token is a repeat customer as a correction CANDIDATE across a whole corpus pass (a
+popular surname might be scored against hundreds of different misspellings), so this is decoded
+once per token when the vocabulary is built, not once per comparison -- see [`correct_token`](@ref)
+for how it's consumed.
 """
 struct Vocabulary
     counts::Dict{Tuple{String,Symbol},Int}
     qgram_index::Dict{Symbol,Dict{String,Vector{String}}}
+    chars::Dict{String,Vector{Char}}
 end
 
 """
     Vocabulary(counts::Dict{Tuple{String,Symbol},Int}) -> Vocabulary
 
 Builds a `Vocabulary` directly from an already-computed `(token, role) -> count` table -- the
-q-gram index is derived from `counts` alone, so this is all [`build_name_vocabulary`](@ref) does
-beyond scanning raw names for `counts` in the first place. Meant for reloading a vocabulary saved
-as a plain counts artifact (e.g. built once over a large corpus for threshold-tuning experiments)
-without re-scanning any raw names.
+q-gram index and the `chars` cache are both derived from `counts` alone, so this is all
+[`build_name_vocabulary`](@ref) does beyond scanning raw names for `counts` in the first place.
+Meant for reloading a vocabulary saved as a plain counts artifact (e.g. built once over a large
+corpus for threshold-tuning experiments) without re-scanning any raw names.
 """
 function Vocabulary(counts::Dict{Tuple{String,Symbol},Int})
     qgram_index = Dict{Symbol,Dict{String,Vector{String}}}(:given => Dict{String,Vector{String}}(),
                                                              :surname => Dict{String,Vector{String}}())
+    chars = Dict{String,Vector{Char}}()
     for ((tok, role), _) in counts
         idx = qgram_index[role]
         for g in AC._name_qgrams(tok)
             push!(get!(idx, g, String[]), tok)
         end
+        haskey(chars, tok) || (chars[tok] = collect(tok))
     end
-    return Vocabulary(counts, qgram_index)
+    return Vocabulary(counts, qgram_index, chars)
 end
 
 """
@@ -273,12 +286,17 @@ that cost by costing the transposition at 1 instead of 2 -- at the price of then
 deletion at the same distance, which is why the popularity tie-break above exists: it is what
 actually resolves `"rcuz"` toward `"cruz"` over `"cuz"`, not the distance metric alone.
 
-**A real bug in `Dist.Seqs.DamerauLevenshtein.evaluate` itself, found live and worked around, not
-fixed here (this codebase doesn't own that package):** it indexes its `String` arguments byte-wise,
-which throws `StringIndexError` on any multi-byte UTF-8 content -- confirmed,
-`evaluate(DamerauLevenshtein(), "екатерина", "ekaterina")` throws, and this vocabulary has real
-Cyrillic/CJK names now. Worked around by passing `collect(token)`/`collect(cand)`
-(`Vector{Char}`, always safely/O(1)-indexable regardless of content) instead of the raw `String`s.
+**`Dist.Seqs.DamerauLevenshtein.evaluate` takes `Vector{Char}`, not raw `String` -- this is its
+intended calling convention, not a workaround for a defect.** `String` is a UTF-8 byte buffer in
+Julia; safe O(1) codepoint indexing (which any edit-distance DP needs) requires the decoded
+`Vector{Char}` form first -- confirmed live that skipping this step throws `StringIndexError` on
+multi-byte UTF-8 content (this vocabulary has real Cyrillic/CJK names), which is exactly what
+calling it correctly avoids. Both sides of the comparison are converted ONCE, statically, not on
+the fly per comparison: `token`'s `Vector{Char}` is computed once per [`correct_token`](@ref) call
+(outside the candidate loop, since `token` doesn't change across candidates), and every vocabulary
+token's `Vector{Char}` is precomputed once when the `Vocabulary` itself is built ([`Vocabulary`](@ref)'s
+own `chars` field) -- so no candidate ever pays this conversion twice, however many different
+tokens it gets scored against over a whole correction run.
 """
 function correct_token(v::Vocabulary, token::AbstractString, role::Symbol;
                         method::Symbol=:damerau,
@@ -291,19 +309,20 @@ function correct_token(v::Vocabulary, token::AbstractString, role::Symbol;
     own_pop = popularity(v, token, role)
     own_pop > max_own_popularity && return in_vocab(v, token, role) ? (token, 1.0) : (token, 0.0)
 
+    # `token`'s Vector{Char} form (needed by :damerau) is computed ONCE here, not per-candidate --
+    # `token` is fixed for the whole loop below, so redoing this per iteration would be pure waste.
+    token_chars = method == :damerau ? collect(token) : Char[]
+
     best_tok, best_score, best_pop = token, 0.0, own_pop
     for cand in _candidates(v, token, role)
         score = if method == :levenshtein
             d = _levenshtein(token, cand)
             d > max_distance ? 0.0 : 1.0 - d / max(length(token), length(cand))
         elseif method == :damerau
-            # collect to Vector{Char} first, not raw String -- SimilaritySearch.Dist.Seqs's
-            # DamerauLevenshtein.evaluate indexes its arguments byte-wise (`a[i]`), which throws
-            # StringIndexError on any multi-byte UTF-8 content (confirmed live: this vocabulary
-            # has real Cyrillic/CJK names). Vector{Char} indexing is always O(1)/safe regardless
-            # of what the characters are, sidestepping the bug entirely -- reported upstream, not
-            # fixed here (this codebase doesn't own that package).
-            d = SimilaritySearch.evaluate(_DAMERAU, collect(token), collect(cand))
+            # v.chars[cand] is the PRECOMPUTED Vector{Char} form, built once when the vocabulary
+            # itself was constructed (see Vocabulary's `chars` field) -- every candidate here is
+            # by construction a key of `v.counts`, so it's always present, never collected here.
+            d = SimilaritySearch.evaluate(_DAMERAU, token_chars, v.chars[cand])
             d > max_distance ? 0.0 : 1.0 - d / max(length(token), length(cand))
         elseif method == :qgram
             s = AC._qgram_jaccard(token, cand)
