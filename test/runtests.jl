@@ -523,6 +523,41 @@ using TOML
         @test !any(p -> "ALEXEI FEDOROVISH LICEA NAVARRO" in p && "Alexei Federovish Licea Navarro" in p, proposals)
     end
 
+    @testset "Imputation (clique-consistency: rejects ambiguous bridges, merges confident cliques)" begin
+        function same_cluster(groups, a, b)
+            for g in groups
+                (a in g) && (b in g) && return true
+            end
+            return false
+        end
+
+        # Two DIFFERENT real people sharing a surname, plus an ambiguous bare-initial-only group
+        # that independently strict-matches BOTH of them (found live on the real 10-repo corpus,
+        # e.g. "A. Barrios" bridging "ABELARDO NUÑEZ BARRIOS" and "Alberto Salazar Barrios") --
+        # naive transitive closure over pairwise proposals would falsely connect the two real
+        # people through the ambiguous node; the clique requirement must reject the whole
+        # component instead of guessing which one the initial "really" belongs to.
+        names_bridge = ["ABELARDO NUÑEZ BARRIOS", "Alberto Salazar Barrios", "A. Barrios", "Barrios, A."]
+        vocab_bridge = NameVocabulary.build_name_vocabulary(names_bridge)
+        groups_bridge = PrecisionClustering.compute_precision_clusters(names_bridge, vocab_bridge)
+        @test !same_cluster(groups_bridge, "ABELARDO NUÑEZ BARRIOS", "Alberto Salazar Barrios")
+        proposals_bridge = Imputation.impute_candidates(groups_bridge)
+        @test !any(p -> "ABELARDO NUÑEZ BARRIOS" in p, proposals_bridge)
+        @test !any(p -> "Alberto Salazar Barrios" in p, proposals_bridge)
+
+        # Three formatting variants of the SAME person, all pairwise strict-compatible with each
+        # other -- a confident clique, not just a chain -- must still merge into ONE proposal
+        # covering all three groups, not just the two closest-matching ones.
+        names_clique = ["JENARO LEOCADIO VARELA CASELIS", "Jenaro L. Varela Caselis",
+                         "Varela Caselis, Jenaro L."]
+        vocab_clique = NameVocabulary.build_name_vocabulary(names_clique)
+        groups_clique = PrecisionClustering.compute_precision_clusters(names_clique, vocab_clique)
+        proposals_clique = Imputation.impute_candidates(groups_clique)
+        @test any(proposals_clique) do p
+            all(nm -> nm in p, names_clique)
+        end
+    end
+
     @testset "AuthorConsolidation similarity-join merges (compute_similarity_merges, isolated)" begin
         # Guards the TFIDF + SimilaritySearch bichromatic_metricjoin clustering signal that
         # complements name-key matching: it should catch a same-surname near-duplicate profile
