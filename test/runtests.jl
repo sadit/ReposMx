@@ -1,4 +1,5 @@
 using Test
+using Random
 using ReposMx
 using ReposMx: LazyBM25, IndexShellIO, VocabIO, AuthorConsolidation, Corpus, NameVocabulary,
                PrecisionClustering, Imputation
@@ -333,7 +334,7 @@ using TOML
                             alexei_names[1], alexei_names[2])
 
         # compound surname ("Torres De La Cruz") truncated to just its paternal component
-        # ("Torres") must still match -- the whole point of _surname_span recognizing "de la
+        # ("Torres") must still match -- the whole point of _split_given_surname recognizing "de la
         # cruz" as one maternal-surname unit instead of "la"/"de" leaking in as fake given names.
         cruz_names = ["Victor Manuel Torres De La Cruz", "Victor Torres"]
         @test same_cluster(AuthorConsolidation.compute_name_clusters(cruz_names),
@@ -354,7 +355,15 @@ using TOML
 
         # compound names split into individual per-token popularity, not one joint unit
         @test NameVocabulary.popularity(v, "alexei", :given) == 1
-        @test NameVocabulary.popularity(v, "guadalupe", :given) == 2  # "Maria Guadalupe" + "Guadalupe Lopez..."
+        # "guadalupe" splits differently by name: "MARIA GUADALUPE LOPEZ" has 2 given-position
+        # tokens before "lopez", so AC._split_given_surname's paternal-surname absorption (see its
+        # own docstring) treats "guadalupe" as the paternal surname there (surname=[guadalupe,lopez]) --
+        # a real, accepted ambiguity ("Guadalupe" is common as BOTH a given name and a surname in
+        # Mexican naming, and token position alone can't tell them apart). "Guadalupe Lopez De La
+        # Cruz" has only ONE given-position token before its surname span, so "guadalupe" stays
+        # given there.
+        @test NameVocabulary.popularity(v, "guadalupe", :given) == 1    # "Guadalupe Lopez De La Cruz"
+        @test NameVocabulary.popularity(v, "guadalupe", :surname) == 1  # "MARIA GUADALUPE LOPEZ"
         @test NameVocabulary.popularity(v, "juan", :given) == 1
         @test NameVocabulary.popularity(v, "cruz", :surname) == 1
 
@@ -378,7 +387,8 @@ using TOML
         # real typo correction against a slightly larger vocabulary (needs enough tokens for the
         # popularity-ratio gate to have somewhere to point at)
         bigger = vcat(names, ["Jose Ramirez", "Jose Torres", "Jose Martinez", "Jose Alvarez",
-                                "Jose Gutierrez", "Jose Ruiz", "Jose Flores"])
+                                "Jose Gutierrez", "Jose Ruiz", "Jose Flores",
+                                "Guadalupe Sanchez", "Guadalupe Morales", "Guadalupe Vargas"])
         v2 = NameVocabulary.build_name_vocabulary(bigger)
         # "jsoe" is a single transposition of "jose" (distance 1 under :damerau) -- the BK-tree
         # candidate generation finds it directly by edit-distance radius, fixing a real limitation
@@ -489,6 +499,42 @@ using TOML
         @test !same_cluster(ggroups, "RICARDO GONZALEZ SANCHEZ", "CARLOS ERNESTO GONZALEZ CHICAS")
         # ... while genuine same-format-and-surname duplicates still merge
         @test same_cluster(ggroups, "Ricardo Gonzalez", "Ricardo González")
+    end
+
+    @testset "PrecisionClustering hybrid bucket parallelization (small-path vs large-path agree)" begin
+        function same_cluster(groups, a, b)
+            for g in groups
+                (a in g) && (b in g) && return true
+            end
+            return false
+        end
+        canon(groups) = Set(Tuple(sort(g)) for g in groups)
+
+        # A single ~150-member bucket (all sharing surname "Hernandez") -- large enough to force
+        # the LARGE-bucket code path (its own O(size^2) loop split across batches/threads) when
+        # `large_bucket_threshold` is set low, vs the SMALL-bucket path (one bucket among many,
+        # batched with others) when set high. Given names are random 8-letter strings so any two
+        # are, overwhelmingly likely, far apart in edit distance -- no incidental connections.
+        rng = Random.MersenneTwister(42)
+        alphabet = collect("abcdefghijklmnopqrstuvwxyz")
+        given_pool = [String(rand(rng, alphabet, 8)) for _ in 1:150]
+        big_names = [uppercasefirst(g) * " Hernandez" for g in given_pool]
+        # 3 same-person format duplicates, to confirm real merges still happen under BOTH paths
+        dup_targets = (1, 50, 100)
+        for i in dup_targets
+            push!(big_names, uppercase(big_names[i]))
+        end
+
+        bv = NameVocabulary.build_name_vocabulary(big_names)
+        groups_small_path = PrecisionClustering.compute_precision_clusters(big_names, bv; large_bucket_threshold=10_000)
+        groups_large_path = PrecisionClustering.compute_precision_clusters(big_names, bv; large_bucket_threshold=10)
+        # the whole point: both code paths must agree on EVERY group, not just on aggregate counts
+        @test canon(groups_small_path) == canon(groups_large_path)
+
+        for i in dup_targets
+            @test same_cluster(groups_large_path, big_names[i], uppercase(big_names[i]))
+        end
+        @test !same_cluster(groups_large_path, big_names[1], big_names[2])
     end
 
     @testset "Imputation (first heuristic: recover initials via production's strict test, isolated)" begin

@@ -24,88 +24,28 @@ the transposition as equally cheap, though this reintroduces a tie that populari
 const _DAMERAU = Dist.Seqs.DamerauLevenshtein()
 
 """
-    _BKNode
-
-Node of a BK-tree (Burkhard-Keller tree) over vocabulary tokens, keyed by
-[`_DAMERAU`](@ref)-distance from parent to child: `children[d]` is the (unique) child inserted at
-Damerau-Levenshtein distance exactly `d` from THIS node. Lets [`_bk_search`](@ref) prune whole
-subtrees without visiting them (see that function), instead of `_candidates`' q-gram-index approach
-of first collecting a loose candidate SET (anything sharing >=1 q-gram) and then scoring every one.
-
-**Built on a metric assumption `:damerau` doesn't fully satisfy -- accepted as an engineering
-tradeoff, not unnoticed.** BK-tree pruning (`_bk_search`) relies on the triangle inequality (if
-`d(query,node)` and `d(node,child)` are known, `d(query,child) >= |d(node,child) - d(query,node)|`
-lets you skip a child outside the search radius without visiting it) -- but restricted
-Damerau-Levenshtein (OSA) is documented as a `SemiMetric`, NOT a full `Metric`, precisely because it
-can violate the triangle inequality (`Dist.Seqs.DamerauLevenshtein`'s own docstring:
-`evaluate(dl, "ca", "abc")` can exceed the sum of two other pairwise distances that should bound
-it). A violation could in principle make `_bk_search` prune a subtree that actually contains a
-within-radius match (a false NEGATIVE -- never a false positive, since every node actually visited
-is still scored exactly) -- validated empirically against the exhaustive q-gram-index search on the
-real 10-repo corpus rather than assumed away, see `correct_token`'s docstring for the result.
-"""
-mutable struct _BKNode
-    item::String
-    children::Dict{Int,_BKNode}
-end
-_BKNode(item::String) = _BKNode(item, Dict{Int,_BKNode}())
-
-"""
-    _bk_insert!(root::_BKNode, item::String)
-
-Inserts `item` into the BK-tree rooted at `root`, descending by [`_DAMERAU`](@ref)-distance at each
-level until an empty child slot is found. A distance-`0` match (an exact duplicate already in the
-tree) is a silent no-op -- the vocabulary's `counts` dict already dedupes tokens, so this only
-guards against being called on data that hasn't gone through that dedup.
-"""
-function _bk_insert!(root::_BKNode, item::String)
-    node = root
-    while true
-        d = round(Int, SimilaritySearch.evaluate(_DAMERAU, node.item, item))
-        d == 0 && return
-        child = get(node.children, d, nothing)
-        child === nothing && (node.children[d] = _BKNode(item); return)
-        node = child
-    end
-end
-
-"""
-    _bk_build(items) -> Union{Nothing,_BKNode}
-
-Builds a BK-tree over `items` (assumed already deduplicated), `nothing` for an empty collection
-(a role with zero vocabulary tokens -- possible for a tiny synthetic test vocabulary, never for a
-real corpus). Insertion order affects tree SHAPE (hence search speed) but never correctness --
-`items` here comes from iterating a `Dict`, so the shape is arbitrary/unspecified, not tuned.
-"""
-function _bk_build(items)
-    isempty(items) && return nothing
-    root = _BKNode(first(items))
-    for item in Iterators.drop(items, 1)
-        _bk_insert!(root, item)
-    end
-    return root
-end
-
-"""
-    _bk_search(root, query::AbstractString, radius::Int) -> Vector{Tuple{String,Int}}
+    _bk_search(bkt, ctx, query::AbstractString, radius::Int) -> Vector{Tuple{String,Int}}
 
 Every vocabulary token within [`_DAMERAU`](@ref)-distance `radius` of `query` (`query` itself
 excluded IF present in the tree, matching [`_candidates`](@ref)'s own exclusion), paired with its
-exact distance -- returning the distance too avoids [`correct_token`](@ref) recomputing it
-(`:damerau` doesn't need a second `evaluate` call per candidate the way `_candidates`' q-gram
-candidates do). `root === nothing` (an empty tree) returns no candidates, not an error.
+exact distance -- returning the distance too avoids [`correct_token`](@ref) recomputing it.
+`bkt === nothing` (an empty tree) returns no candidates, not an error.
+
+Thin wrapper over `SimilaritySearch.BKT` (`Dist.Seqs.DamerauLevenshtein`-keyed, built once per
+role in [`Vocabulary`](@ref)'s constructor with `checkmetric=false` -- see there for why) plus a
+`SimilaritySearch.RadiusSorted(radius)` queue, adapting its `.ids`/`.dists` result to the
+`(token, distance)` pairs [`correct_token`](@ref) expects, exactly like the hand-rolled BK-tree
+this replaced (2026-09-06 -> 2026-09-07, once `SimilaritySearch` shipped a real `BKT` with
+parallel construction, see [`Vocabulary`](@ref)'s docstring).
 """
-function _bk_search(root::Union{Nothing,_BKNode}, query::AbstractString, radius::Int)
-    root === nothing && return Tuple{String,Int}[]
+function _bk_search(bkt, ctx, query::AbstractString, radius::Int)
+    bkt === nothing && return Tuple{String,Int}[]
+    res = SimilaritySearch.search(bkt, ctx, query, SimilaritySearch.RadiusSorted(Float32(radius)))
     results = Tuple{String,Int}[]
-    stack = _BKNode[root]
-    while !isempty(stack)
-        node = pop!(stack)
-        d = round(Int, SimilaritySearch.evaluate(_DAMERAU, node.item, query))
-        d <= radius && node.item != query && push!(results, (node.item, d))
-        for (dc, child) in node.children
-            abs(dc - d) <= radius && push!(stack, child)
-        end
+    for (id, d) in zip(res.ids, res.dists)
+        cand = SimilaritySearch.database(bkt, id)
+        cand == query && continue
+        push!(results, (cand, round(Int, d)))
     end
     return results
 end
@@ -121,14 +61,31 @@ not forced into one. Bare initials (`length(token) == 1`) never appear here at a
 [`build_name_vocabulary`](@ref)).
 
 `qgram_index` is a per-role inverted index (q-gram -> tokens containing it), used by
-[`correct_token`](@ref)'s `:qgram` method. `bktree` is a per-role [`_BKNode`](@ref) root ([`_bk_build`](@ref)),
-used by `:damerau`/`:levenshtein` instead -- an exact edit-distance-radius query, rather than a
-q-gram-shared candidate SET that still needs its distance computed afterward. Both built once here.
+[`correct_token`](@ref)'s `:qgram` method. `bktree` is a per-role `SimilaritySearch.BKT`
+([`_DAMERAU`](@ref)-keyed, built once per role below), used by `:damerau`/`:levenshtein` instead --
+an exact edit-distance-radius query, rather than a q-gram-shared candidate SET that still needs its
+distance computed afterward. `bktctx` is the shared `SimilaritySearch.GenericContext` those trees
+were built with and are searched with -- `BKT` search allocates no scratch of its own (per its own
+docstring), so reusing one context for every concurrent search is safe.
+
+**`BKT` is keyed by `:damerau` with `checkmetric=false`, NOT a hand-rolled tree anymore
+(2026-09-07).** `BKT` prunes via the triangle inequality, which restricted Damerau-Levenshtein
+(OSA) does not strictly satisfy (it is a `SemiMetric`, not a `Metric` -- see [`_DAMERAU`](@ref)'s
+docstring) -- `checkmetric=false` overrides `BKT`'s own safety check for exactly this case.
+`SimilaritySearch.BKT`'s own docstring documents this precise tradeoff and measured it directly:
+on a 20k-word dictionary with 200 typo queries, keying by `:damerau` with `checkmetric=false` lost
+NOTHING at all (recall `1.0`) at radius 1, 2, and 3, at 7.9%/39%/68% of an exhaustive scan -- this
+module only ever searches at `max_distance=1`, comfortably inside that validated range. The
+alternative the same docstring offers (key by plain `Levenshtein`, a true `Metric`, search at
+radius `2*max_distance`, then filter exactly by `:damerau`) is NOT used here: it is the safer
+choice in the abstract, but costs MORE than an exhaustive scan by `r=3` on that same benchmark, and
+this module's own radius never needs to go that high.
 """
 struct Vocabulary
     counts::Dict{Tuple{String,Symbol},Int}
     qgram_index::Dict{Symbol,Dict{String,Vector{String}}}
-    bktree::Dict{Symbol,Union{Nothing,_BKNode}}
+    bktree::Dict{Symbol,Any}
+    bktctx::SimilaritySearch.GenericContext
 end
 
 """
@@ -139,6 +96,10 @@ q-gram index and the BK-trees are both derived from `counts` alone, so this is a
 [`build_name_vocabulary`](@ref) does beyond scanning raw names for `counts` in the first place.
 Meant for reloading a vocabulary saved as a plain counts artifact (e.g. built once over a large
 corpus for threshold-tuning experiments) without re-scanning any raw names.
+
+Each role's `BKT` is built via `SimilaritySearch.index!`, which parallelizes level-by-level
+construction internally via `@BATCHES` (see that function's own docstring) -- multi-threaded
+whenever this call itself runs with `Threads.nthreads() > 1`, with no extra effort needed here.
 """
 function Vocabulary(counts::Dict{Tuple{String,Symbol},Int})
     qgram_index = Dict{Symbol,Dict{String,Vector{String}}}(:given => Dict{String,Vector{String}}(),
@@ -151,26 +112,35 @@ function Vocabulary(counts::Dict{Tuple{String,Symbol},Int})
         end
         push!(tokens_by_role[role], tok)
     end
-    bktree = Dict{Symbol,Union{Nothing,_BKNode}}(role => _bk_build(toks) for (role, toks) in tokens_by_role)
-    return Vocabulary(counts, qgram_index, bktree)
+    ctx = SimilaritySearch.GenericContext(; reporters=[])
+    bktree = Dict{Symbol,Any}()
+    for (role, toks) in tokens_by_role
+        db = SimilaritySearch.VectorDatabase(toks)
+        bkt = SimilaritySearch.BKT(_DAMERAU, db; checkmetric=false)
+        SimilaritySearch.index!(bkt, ctx)
+        bktree[role] = bkt
+    end
+    return Vocabulary(counts, qgram_index, bktree, ctx)
 end
 
 """
     _tokens_by_role(raw::AbstractString) -> (; given, surname)
 
 Splits `raw` into given-name and surname tokens using the SAME logic already validated for name
-clustering (`AC._qgram_name_tokens`/`AC._surname_span`) — not reinvented here. Surname particles
-(`AC._SURNAME_PARTICLES`, e.g. "de"/"la"/"los") are dropped from the returned `surname` list: they
-are part of the surname SPAN for matching purposes elsewhere, but are never real name content, so
-they never get a vocabulary entry of their own.
+clustering (`AC._qgram_name_tokens`/`AC._split_given_surname`) — not reinvented here. `surname` is
+FLATTENED, connector-free content (`AC._surname_content`), NOT the canonical, possibly-hyphenated
+compound form `AC._split_given_surname` itself returns: vocabulary popularity and correction
+(`correct_token`) operate at the level of individual real words (`"cruz"`, `"milian"`, `"avila"`),
+never on a whole compound like `"de-la-cruz"` as one unit -- particles/the "y" conjunction
+(`AC._SURNAME_PARTICLES`) are dropped entirely, same as before: they are part of the surname for
+matching purposes elsewhere, but are never real name content, so they never get a vocabulary entry
+of their own.
 """
 function _tokens_by_role(raw::AbstractString)
     toks = AC._qgram_name_tokens(raw)
     isempty(toks) && return (given=String[], surname=String[])
-    span = AC._surname_span(toks)
-    given = toks[1:first(span)-1]
-    surname = [t for t in toks[span] if t ∉ AC._SURNAME_PARTICLES]
-    return (; given, surname)
+    (; given, surname) = AC._split_given_surname(toks)
+    return (; given, surname=AC._surname_content(surname))
 end
 
 """
@@ -446,7 +416,7 @@ function correct_token(v::Vocabulary, token::AbstractString, role::Symbol;
 
     if method == :damerau
         best_tok, best_dist, best_pop = token, max_distance + 1, own_pop
-        for (cand, d) in _bk_search(v.bktree[role], token, max_distance)
+        for (cand, d) in _bk_search(v.bktree[role], v.bktctx, token, max_distance)
             best_tok, best_dist, best_pop = _accept_by_distance(best_tok, best_dist, best_pop, cand, d,
                                                                    popularity(v, cand, role), min_popularity_ratio, own_pop)
         end
@@ -460,7 +430,7 @@ function correct_token(v::Vocabulary, token::AbstractString, role::Symbol;
         # always (never rules out a true Levenshtein-radius candidate; the exact recheck below
         # just drops the few extra ones the Damerau radius let through that Levenshtein wouldn't).
         best_tok, best_dist, best_pop = token, max_distance + 1, own_pop
-        for (cand, _) in _bk_search(v.bktree[role], token, max_distance)
+        for (cand, _) in _bk_search(v.bktree[role], v.bktctx, token, max_distance)
             d = _levenshtein(token, cand)
             d > max_distance && continue
             best_tok, best_dist, best_pop = _accept_by_distance(best_tok, best_dist, best_pop, cand, d,

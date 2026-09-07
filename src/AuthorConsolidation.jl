@@ -115,30 +115,155 @@ end
     _SURNAME_PARTICLES
 
 Spanish/Mexican surname connector words: a compound surname like "de la Cruz" or "del Razo" is
-ONE unit, not independent tokens — used by [`_surname_span`](@ref) so those words neither leak
-into a given-name list as if they were middle names, nor get compared as if they were the
-surname's own identity. Confirmed on a real 10-repo corpus: 1,084 of 19,543 raw names (~5.5%)
-contain one of these words — common enough that this is not an edge case. Not exhaustively
-validated (e.g. `"y"` as a surname-joining conjunction, as in `"Milián y Ávila"`, is deliberately
-NOT included — untested).
+ONE unit, not independent tokens — used by [`_surname_unit_ending_at`](@ref) so those words
+neither leak into a given-name list as if they were middle names, nor get compared as if they were
+the surname's own identity. Confirmed on a real 10-repo corpus: 1,084 of 19,543 raw names (~5.5%)
+contain one of these words — common enough that this is not an edge case.
+
+`"y"` (the surname-JOINING conjunction, as in `"Milián y Ávila"`) is handled SEPARATELY (see
+[`_surname_unit_ending_at`](@ref)), not included here -- unlike a `"de"/"la"`-led run (which
+attaches to a genuinely SEPARATE surname that precedes it, e.g. paternal `"Torres"` in `"Torres de
+la Cruz"`), `"X y Z"` is conventionally ONE complete, atomic compound surname on its own, with
+nothing further absorbed alongside it WHEN IT OCCUPIES THE TRAILING (maternal) SLOT. Conflating
+the two (treating `"y"` as just another particle in the SAME backward walk) was tried and found
+wanting 2026-09-06/07: `"GUADALUPE MARIA MILIAN Y AVILA"` needs `"milian"` and `"avila"` joined as
+ONE unit (nothing else absorbed), not `"milian"` treated as a separate paternal surname the way
+`"torres"` genuinely is in the `"de la Cruz"` case.
 """
 const _SURNAME_PARTICLES = Set(["de", "del", "la", "las", "los", "san", "santa"])
 
 """
-    _surname_span(toks::Vector{String}) -> UnitRange{Int}
+    _surname_unit_ending_at(toks::Vector{String}, i::Int) -> (start::Int, unit::String, is_y::Bool)
 
-Index range of `toks` covering the (possibly compound) surname: starts at `length(toks)` and
-walks backward absorbing [`_SURNAME_PARTICLES`](@ref) tokens, stopping at the first non-particle
-token encountered (itself included, as the surname's head word) — e.g. `[.., "torres", "de",
-"la", "cruz"]` gives a span of `"de","la","cruz"` (3 tokens); `["juan", "tellez"]` gives a span of
-just `"tellez"` (no particles to absorb).
+Parses ONE surname unit -- a single word, or a traditionally-atomic compound -- ending at position
+`i` in `toks`, scanning BACKWARD from `i`. Returns the index where the unit STARTS (`start <= i`),
+the unit itself (hyphen-joined if it's a compound, so it is never split into independent pieces
+later by vocabulary popularity counts or bucketing the way its literal words would be if left
+separate), and whether it was a `"y"`-conjunction.
+
+[`_split_given_surname`](@ref) calls this SAME function for BOTH the maternal (trailing) and
+paternal surname slots, since either slot can independently be a plain word or a compound. **Found
+live, fixed 2026-09-07: an earlier version (`_collapse_surname_compounds`) only ever looked for a
+particle-led compound anchored at the very END of `toks`**, silently assuming a compound could
+only ever be the MATERNAL surname -- `"Victor del Real Torres"` (paternal `"del Real"`, separate
+plain maternal `"Torres"`) came out as `given=["victor","del"], surname=["real","torres"]` (`"del"`
+stranded in `given`, `"real"` wrongly read as a bare paternal surname) since the particle `"del"`
+sits two tokens before the end, not immediately before it. With the fix (trying this SAME
+unit-parser at whichever position each slot starts), it correctly gives
+`given=["victor"], surname=["del-real","torres"]`.
+
+Two compound patterns (see [`_SURNAME_PARTICLES`](@ref) for why they're handled differently):
+
+1. **`"y"`-conjunction** (`toks[i-1] == "y"`, e.g. `"Milián y Ávila"`): joins `toks[i-2]`, `"y"`,
+   and `toks[i]` into ONE atomic unit, `is_y=true`.
+2. **`_SURNAME_PARTICLES`-led run** (e.g. `"del Real"`, `"de la Cruz"`): walks backward through
+   consecutive particles immediately before `toks[i]`, joining the whole run, `is_y=false`.
+
+Neither pattern found: the unit is just `toks[i]` alone, `start=i`, `is_y=false`.
 """
-function _surname_span(toks::Vector{String})
-    i = length(toks)
-    while i > 1 && toks[i-1] in _SURNAME_PARTICLES
-        i -= 1
+function _surname_unit_ending_at(toks::Vector{String}, i::Int)
+    if i >= 3 && toks[i-1] == "y"
+        return i - 2, string(toks[i-2], "-y-", toks[i]), true
     end
-    return i:length(toks)
+    j = i
+    while j > 1 && toks[j-1] in _SURNAME_PARTICLES
+        j -= 1
+    end
+    j < i && return j, join(toks[j:i], "-"), false
+    return i, toks[i], false
+end
+
+"""
+    _split_given_surname(toks::Vector{String}) -> (; given::Vector{String}, surname::Vector{String})
+
+Splits `toks` into given-name and (possibly compound) surname token lists -- the successor to an
+earlier `_surname_span(toks) -> UnitRange{Int}` (removed 2026-09-07, once a compound surname needed
+to become a NEW joined string that isn't a slice of the original `toks` at all, so an index range
+could no longer represent it). Parses from the tail using [`_surname_unit_ending_at`](@ref):
+
+1. The MATERNAL (trailing) slot is whatever unit ends at the last token -- a plain word, or a
+   compound if one is found there. If it's a `"y"`-conjunction, it's already atomic (see
+   [`_SURNAME_PARTICLES`](@ref)): nothing more is absorbed, everything before it is `given`.
+2. Otherwise, if at least one given-name token would still remain, try the SAME unit-parser again
+   ending right before the maternal slot -- this is the PATERNAL slot, and it too may turn out to
+   be a plain word or a compound (e.g. `"del Real"` in `"Victor del Real Torres"`). Only kept if it
+   still leaves at least one token for `given`.
+
+Examples: `["juan", "perez", "gomez"]` -> `surname=["perez","gomez"]` (given: `"juan"`).
+`["victor", "manuel", "torres", "de", "la", "cruz"]` -> `surname=["torres","de-la-cruz"]` (given:
+`"victor","manuel"`). `["victor", "del", "real", "torres"]` -> `surname=["del-real","torres"]`
+(given: `"victor"`). `["juan", "tellez"]` -> `surname=["tellez"]` (only one token available at all,
+nothing to absorb without emptying `given` entirely). `["guadalupe", "maria", "milian", "y",
+"avila"]` -> `surname=["milian-y-avila"]` (given: `"guadalupe","maria"` -- NOT `"milian"` absorbed
+as a separate paternal surname, since the "y"-compound is already atomic).
+
+**Found live, fixed 2026-09-06: an earlier version never absorbed a separate paternal slot at
+all** — a surname was multi-token ONLY when particle-led; an ordinary "Nombre ApellidoPaterno
+ApellidoMaterno" record (no particle at all, the MORE common case) got just its last token
+recognized as `surname`, with the paternal surname silently swept into `given` instead. Two
+concrete, confirmed-live consequences:
+- `"DANIEL M. GARCIA LOPEZ"` parsed as `given=["daniel","m"], surname=["lopez"]` -- the bare
+  initial `"m"` then matched `"martinez"` via the given-alignment's bare-initial shortcut against
+  `"DANIEL MARTINEZ LOPEZ"` (`given=["daniel","martinez"], surname=["lopez"]` under the OLD split),
+  scoring a false PERFECT match (both surnames "lopez", `match=1.0`) between two different people
+  who only coincidentally share a maternal surname.
+- `"VICTOR MANUEL TORRES DE LA CRUZ"` parsed `surname=["de","la","cruz"]` only (paternal "torres"
+  swept into `given`) -- coincidentally sharing that maternal-only surname with an unrelated
+  `"Víctor Manuel Morales de la Cruz"` (`surname=["de","la","cruz"]` too) gave `surname_exact=1.0`
+  for two different people whose real (paternal) surnames actually differ. With the fix, both
+  records' surnames correctly include the paternal element (`"torres"`/`"morales"`), so
+  `surname_a != surname_b` and the SURNAME check alone now rejects the pair. A related case,
+  `"ALEJANDRA SANCHEZ GONZALEZ"`/`"Alejandro Sánchez González"`, also stops being a false match:
+  the OLD split left `"sanchez"` in `given` on both sides, where its coincidental EXACT match
+  pulled the given-alignment AVERAGE up to `0.944` (masking `"alejandra"`/`"alejandro"`'s `0.889`);
+  with `"sanchez"` correctly recognized as (part of) the surname instead, each side's `given` list
+  has just the ONE discriminating token, so the average IS that token's score (`0.889`, correctly
+  below the connect threshold), with nothing left to average it against.
+"""
+function _split_given_surname(toks::Vector{String})
+    n = length(toks)
+    n == 0 && return (given=String[], surname=String[])
+    n == 1 && return (given=String[], surname=toks)
+
+    start2, unit2, is_y2 = _surname_unit_ending_at(toks, n)
+    is_y2 && return (given=toks[1:start2-1], surname=[unit2])
+
+    if start2 > 2
+        start1, unit1, _ = _surname_unit_ending_at(toks, start2 - 1)
+        start1 >= 2 && return (given=toks[1:start1-1], surname=[unit1, unit2])
+    end
+    return (given=toks[1:start2-1], surname=[unit2])
+end
+
+"""
+    _surname_content(surname::Vector{String}) -> Vector{String}
+
+Flattens a (possibly canonically hyphenated, see [`_split_given_surname`](@ref)) surname into its
+real CONTENT words, for scoring purposes: splits every element on `"-"` and drops
+[`_SURNAME_PARTICLES`](@ref) and the `"y"` conjunction, leaving only the words that actually carry
+identity. `["torres", "de-la-cruz"]` -> `["torres", "cruz"]`; `["milian-y-avila"]` -> `["milian",
+"avila"]`; a plain `["torres"]` (nothing hyphenated) passes through unchanged.
+
+**Why scoring needs this separate from the canonical form `_split_given_surname` returns:** the
+canonical form is what makes `"Milián y Ávila"` and `"de la Cruz"` stable, unambiguous IDENTITIES
+(one bucket key, one vocabulary entry, one exact-match value) -- but real records are INCONSISTENT
+about including the connector at all (`"Milián Ávila"`, dropping the `"y"`, is common shorthand for
+the exact same surname). Comparing canonical forms directly would score `["milian-y-avila"]`
+against `["milian","avila"]` as UNRELATED (different shapes, found live: this scored `0.0`, a
+regression from even the pre-canonical-form behavior) purely because one happened to spell out the
+connector and the other didn't. Flattening both to content-only words before comparing (paternal
+vs paternal, maternal vs maternal, see [`_surname_typo_score`](@ref)) recovers the match `de la
+Cruz`.
+"""
+function _surname_content(surname::Vector{String})
+    words = String[]
+    for s in surname
+        for w in split(s, "-")
+            (w in _SURNAME_PARTICLES || w == "y") && continue
+            push!(words, w)
+        end
+    end
+    return words
 end
 
 """
@@ -303,6 +428,60 @@ function _align_given_tokens(short::Vector{String}, long::Vector{String})
 end
 
 """
+    _surname_typo_score(content_a::Vector{String}, content_b::Vector{String}) -> Float64
+
+Typo/spelling-variant tolerance for a surname -- the fuzzy fallback `surname` falls back to when
+the surname content isn't EXACTLY equal on both sides. Takes FLATTENED, connector-free content
+(see [`_surname_content`](@ref) -- NOT the canonical, possibly-hyphenated form
+[`_split_given_surname`](@ref) returns). Scores the PATERNAL word (`content[1]`) and the MATERNAL
+remainder (`content[2:end]`, joined) SEPARATELY, then takes their MINIMUM -- NOT one score over
+the whole phrase joined together.
+
+**Found live, fixed 2026-09-07: joining the whole surname into one phrase before scoring lets a
+long SHARED token mask a real difference in the other one.** Once the paternal-surname-absorption
+fix made a genuine 2-token surname the norm, two DIFFERENT people who happen to share one of the
+two tokens started scoring a deceptively high `_qgram_jaccard` over the joined phrase -- confirmed
+live on the real 10-repo corpus: `"MIGUEL ANGEL RODRIGUEZ RODRIGUEZ"` (paternal `"rodriguez"`,
+maternal `"rodriguez"`) against the unrelated `"MIGUEL ANGEL SANCHEZ RODRIGUEZ"` (paternal
+`"sanchez"`, maternal `"rodriguez"`) shares the ENTIRE maternal word `"rodriguez"` (9 letters)
+against only a 7-letter difference in the paternal token, so `_qgram_jaccard("rodriguez rodriguez",
+"sanchez rodriguez")` scores well above this module's `0.5` phase-1 bar despite the two people's
+real (paternal) surnames being completely different -- introduced 26 new false positives against a
+mined ground truth that weren't there before the paternal-surname fix. Scoring paternal and
+maternal separately and taking the MINIMUM means a mismatch in EITHER position drags the whole
+score down regardless of how well the other one matches, exactly mirroring how
+[`_name_cluster_contradiction`](@ref) already treats a per-position given-name mismatch as decisive
+rather than something an aggregate average can launder away.
+
+**Operates on FLATTENED content, not the canonical hyphenated form, for a second reason found live
+2026-09-07:** comparing canonical forms directly breaks exactly the connector-omission variance
+real records have -- `["milian-y-avila"]` (one atomic element) against `["milian","avila"]` (the
+same surname, "y" just not written out) have different SHAPES, so a positional paternal/maternal
+split over the canonical elements themselves scored this pair `0.0` (worse than before the
+canonical form existed at all). Flattening both to `["milian","avila"]` first makes them
+comparable regardless of which one spelled out the connector.
+
+When one side has no maternal component at all (`length(content) == 1`) and the other does, the
+comparison here is asymmetric (empty vs non-empty) and scores `0.0` for that half -- this is
+`_surname_typo`'s territory, not `trunc`'s: a genuine ONE-paternal-word-only truncation is caught
+separately by `trunc` (via matching `content[1]`s directly) before this function's result is even
+consulted (`surname = max(surname_exact, trunc, surname_typo)`), so this function returning `0.0`
+for that shape doesn't cost anything already covered elsewhere.
+"""
+function _surname_typo_score(content_a::Vector{String}, content_b::Vector{String})
+    paternal_score = _qgram_jaccard(content_a[1], content_b[1])
+    maternal_a, maternal_b = @view(content_a[2:end]), @view(content_b[2:end])
+    maternal_score = if isempty(maternal_a) && isempty(maternal_b)
+        1.0
+    elseif isempty(maternal_a) || isempty(maternal_b)
+        0.0
+    else
+        _qgram_jaccard(join(maternal_a, " "), join(maternal_b, " "))
+    end
+    return min(paternal_score, maternal_score)
+end
+
+"""
     _is_garbage_name(nm::AbstractString) -> Bool
 
 True for a raw "name" that's actually a bare URL/ORCID literal or digit string — TextSearch's
@@ -322,8 +501,9 @@ replace [`_plausibly_same_person`](@ref), which keeps doing its own, different j
 *content*-similarity candidates in [`compute_similarity_merges`](@ref).
 
 `surname`: exact match, truncation-aware (a full "Nombre ApellidoPaterno ApellidoMaterno" record's
-paternal surname against another record's single, truncated surname), or q-gram typo-tolerant
-score, for the (possibly compound, see [`_surname_span`](@ref)) surname. `match`: mean per-token
+PATERNAL surname -- the first FLATTENED content word, see [`_surname_content`](@ref) -- against
+another record's single, truncated surname, i.e. one side dropped its maternal surname entirely),
+or q-gram typo-tolerant score, for the (possibly compound) surname. `match`: mean per-token
 alignment score ([`_align_given_tokens`](@ref)) of the SHORTER given-name list — generous to
 truncation, since extra tokens on the longer side never enter the denominator. `mismatch_frac`:
 fraction of the shorter given-name list's tokens whose best partner scored below `0.3` — a
@@ -342,18 +522,26 @@ function _name_match_score(name_a::AbstractString, name_b::AbstractString)
     toks_a, toks_b = _qgram_name_tokens(name_a), _qgram_name_tokens(name_b)
     (isempty(toks_a) || isempty(toks_b)) &&
         return (match=0.0, mismatch_frac=1.0, surname=0.0, pairs=Tuple{String,String,Float64}[])
-    span_a, span_b = _surname_span(toks_a), _surname_span(toks_b)
-    surname_a, surname_b = toks_a[span_a], toks_b[span_b]  # possibly-compound surname, as a token vector
-    given_a, given_b = toks_a[1:first(span_a)-1], toks_b[1:first(span_b)-1]
+    split_a, split_b = _split_given_surname(toks_a), _split_given_surname(toks_b)
+    given_a, given_b = split_a.given, split_b.given
+    content_a, content_b = _surname_content(split_a.surname), _surname_content(split_b.surname)
     valid_a = length(toks_a[end]) >= 2  # garbage guard: a degenerate single-char surname head
     valid_b = length(toks_b[end]) >= 2  # (e.g. a digit-run normalized to "0") must never count as a match
-    surname_exact = (valid_a && valid_b && surname_a == surname_b) ? 1.0 : 0.0
-    trunc = 0.0
-    length(given_a) == 1 && length(surname_a) == 1 && length(given_b) >= 1 && valid_a &&
-        surname_a[1] == given_b[end] && (trunc = 1.0)
-    length(given_b) == 1 && length(surname_b) == 1 && length(given_a) >= 1 && valid_b &&
-        surname_b[1] == given_a[end] && (trunc = 1.0)
-    surname_typo = (valid_a && valid_b) ? _qgram_jaccard(join(surname_a, " "), join(surname_b, " ")) : 0.0
+    surname_exact = (valid_a && valid_b && content_a == content_b) ? 1.0 : 0.0
+    # a SHORT surname (length 1 -- no maternal recorded at all, not a specific different one) is a
+    # truncation of a longer one iff its word matches EITHER end of the longer side's compound
+    # content -- the paternal position (content[1], the common case: maternal was dropped) OR the
+    # maternal/tail position (content[end]). The second arm matters because paternal-surname
+    # absorption cannot always tell a real paternal surname from an ordinary compound GIVEN name
+    # from token position alone (e.g. "Allyson Lucinda Benton" -- "Lucinda" absorbed as if it were
+    # a paternal surname candidate, alongside the real surname "Benton"); checking both ends
+    # recovers the truncation match via whichever end happens to hold the name that's actually
+    # shared, without having to resolve that ambiguity. Two fully-specified surnames of length >= 2
+    # each never hit this: a shared word at either end with a genuinely different rest is two
+    # different people, not a truncation, and is left to surname_typo's fuzzy score instead.
+    trunc = (valid_a && valid_b && (length(content_a) == 1 || length(content_b) == 1) &&
+             (content_a[1] == content_b[1] || content_a[end] == content_b[end])) ? 1.0 : 0.0
+    surname_typo = (valid_a && valid_b) ? _surname_typo_score(content_a, content_b) : 0.0
     surname = max(surname_exact, trunc, surname_typo)
     if isempty(given_a) && isempty(given_b)
         return (match=1.0, mismatch_frac=0.0, surname=surname, pairs=Tuple{String,String,Float64}[])
@@ -373,25 +561,29 @@ end
 Candidate-generation buckets for [`compute_name_clusters`](@ref) (efficiency only, not a
 correctness decision — the actual connect-or-not decision is [`_name_match_score`](@ref), an
 absolute fixed-threshold score unaffected by what else shares a bucket; see
-[`compute_name_clusters`](@ref)'s docstring for why that distinction matters). Two keys: (1) the
-literal last token — always correct for a record's own surname whether or not there's any
-paternal/maternal ambiguity (keeps an ordinary "First Middle Last" person, e.g. `"Allyson Lucinda
-Benton"`, correctly bucketed under `"benton"` — an earlier version of this function used ONLY a
-paternal-surname-candidate key and wrongly bucketed such names under `"lucinda"` instead, mistaking
-an ordinary middle given name for a paternal surname); and (2) the paternal-surname CANDIDATE
-(`given_and_paternal[end]`, when there are 2+ tokens before the surname span) — needed so a full
-"Nombre ApellidoPaterno ApellidoMaterno" record and its truncated single-surname form still share a
-bucket even when the maternal side is itself a compound (`"Torres De La Cruz"` — bucketing only by
-the literal last token `"cruz"` would never match a truncated `"Torres"` record; see
-[`_surname_span`](@ref)).
+[`compute_name_clusters`](@ref)'s docstring for why that distinction matters). Built from
+[`_surname_content`](@ref) (FLATTENED, connector-free content -- not the canonical, possibly
+hyphenated form [`_split_given_surname`](@ref) returns): two keys, (1) the last content word —
+always correct for a record's own surname (keeps an ordinary "First Middle Last" person, e.g.
+`"Allyson Lucinda Benton"`, correctly bucketed under `"benton"` regardless of whether `"Lucinda"`
+got absorbed as a paternal-surname candidate or not); and (2) the first content word (when there
+are 2+) — needed so a full "Nombre ApellidoPaterno ApellidoMaterno" record and its truncated
+single-surname form still share a bucket even when the maternal side is itself a compound
+(`"Torres De La Cruz"` — bucketing only by the last content word `"cruz"` would never match a
+truncated `"Torres"` record). Using flattened content rather than the canonical form here is
+deliberate: it also buckets a plain `"Cruz"` together with a compound `"De La Cruz"` even when
+those particle words are missing/typo'd on one side, at the cost of a candidate pair
+[`_name_match_score`](@ref) may still reject -- exactly the kind of over-inclusive-but-cheap net
+this function already exists for.
 """
 function _name_cluster_keys(raw::AbstractString)
     toks = _qgram_name_tokens(raw)
     isempty(toks) && return String[]
-    span = _surname_span(toks)
-    given_and_paternal = toks[1:first(span)-1]
-    keys = [toks[end]]
-    length(given_and_paternal) >= 2 && push!(keys, given_and_paternal[end])
+    (; surname) = _split_given_surname(toks)
+    content = _surname_content(surname)
+    isempty(content) && return String[]
+    keys = [content[end]]
+    length(content) >= 2 && push!(keys, content[1])
     return unique(keys)
 end
 

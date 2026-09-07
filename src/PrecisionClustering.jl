@@ -12,47 +12,64 @@ export correct_name, precision_cluster_keys, precision_match_score, precision_ed
 
 const PRECISION_MATCH_THRESHOLD = 0.9
 const PRECISION_SURNAME_THRESHOLD = 0.9
-const PRECISION_STRICT_SURNAME_THRESHOLD = 0.5   # matches AC._name_cluster_strict_compatible
-const PRECISION_STRICT_MATCH_THRESHOLD = 0.9     # matches AC._name_cluster_strict_compatible
+# Deliberately EQUAL to PRECISION_SURNAME_THRESHOLD/PRECISION_MATCH_THRESHOLD above, not borrowed
+# from AC._name_cluster_strict_compatible's separately-validated 0.5/0.9 (a q-gram-scored pair,
+# validated for PRODUCTION's recall-then-oracle design, where the oracle is deliberately more
+# permissive than phase-1). Found live: a 0.5 surname bar here let precision_split RE-MERGE a pair
+# precision_contradiction had just flagged (surname=0.625 under :damerau -- below the 0.9 connect
+# bar that triggered the flag, but above a 0.5 re-merge bar) -- the exact same
+# flag-then-silently-undo bug already fixed once for the per-position floor (see
+# precision_strict_compatible's docstring), recurring here via a second, independent threshold gap.
+# This module's whole design is precision-first; there is no reason its OWN reconnection test
+# should be looser than its OWN connect test.
+const PRECISION_STRICT_SURNAME_THRESHOLD = PRECISION_SURNAME_THRESHOLD
+const PRECISION_STRICT_MATCH_THRESHOLD = PRECISION_MATCH_THRESHOLD
 const PRECISION_CONTRADICTION_FLOOR = 0.2        # matches AC._NAME_CLUSTER_CONTRADICTION_FLOOR
 const PRECISION_SCORE_METHOD = :damerau
 
 """
     correct_name(vocab, raw; method=:damerau) -> (; given::Vector{String}, surname::Vector{String})
 
-Splits `raw` into given/surname tokens using the same `AC._surname_span` logic as production
-clustering, then corrects each token against `vocab` (see `NameVocabulary.correct_token`) --
-EXCEPT surname particles (`AC._SURNAME_PARTICLES`, e.g. "de"/"la"), which pass through unchanged
-(they were never in the vocabulary to begin with, see `NameVocabulary.build_name_vocabulary`).
-Bare initials also pass through unchanged (`correct_token` is a no-op on them by construction) --
-this stage never fabricates a full word out of an initial, it only fixes typos in words that are
-ALREADY full words. `method` default matches `NameVocabulary.correct_token`'s own (validated
-against the 93-repo vocabulary artifact, see that function's docstring) rather than being pinned
-independently -- keep the two in sync if either one's default ever changes again.
+Splits `raw` into given/surname tokens using the same `AC._split_given_surname` logic as production
+clustering, then corrects each REAL content word against `vocab` (see `NameVocabulary.correct_token`).
+`surname` keeps `AC._split_given_surname`'s CANONICAL form -- a traditionally-atomic compound
+(particle-led like `"de-la-cruz"`, or `"y"`-joined like `"milian-y-avila"`) stays ONE hyphenated
+element, with each of its REAL words corrected individually and the connectors (`AC._SURNAME_PARTICLES`,
+`"y"`) passed through unchanged (they were never in the vocabulary to begin with, see
+`NameVocabulary.build_name_vocabulary`), then rejoined with the same hyphens. Bare initials also
+pass through unchanged (`correct_token` is a no-op on them by construction) -- this stage never
+fabricates a full word out of an initial, it only fixes typos in words that are ALREADY full words.
+`method` default matches `NameVocabulary.correct_token`'s own (validated against the 93-repo
+vocabulary artifact, see that function's docstring) rather than being pinned independently -- keep
+the two in sync if either one's default ever changes again.
 """
 function correct_name(vocab::Vocabulary, raw::AbstractString; method::Symbol=:damerau)
     toks = AC._qgram_name_tokens(raw)
     isempty(toks) && return (given=String[], surname=String[])
-    span = AC._surname_span(toks)
-    given = [first(correct_token(vocab, t, :given; method)) for t in toks[1:first(span)-1]]
-    surname = [t in AC._SURNAME_PARTICLES ? t : first(correct_token(vocab, t, :surname; method))
-               for t in toks[span]]
+    gs = AC._split_given_surname(toks)
+    given_toks, surname_toks = gs.given, gs.surname
+    given = [first(correct_token(vocab, t, :given; method)) for t in given_toks]
+    _correct_word(w) = (w in AC._SURNAME_PARTICLES || w == "y") ? w : first(correct_token(vocab, w, :surname; method))
+    surname = [occursin('-', s) ? join(_correct_word.(split(s, "-")), "-") : _correct_word(s)
+               for s in surname_toks]
     return (given=given, surname=surname)
 end
 
 """
     precision_cluster_keys(corrected) -> Vector{String}
 
-Candidate-bucket keys for [`compute_precision_clusters`](@ref), mirroring
-`AC._name_cluster_keys`'s two-key scheme (literal surname head + paternal-surname candidate for
-compound-surname truncation) but sourced from an ALREADY-CORRECTED `(given, surname)` pair (see
-[`correct_name`](@ref)) instead of re-tokenizing a raw string -- correction only happens once per
-name, not once per bucket-key computation.
+Candidate-bucket keys for [`compute_precision_clusters`](@ref), mirroring `AC._name_cluster_keys`'s
+two-key scheme (last content word + first content word, for compound-surname truncation -- see that
+function's docstring for why FLATTENED content, not the canonical hyphenated form, is used here)
+but sourced from an ALREADY-CORRECTED `(given, surname)` pair (see [`correct_name`](@ref)) instead
+of re-tokenizing a raw string -- correction only happens once per name, not once per bucket-key
+computation.
 """
 function precision_cluster_keys(corrected)
-    isempty(corrected.surname) && return String[]
-    keys = [corrected.surname[end]]
-    length(corrected.given) >= 2 && push!(keys, corrected.given[end])
+    content = AC._surname_content(corrected.surname)
+    isempty(content) && return String[]
+    keys = [content[end]]
+    length(content) >= 2 && push!(keys, content[1])
     return unique(keys)
 end
 
@@ -97,6 +114,31 @@ function _precision_token_score(a::AbstractString, b::AbstractString; method::Sy
 end
 
 """
+    _surname_typo_score(content_a, content_b; method=PRECISION_SCORE_METHOD, dl=_DAMERAU) -> Float64
+
+Mirrors `AC._surname_typo_score` exactly (see that function's docstring for the full rationale,
+the concrete "MIGUEL ANGEL RODRIGUEZ RODRIGUEZ"/"MIGUEL ANGEL SANCHEZ RODRIGUEZ" false-positive it
+fixes, and why it takes FLATTENED content -- `AC._surname_content` -- rather than the canonical,
+possibly-hyphenated form [`correct_name`](@ref) returns): scores the PATERNAL word and the MATERNAL
+remainder SEPARATELY via [`_precision_token_score`](@ref), then takes their MINIMUM, instead of one
+score over the whole surname joined into a single phrase -- a long shared word (typically the
+maternal one) must never mask a real difference in the other.
+"""
+function _surname_typo_score(content_a::Vector{String}, content_b::Vector{String};
+                              method::Symbol=PRECISION_SCORE_METHOD, dl=_DAMERAU)
+    paternal_score = _precision_token_score(content_a[1], content_b[1]; method, dl)
+    maternal_a, maternal_b = @view(content_a[2:end]), @view(content_b[2:end])
+    maternal_score = if isempty(maternal_a) && isempty(maternal_b)
+        1.0
+    elseif isempty(maternal_a) || isempty(maternal_b)
+        0.0
+    else
+        _precision_token_score(join(maternal_a, " "), join(maternal_b, " "); method, dl)
+    end
+    return min(paternal_score, maternal_score)
+end
+
+"""
     precision_match_score(corrected_a, corrected_b; method=PRECISION_SCORE_METHOD, dl=_DAMERAU) -> (; match, surname, pairs)
 
 Precision-oriented analogue of `AC._name_match_score`, operating on pre-corrected `(given,
@@ -115,18 +157,18 @@ computing a full string-similarity score there anyway (as an earlier version of 
 unconditionally) was pure wasted work in exactly the hot loop that matters most.
 """
 function precision_match_score(corrected_a, corrected_b; method::Symbol=PRECISION_SCORE_METHOD, dl=_DAMERAU)
-    surname_a, surname_b = corrected_a.surname, corrected_b.surname
     given_a, given_b = corrected_a.given, corrected_b.given
-    valid_a = !isempty(surname_a) && length(surname_a[end]) >= 2
-    valid_b = !isempty(surname_b) && length(surname_b[end]) >= 2
-    surname_exact = (valid_a && valid_b && surname_a == surname_b) ? 1.0 : 0.0
-    trunc = 0.0
-    length(given_a) == 1 && length(surname_a) == 1 && length(given_b) >= 1 && valid_a &&
-        surname_a[1] == given_b[end] && (trunc = 1.0)
-    length(given_b) == 1 && length(surname_b) == 1 && length(given_a) >= 1 && valid_b &&
-        surname_b[1] == given_a[end] && (trunc = 1.0)
+    content_a, content_b = AC._surname_content(corrected_a.surname), AC._surname_content(corrected_b.surname)
+    valid_a = !isempty(content_a) && length(content_a[end]) >= 2
+    valid_b = !isempty(content_b) && length(content_b[end]) >= 2
+    surname_exact = (valid_a && valid_b && content_a == content_b) ? 1.0 : 0.0
+    # a SHORT surname (length 1) is a truncation of a longer one iff its word matches EITHER end
+    # of the longer side's compound content -- mirrors AC._name_match_score exactly, see that
+    # function's docstring for why both ends matter, not just the paternal position.
+    trunc = (valid_a && valid_b && (length(content_a) == 1 || length(content_b) == 1) &&
+             (content_a[1] == content_b[1] || content_a[end] == content_b[end])) ? 1.0 : 0.0
     surname_typo = (surname_exact < 1.0 && valid_a && valid_b) ?
-        _precision_token_score(join(surname_a, " "), join(surname_b, " "); method, dl) : 0.0
+        _surname_typo_score(content_a, content_b; method, dl) : 0.0
     surname = max(surname_exact, trunc, surname_typo)
 
     if isempty(given_a) && isempty(given_b)
@@ -318,26 +360,46 @@ SOME tolerance here, or it would never connect to anything).
 Garbage names (`AC._is_garbage_name`) are never bucketed -- they fall through to singleton groups
 via the union-find default, same guard as `AC.compute_name_clusters`.
 
-**The within-bucket connect phase runs in parallel via `SimilaritySearch.@BATCHES`** (this
-project's parallelization idiom, since it already depends on that package for it -- see
-`@BATCHES`'s own docstring for the full mechanics). Each batch mints its OWN
-`Dist.Seqs.DamerauLevenshtein()` instance in `@BEGINBATCH` (rather than sharing [`_DAMERAU`](@ref)
-across threads) and appends `(idx_a, idx_b)` pairs to a `@batchid()`-indexed edge list -- `@batchid()`
-rather than `Threads.threadid()` specifically because it is stable and disjoint under EVERY
-scheduler (`Threads.threadid()` can alias/migrate under the non-`:static` ones). The union-find
-itself stays sequential, applied AFTER all batches join: `parent` is plain, unsynchronized mutable
-state, so mutating it from multiple concurrent batches would race -- collecting edges in parallel
-and unioning them in one single-threaded pass afterward sidesteps that entirely, at the cost of a
-small (empirically ~19s -> ~7s, 16 threads, real 10-repo corpus) but real win over doing the O(bucket²)
-comparisons themselves sequentially. `precision_contradiction`/`precision_split` afterward stay
-sequential -- they are not the bottleneck this addressed.
+**The within-bucket connect phase runs in parallel via `SimilaritySearch.@BATCHES`, with a HYBRID
+strategy by bucket size** (this project's parallelization idiom, since it already depends on that
+package for it -- see `@BATCHES`'s own docstring for the full mechanics). Real corpora have a
+Pareto-skewed bucket-size distribution (a handful of common-surname buckets in the thousands,
+everything else small) -- lumping a giant bucket into the same `@LOOP` as thousands of tiny ones
+would let it dominate whichever single batch happens to draw it, since `@BATCHES` only parallelizes
+ACROSS loop iterations, never within one iteration's own body. So buckets below
+`large_bucket_threshold` and buckets at or above it are handled by two DIFFERENT `@BATCHES` calls:
+
+- **Small buckets**: one `@LOOP` over ALL of them, batched and run concurrently exactly as
+  before -- many independent, individually-cheap units, each bucket's own O(size²) comparisons
+  done by a plain sequential nested loop inside its batch (no further parallelism needed per unit).
+- **Large buckets**: processed ONE AT A TIME (never two giant buckets competing for threads
+  simultaneously), but each one's OWN O(size²) inner loop is itself what gets split across
+  batches/threads (`@LOOP for i in 1:size-1`, each `i` owning row `j in (i+1):size` -- still no two
+  batches ever touch the same `(i,j)` pair, so this needs no more synchronization than the small-
+  bucket case).
+
+Both cases mint their OWN `Dist.Seqs.DamerauLevenshtein()` instance per batch in `@BEGINBATCH`
+(rather than sharing [`_DAMERAU`](@ref) across threads) and append `(idx_a, idx_b)` pairs to a
+`@batchid()`-indexed edge list -- `@batchid()` rather than `Threads.threadid()` specifically
+because it is stable and disjoint under EVERY scheduler (`Threads.threadid()` can alias/migrate
+under the non-`:static` ones). The union-find itself stays sequential, applied AFTER every batch of
+both kinds joins: `parent` is plain, unsynchronized mutable state, so mutating it from multiple
+concurrent batches would race -- collecting edges in parallel and unioning them in one
+single-threaded pass afterward sidesteps that entirely, at the cost of a small but real win over
+doing the O(bucket²) comparisons themselves sequentially (empirically ~19s -> ~7s, 16 threads, real
+10-repo corpus, before this size-based split -- that corpus has no bucket anywhere near
+`large_bucket_threshold`, so the split itself is not yet re-measured there; it targets the
+93-repo-scale buckets that stalled an earlier, non-hybrid attempt at parallelizing this same loop).
+`precision_contradiction`/`precision_split` afterward stay sequential -- they are not the
+bottleneck this addressed.
 """
 function compute_precision_clusters(raw_names::Vector{String}, vocab::Vocabulary;
                                      correct_method::Symbol=:damerau,
                                      method::Symbol=PRECISION_SCORE_METHOD,
                                      match_threshold::Float64=PRECISION_MATCH_THRESHOLD,
                                      surname_threshold::Float64=PRECISION_SURNAME_THRESHOLD,
-                                     contradiction_floor::Float64=PRECISION_CONTRADICTION_FLOOR)
+                                     contradiction_floor::Float64=PRECISION_CONTRADICTION_FLOOR,
+                                     large_bucket_threshold::Int=200)
     n = length(raw_names)
     n == 0 && return Vector{Vector{String}}()
     idx = Dict(nm => i for (i, nm) in enumerate(raw_names))
@@ -350,24 +412,57 @@ function compute_precision_clusters(raw_names::Vector{String}, vocab::Vocabulary
             push!(get!(candidate_buckets, k, String[]), nm)
         end
     end
-    buckets = collect(values(candidate_buckets))
+    all_buckets = [unique(b) for b in values(candidate_buckets)]
+    filter!(b -> length(b) >= 2, all_buckets)
+    small_buckets = filter(b -> length(b) < large_bucket_threshold, all_buckets)
+    large_buckets = filter(b -> length(b) >= large_bucket_threshold, all_buckets)
 
-    minbatch = getminbatch(length(buckets))
-    per_batch_edges = Vector{Vector{Tuple{Int,Int}}}()
-    @BATCHES minbatch begin
-        @BEGIN
-            per_batch_edges = [Tuple{Int,Int}[] for _ in 1:@nbatches()]
-        @BEGINBATCH
-            dl = Dist.Seqs.DamerauLevenshtein()
-            edges = per_batch_edges[@batchid()]
-        @LOOP for bi in eachindex(buckets)
-            bucket = unique(buckets[bi])
-            length(bucket) < 2 && continue
-            for i in 1:length(bucket), j in (i+1):length(bucket)
-                a, b = bucket[i], bucket[j]
-                precision_edge(corrected[a], corrected[b]; method, dl, match_threshold, surname_threshold) &&
-                    push!(edges, (idx[a], idx[b]))
+    edges = Tuple{Int,Int}[]
+
+    if !isempty(small_buckets)
+        minbatch = getminbatch(length(small_buckets))
+        per_batch_edges = Vector{Vector{Tuple{Int,Int}}}()
+        @BATCHES minbatch begin
+            @BEGIN
+                per_batch_edges = [Tuple{Int,Int}[] for _ in 1:@nbatches()]
+            @BEGINBATCH
+                dl = Dist.Seqs.DamerauLevenshtein()
+                bedges = per_batch_edges[@batchid()]
+            @LOOP for bi in eachindex(small_buckets)
+                bucket = small_buckets[bi]
+                for i in 1:length(bucket), j in (i+1):length(bucket)
+                    a, b = bucket[i], bucket[j]
+                    precision_edge(corrected[a], corrected[b]; method, dl, match_threshold, surname_threshold) &&
+                        push!(bedges, (idx[a], idx[b]))
+                end
             end
+        end
+        for bedges in per_batch_edges
+            append!(edges, bedges)
+        end
+    end
+
+    for bucket in large_buckets
+        sz = length(bucket)
+        minbatch = getminbatch(sz - 1)
+        per_batch_edges = Vector{Vector{Tuple{Int,Int}}}()
+        @BATCHES minbatch begin
+            @BEGIN
+                per_batch_edges = [Tuple{Int,Int}[] for _ in 1:@nbatches()]
+            @BEGINBATCH
+                dl = Dist.Seqs.DamerauLevenshtein()
+                bedges = per_batch_edges[@batchid()]
+            @LOOP for i in 1:(sz-1)
+                a = bucket[i]
+                for j in (i+1):sz
+                    b = bucket[j]
+                    precision_edge(corrected[a], corrected[b]; method, dl, match_threshold, surname_threshold) &&
+                        push!(bedges, (idx[a], idx[b]))
+                end
+            end
+        end
+        for bedges in per_batch_edges
+            append!(edges, bedges)
         end
     end
 
@@ -383,7 +478,7 @@ function compute_precision_clusters(raw_names::Vector{String}, vocab::Vocabulary
         ra, rb = uf_find(a), uf_find(b)
         ra != rb && (parent[ra] = rb)
     end
-    for edges in per_batch_edges, (a, b) in edges
+    for (a, b) in edges
         uf_union!(a, b)
     end
 
