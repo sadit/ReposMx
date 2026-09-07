@@ -5,89 +5,163 @@ const AC = AuthorConsolidation
 
 export impute_candidates
 
+const IMPUTE_SURNAME_THRESHOLD = 0.9
+
 """
-    impute_candidates(groups::Vector{Vector{String}}) -> Vector{Vector{String}}
+    _impute_given_surname(nm::AbstractString) -> (given::Vector{String}, content::Vector{String})
+
+`nm`'s given-name tokens and FLATTENED (connector-free) surname content, via
+[`AC._split_given_surname`](@ref)/[`AC._surname_content`](@ref) — the same compound-aware split
+`PrecisionClustering` and production both use, so a group's surname bucket key here always agrees
+with the surname key precision clustering already assigned it.
+"""
+function _impute_given_surname(nm::AbstractString)
+    toks = AC._qgram_name_tokens(nm)
+    isempty(toks) && return (String[], String[])
+    gs = AC._split_given_surname(toks)
+    return (gs.given, AC._surname_content(gs.surname))
+end
+
+"""
+    _has_bare_initial(nm::AbstractString) -> Bool
+
+True if any given-name token of `nm` is a single character — the ONE case
+[`compute_precision_clusters`](@ref) structurally never connects on its own (it deliberately
+excludes the bare-initial shortcut), and therefore the only case worth spending this module's
+candidate-generation budget on (see [`impute_candidates`](@ref)'s docstring).
+"""
+function _has_bare_initial(nm::AbstractString)
+    given, _ = _impute_given_surname(nm)
+    any(t -> length(t) == 1, given)
+end
+
+"""
+    _impute_edge(name_a, name_b) -> Bool
+
+Purpose-built pairwise test for this module — replaces the earlier reused
+`AC._name_cluster_strict_compatible` (production's general-purpose test, surname>=0.5/match>=0.9).
+Two differences, both deliberate:
+
+1. **Surname bar raised to `$(IMPUTE_SURNAME_THRESHOLD)`** (precision clustering's own validated
+   bar, not production's looser `0.5`) — this module has no oracle downstream to catch a surname
+   that's merely "somewhat similar", so it shouldn't lean on a threshold calibrated for a design
+   that does.
+2. **Every aligned given-name position must be exact or a genuine bare-initial match (same first
+   letter) — checked per position, never via the averaged `match` score.** An averaged score can
+   launder a real mismatch at one position with a strong match at another; this function has no
+   downstream contradiction check to catch that the way `compute_name_clusters`'s oracle does, so
+   it must not create the ambiguity in the first place. Extra tokens on the longer side (never
+   entering [`AC._align_given_tokens`](@ref)'s pairs at all) are still, as always, never penalized.
+"""
+function _impute_edge(name_a::AbstractString, name_b::AbstractString)
+    r = AC._name_match_score(name_a, name_b)
+    r.surname >= IMPUTE_SURNAME_THRESHOLD || return false
+    for (ta, tb, _) in r.pairs
+        ta == tb && continue
+        (length(ta) == 1 && !isempty(tb) && ta[1] == first(tb)) && continue
+        (length(tb) == 1 && !isempty(ta) && tb[1] == first(ta)) && continue
+        return false
+    end
+    return true
+end
+
+"""
+    _coauthor_groups(nm, by_name, name_to_group) -> Set{Int}
+
+Maps `nm`'s raw `coauthors` (literal strings from `Corpus.build_authors_index_data`, themselves
+subject to every name-spelling issue this whole module exists to handle) through `name_to_group` --
+normalizing coauthor IDENTITY through the SAME clustering rather than comparing raw coauthor
+strings directly. A coauthor name absent from `name_to_group` (garbage, or simply outside this
+run's corpus slice) is silently skipped, not an error.
+"""
+function _coauthor_groups(nm::AbstractString, by_name::AbstractDict, name_to_group::AbstractDict)
+    haskey(by_name, nm) || return Set{Int}()
+    s = Set{Int}()
+    for co in get(by_name[nm], "coauthors", String[])
+        gi = get(name_to_group, co, nothing)
+        gi === nothing || push!(s, gi)
+    end
+    return s
+end
+
+"""
+    impute_candidates(groups::Vector{Vector{String}}, by_name::AbstractDict) -> Vector{Vector{String}}
 
 Imputation heuristic for the recall stage that follows precision clustering (e.g.
-`PrecisionClustering.compute_precision_clusters`, which defers anything initials-only or below its
-0.9 precision bar). Finds sets of DIFFERENT final groups that are plausibly the same person under
-PRODUCTION's own strict reconnection test, [`AC._name_cluster_strict_compatible`](@ref) (surname
-`>= 0.5`, match `>= 0.9`, INCLUDING the bare-initial shortcut precision clustering deliberately
-excludes) -- already validated against a mined ground truth (FP~=0.14%/FN~=0.14%, per that
-function's own docstring), so this reuses proven production evidence rather than inventing a new
-scoring function. This specifically recovers the case precision clustering can never handle on its
-own: an initials-only variant of a full name (e.g. `"J. Contreras Perez"` vs `"Juan Contreras
-Perez"`) -- `AC._name_cluster_strict_compatible`'s bare-initial shortcut scores that pair a perfect
-match, something no initial-blind scoring ever can.
+[`PrecisionClustering.compute_precision_clusters`](@ref)), recovering the ONE case it structurally
+can't decide on its own: a given name reduced to a bare initial (e.g. `"J. Contreras Perez"` vs
+`"Juan Contreras Perez"`). `by_name` is the raw profile dict (as built from
+`Corpus.build_authors_index_data`, keyed by raw name) -- needed for its `"coauthors"` field, see
+below. This is a from-scratch redesign (2026-09-07) of an earlier clique-based version; see this
+project's own memory/design notes for the measurements that motivated it (candidate volume was the
+real cost driver, not per-pair cost; the clique requirement over-corrected for an ambiguity that
+only actually needs a MUCH more targeted fix).
 
-Candidate buckets come from [`AC._name_cluster_keys`](@ref) over every member of every group (the
-SAME bucketing production clustering itself uses) -- two groups are only ever compared if some
-member of each shares a bucket key, so this stays cheap at real corpus scale. Garbage names/groups
-never become candidates: [`AC._is_garbage_name`](@ref) already excludes them from bucket
-assignment (same guard `AC._name_cluster_keys`'s own caller in production applies).
+## Candidate generation: skip the redundant majority
 
-## Why pairwise-only proposals (the first version of this function) are NOT safe here
+Two groups sharing a bucket key ([`AC._name_cluster_keys`](@ref)) are only ever compared when AT
+LEAST ONE has a bare initial ([`_has_bare_initial`](@ref)) -- two "full name" groups are NEVER
+compared here, since [`compute_precision_clusters`](@ref) already decided that pair with its own
+validated `0.9`/`0.9` threshold; re-deciding it here with a DIFFERENT (and, in the discarded
+version, looser) test added cost without adding information. Measured on the real 20-repo corpus:
+this was ~98% of candidate-pair volume (5.57M of ~5.57M pairs, only 1,293 ever compatible) for
+exactly zero effect on the mined-ground-truth `hard_good` rate.
 
-An earlier version of this function proposed EVERY pairwise-compatible pair of groups independently
-and left transitive closure to whoever consumed the proposals. That is unsound for THIS specific
-consumer: [`AC.compute_groups`](@ref) treats every `impute` entry as an unconditional forced edge,
-identical to a human-curated `merge` -- plain BFS, never re-checked by the oracle. Concretely, on
-the real 10-repo corpus, an ambiguous bare-initial-only group like `"A. Barrios"`/`"Barrios, A."`
-independently strict-matches BOTH `"ABELARDO NUÑEZ BARRIOS"` and `"Alberto Salazar Barrios"` --
-each pairwise proposal is individually defensible (the initial really could be either), but a plain
-union/BFS over both proposals silently bridges two DIFFERENT real people through the ambiguous
-node. This is the EXACT bare-initial-bridging failure mode that motivated replacing `initials_key`
-and then excluding bare-initial matching from `PrecisionClustering` in the first place -- just
-recurring one layer up, between GROUPS instead of raw names. Confirmed live: pairwise-only
-proposals introduced 97 new false-positive pairs against the mined "bad" ground truth (10-repo
-corpus), 69 of which were pure transitive-bridging artifacts like the Barrios case (also seen with
-`"A. F. Ponce"` bridging `"ADRIANA FUENTES PONCE"`/`"Aldo Ponce"`, `"J. Fernando Ayala-Zavala"`
-bridging `"JESUS FERNANDO AYALA ZAVALA"`/`"Julio Zavala"`, and `"C. A. Brizuela Rodríguez"`
-bridging `"CARLOS ALBERTO BRIZUELA RODRIGUEZ"`/`"Centeotl Aragón Rodríguez"`).
+## Per-edge test: [`_impute_edge`](@ref), always required, no exceptions
 
-## The fix: require the merged supergroup to be a CLIQUE, not just chain-connected
+## Ambiguous bridges: detected structurally, not by counting initials
 
-Build the full pairwise-compatibility graph over candidate groups (an edge only where
-`_name_cluster_strict_compatible` holds for EVERY cross-pair of raw names between the two groups),
-take its connected components, and only emit a proposal for a component that is a full clique --
-every pair of groups within it directly compatible, not merely reachable through a chain. This
-rules out ambiguous bridges by construction: `"A. Barrios"` cannot be in the same clique as both
-Abelardo's and Alberto's groups, because THOSE two are not compatible with each other. A component
-that is not a clique is dropped ENTIRELY (no proposal at all for any group in it) rather than
-guessing which side the ambiguous node belongs to -- consistent with this whole pipeline's
-precision-first philosophy, and deliberately more conservative than production's own
-`_name_cluster_split` (which greedily assigns an ambiguous node to whichever sub-cluster it meets
-first): `impute`'s edges get no further oracle review once written, unlike `_name_cluster_split`'s
-output, so there is no second chance to catch a wrong greedy guess here.
+The failure mode a clique requirement guarded against (found live on the real 10-repo corpus): a
+bare-initial-only group independently satisfies [`_impute_edge`](@ref) against BOTH of two
+DIFFERENT real people (e.g. `"A. Barrios"` against `"ABELARDO NUÑEZ BARRIOS"` AND `"Alberto Salazar
+Barrios"`) -- each edge is individually unremarkable (only one aligned position, resolved by a
+single bare initial), so nothing about counting how many initials align in ONE edge catches this;
+the actual signature is that the bridge node's two neighbors do NOT satisfy
+[`_impute_edge`](@ref) with EACH OTHER. So: after building the full compatibility graph, an edge
+`(a, b)` is marked risky iff `a` has some OTHER neighbor `c` incompatible with `b`, or `b` has some
+OTHER neighbor `c` incompatible with `a` (checked directly via [`_impute_edge`](@ref) between `b`/`c`
+or `a`/`c` even when that specific pair was never itself a name-based candidate -- two "full name"
+groups that only look related through a shared ambiguous bridge were never compared by candidate
+generation above, so this is the one place that comparison has to happen). This is deliberately
+LOCAL (a node's own immediate neighborhood), not a global clique check over an entire component --
+cost stays proportional to how many groups a bare-initial form plausibly matches, not to component
+size, and a genuine multi-hop truncation chain (e.g. a prolific author's name recorded as
+`"Eric Tellez"`, `"Eric S. Tellez"`, and `"Eric Sadit Tellez Avila"` across different records) is
+never penalized just for not being a full clique, AS LONG AS its own links don't conflict with each
+other.
 
-Re-validated on the real 10-repo corpus after this fix: proposals dropped from 252 (pairwise-only)
-to 122 (33 ambiguous components rejected outright, ranging in size from 3 to 12 groups -- a real,
-measured recall cost, not free), while new false positives against the mined "bad" set dropped from
-97 to 27 -- and every one of those 27 residual "hits" was confirmed BY HAND to be a genuine
-same-person match (full-name/abbreviation spelling variants, e.g. `"CLARA ELIZABETH GALINDO
-SANCHEZ"` / `"Clara E. Galindo-Sánchez"`) mislabeled as "bad" by `mine_ground_truth.jl`'s own
-auto-labeler, exactly the "known residual label noise" class that script's docstring already warns
-about -- i.e. zero remaining GENUINE false positives found at 10-repo scale. As a side effect, the
-clique requirement also rejected a real (if rare) production-inherited scoring bug found live during
-this validation: `"DANIEL M. GARCIA LOPEZ"` vs `"DANIEL MARTINEZ LOPEZ"` scores a perfect
-`_name_cluster_strict_compatible` match only because `_surname_span` misparses the first name's
-surname as just `"lopez"` (leaving `"garcia"` stranded as a given-name-position token), letting the
-bare initial `"m"` in that stranded run match `"martinez"` via the bare-initial shortcut -- two
-different people, saved only because this pair also happened to sit in a non-clique component with
-a third group.
+A risky edge is kept only if its two groups share at least one COAUTHOR-GROUP in common (see
+[`_coauthor_groups`](@ref)) -- otherwise dropped (just that edge, never the rest of the graph).
+**Deliberately NOT gated on shared `institutions`/publisher**: repo/publisher metadata is a known
+noisy signal on this corpus (the same paper is sometimes captured more than once, by different
+people, into different repos -- a known source of duplicate-paper errors tracked separately), so an
+institution mismatch must never be allowed to reject an otherwise-good name match; shared
+coauthorship, normalized through this run's own clustering, is trusted instead. A risky edge with no
+coauthor corroboration is simply dropped, same as a merely-uncorroborated edge always was -- never a
+reason to also discard the rest of either endpoint's component the way the old clique check did.
 
-**Known, deliberately-not-yet-tackled refinement**: a non-clique component is currently dropped
-WHOLESALE, even when most of its groups (excluding the one ambiguous bridge) would form a valid
-sub-clique on their own. Recovering that sub-clique (rather than discarding everyone in the
-component) is the natural next lever if a future corpus run shows real merges being missed because
-of one noisy member -- deliberately left alone for now rather than guessing at the right
-partitioning rule without evidence it's needed.
+## No clique requirement: plain connected components (union-find)
 
-Returns raw-name groups to merge (each proposal is every source group in one clique, flattened
+Final grouping is the connected components of whatever edges survive the risky-edge filter above --
+deliberately NOT requiring the resulting component to be a clique. A person's name variants are a
+CHAIN relationship (`"Eric S. Tellez"` ~ `"Eric Tellez"` ~ `"Eric Sadit Tellez Avila"`), not
+necessarily a set of mutually-direct matches; the ambiguity a clique requirement was trying to catch
+is now caught locally (above), so requiring global pairwise agreement on top of that is pure
+over-conservatism, not extra safety.
+
+Returns raw-name groups to merge (each proposal is every source group in one component, flattened
 together) -- meant to be fed to [`AC.save_imputes`](@ref); this function only proposes, it never
 writes anything.
 """
-function impute_candidates(groups::Vector{Vector{String}})
+function impute_candidates(groups::Vector{Vector{String}}, by_name::AbstractDict)
+    n = length(groups)
+    name_to_group = Dict{String,Int}()
+    for (gi, g) in enumerate(groups), nm in g
+        name_to_group[nm] = gi
+    end
+
+    has_initial = [any(_has_bare_initial, g) for g in groups]
+
     buckets = Dict{String,Set{Int}}()
     for (gi, g) in enumerate(groups), nm in g
         AC._is_garbage_name(nm) && continue
@@ -100,41 +174,79 @@ function impute_candidates(groups::Vector{Vector{String}})
     for (_, gis) in buckets
         gis_v = collect(gis)
         length(gis_v) < 2 && continue
-        for i in 1:length(gis_v), j in (i+1):length(gis_v)
-            a, b = gis_v[i], gis_v[j]
-            push!(candidate_pairs, a < b ? (a, b) : (b, a))
+        for a in gis_v
+            has_initial[a] || continue
+            for b in gis_v
+                b == a && continue
+                push!(candidate_pairs, a < b ? (a, b) : (b, a))
+            end
         end
+    end
+
+    function groups_compatible(a::Int, b::Int)
+        a == b && return true
+        all(_impute_edge(x, y) for x in groups[a] for y in groups[b])
     end
 
     compat_adj = Dict{Int,Set{Int}}()
     for (a, b) in candidate_pairs
-        all_strict = all(AC._name_cluster_strict_compatible(x, y) for x in groups[a] for y in groups[b])
-        all_strict || continue
+        groups_compatible(a, b) || continue
         push!(get!(compat_adj, a, Set{Int}()), b)
         push!(get!(compat_adj, b, Set{Int}()), a)
     end
 
-    visited = Set{Int}()
-    proposals = Vector{Vector{String}}()
-    for gi in keys(compat_adj)
-        gi in visited && continue
-        comp = Int[]
-        queue = [gi]
-        push!(visited, gi)
-        while !isempty(queue)
-            cur = popfirst!(queue)
-            push!(comp, cur)
-            for nb in compat_adj[cur]
-                if !(nb in visited)
-                    push!(visited, nb)
-                    push!(queue, nb)
-                end
+    coauthor_cache = Dict{Int,Set{Int}}()
+    function coauthor_groups_of(gi::Int)
+        get!(coauthor_cache, gi) do
+            s = Set{Int}()
+            for nm in groups[gi]
+                union!(s, _coauthor_groups(nm, by_name, name_to_group))
             end
+            delete!(s, gi)
+            s
         end
-        length(comp) < 2 && continue
-        is_clique = all(b in compat_adj[a] for a in comp for b in comp if a != b)
-        is_clique || continue
-        push!(proposals, vcat((groups[c] for c in comp)...))
+    end
+
+    to_drop = Set{Tuple{Int,Int}}()
+    for (a, nbrs) in compat_adj, b in nbrs
+        a < b || continue
+        risky = any(c -> c != b && !groups_compatible(b, c), compat_adj[a]) ||
+                any(c -> c != a && !groups_compatible(a, c), compat_adj[b])
+        if risky && isempty(intersect(coauthor_groups_of(a), coauthor_groups_of(b)))
+            push!(to_drop, (a, b))
+        end
+    end
+    for (a, b) in to_drop
+        delete!(compat_adj[a], b)
+        delete!(compat_adj[b], a)
+    end
+
+    parent = collect(1:n)
+    function find(x::Int)
+        while parent[x] != x
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        end
+        return x
+    end
+    function do_union!(a::Int, b::Int)
+        ra, rb = find(a), find(b)
+        ra != rb && (parent[ra] = rb)
+    end
+    for (a, nbrs) in compat_adj, b in nbrs
+        do_union!(a, b)
+    end
+
+    by_root = Dict{Int,Vector{Int}}()
+    for gi in keys(compat_adj)
+        isempty(compat_adj[gi]) && continue
+        push!(get!(by_root, find(gi), Int[]), gi)
+    end
+
+    proposals = Vector{Vector{String}}()
+    for (_, gis) in by_root
+        length(gis) < 2 && continue
+        push!(proposals, vcat((groups[c] for c in gis)...))
     end
     return proposals
 end

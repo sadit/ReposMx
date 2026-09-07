@@ -537,13 +537,14 @@ using TOML
         @test !same_cluster(groups_large_path, big_names[1], big_names[2])
     end
 
-    @testset "Imputation (first heuristic: recover initials via production's strict test, isolated)" begin
+    @testset "Imputation (v2: recover initials via a purpose-built strict test, isolated)" begin
         function same_cluster(groups, a, b)
             for g in groups
                 (a in g) && (b in g) && return true
             end
             return false
         end
+        noauth(names) = Dict{String,Any}(nm => Dict{String,Any}("coauthors" => String[]) for nm in names)
 
         names = ["JUAN CONTRERAS PEREZ", "Juan Contreras Perez", "J. Contreras Perez",
                   "ALEXEI FEDOROVISH LICEA NAVARRO", "Alexei Federovish Licea Navarro",
@@ -554,55 +555,73 @@ using TOML
         # precision clustering defers the initials-only pair (see PrecisionClustering's own tests)
         @test !same_cluster(groups, "JUAN CONTRERAS PEREZ", "J. Contreras Perez")
 
-        proposals = Imputation.impute_candidates(groups)
-        # recovers the initials case -- AC._name_cluster_strict_compatible's bare-initial shortcut
-        # scores "J." against "Juan"/"JUAN" a perfect match, unlike precision clustering's own
-        # initial-blind scoring.
+        proposals = Imputation.impute_candidates(groups, noauth(names))
+        # recovers the initials case -- Imputation._impute_edge's bare-initial match scores "J."
+        # against "Juan"/"JUAN" a perfect match, unlike precision clustering's own initial-blind
+        # scoring; this single bridge has no OTHER conflicting neighbor, so it's never "risky".
         @test any(p -> "JUAN CONTRERAS PEREZ" in p && "J. Contreras Perez" in p, proposals)
-        # must NEVER propose the known false-positive pair (different given names, same double
-        # surname) -- AC._name_cluster_strict_compatible correctly rejects it just like production.
+        # NEVER a candidate pair at all: neither side has a bare initial, so this different-given-
+        # name/same-double-surname pair is never even re-examined here (precision clustering already
+        # correctly rejected it with its own validated threshold).
         @test !any(p -> "MANUEL ALBERTO CHAVEZ GONZALEZ" in p && "MARIA ANTONIETA CHAVEZ GONZALEZ" in p, proposals)
         # garbage names are never touched
         @test !any(p -> any(occursin("orcid", x) for x in p), proposals)
-        # documented current limitation, not a bug: a genuine q-gram-typo-tolerant pair
-        # ("Fedorovish"/"Federovish", mean match~=0.69) is BELOW the strict test's 0.9 bar --
-        # AC._name_cluster_strict_compatible's own docstring already documents this class of missed
-        # recall (the "VCTOR H. BALTAZAR-HERNANDEZ" example); this first heuristic inherits it
-        # rather than fixing it. A future heuristic iteration is the place to address this, not a
-        # silent gap here.
+        # NEVER a candidate pair: a genuine q-gram-typo-tolerant pair ("Fedorovish"/"Federovish")
+        # has no bare initial on either side, so imputation (by design) leaves this entirely to
+        # precision clustering/production, never re-litigating it here.
         @test !any(p -> "ALEXEI FEDOROVISH LICEA NAVARRO" in p && "Alexei Federovish Licea Navarro" in p, proposals)
     end
 
-    @testset "Imputation (clique-consistency: rejects ambiguous bridges, merges confident cliques)" begin
+    @testset "Imputation (v2: structural ambiguity detection, coauthor-cluster rescue, no clique requirement)" begin
         function same_cluster(groups, a, b)
             for g in groups
                 (a in g) && (b in g) && return true
             end
             return false
         end
+        noauth(names) = Dict{String,Any}(nm => Dict{String,Any}("coauthors" => String[]) for nm in names)
 
         # Two DIFFERENT real people sharing a surname, plus an ambiguous bare-initial-only group
-        # that independently strict-matches BOTH of them (found live on the real 10-repo corpus,
-        # e.g. "A. Barrios" bridging "ABELARDO NUÑEZ BARRIOS" and "Alberto Salazar Barrios") --
-        # naive transitive closure over pairwise proposals would falsely connect the two real
-        # people through the ambiguous node; the clique requirement must reject the whole
-        # component instead of guessing which one the initial "really" belongs to.
+        # that independently satisfies Imputation._impute_edge against BOTH of them (found live on
+        # the real 10-repo corpus, e.g. "A. Barrios" bridging "ABELARDO NUÑEZ BARRIOS" and "Alberto
+        # Salazar Barrios") -- with no coauthor evidence to rescue either edge, BOTH must be dropped:
+        # the ambiguity is detected because Abelardo's and Alberto's groups are NOT compatible with
+        # each other (checked directly, even though they were never a name-based candidate pair
+        # themselves), not by counting how many initials aligned in one single edge.
         names_bridge = ["ABELARDO NUÑEZ BARRIOS", "Alberto Salazar Barrios", "A. Barrios", "Barrios, A."]
         vocab_bridge = NameVocabulary.build_name_vocabulary(names_bridge)
         groups_bridge = PrecisionClustering.compute_precision_clusters(names_bridge, vocab_bridge)
         @test !same_cluster(groups_bridge, "ABELARDO NUÑEZ BARRIOS", "Alberto Salazar Barrios")
-        proposals_bridge = Imputation.impute_candidates(groups_bridge)
+        proposals_bridge = Imputation.impute_candidates(groups_bridge, noauth(names_bridge))
         @test !any(p -> "ABELARDO NUÑEZ BARRIOS" in p, proposals_bridge)
         @test !any(p -> "Alberto Salazar Barrios" in p, proposals_bridge)
 
-        # Three formatting variants of the SAME person, all pairwise strict-compatible with each
-        # other -- a confident clique, not just a chain -- must still merge into ONE proposal
-        # covering all three groups, not just the two closest-matching ones.
+        # Same ambiguous bridge, but now "A. Barrios" and Abelardo's profile share a coauthor (whose
+        # own name is itself part of this corpus, so its identity resolves through the SAME
+        # clustering) -- that specific risky edge is rescued (Abelardo merges with "A. Barrios"),
+        # while the OTHER risky edge (Alberto, uncorroborated) is still dropped. This is the
+        # mechanism that replaces the old blanket clique requirement.
+        names_bridge2 = ["ABELARDO NUÑEZ BARRIOS", "Alberto Salazar Barrios", "A. Barrios",
+                          "MARIA LOPEZ SANCHEZ"]
+        vocab_bridge2 = NameVocabulary.build_name_vocabulary(names_bridge2)
+        groups_bridge2 = PrecisionClustering.compute_precision_clusters(names_bridge2, vocab_bridge2)
+        by_name_bridge2 = Dict{String,Any}(
+            "ABELARDO NUÑEZ BARRIOS" => Dict{String,Any}("coauthors" => ["MARIA LOPEZ SANCHEZ"]),
+            "Alberto Salazar Barrios" => Dict{String,Any}("coauthors" => String[]),
+            "A. Barrios" => Dict{String,Any}("coauthors" => ["MARIA LOPEZ SANCHEZ"]),
+            "MARIA LOPEZ SANCHEZ" => Dict{String,Any}("coauthors" => String[]),
+        )
+        proposals_bridge2 = Imputation.impute_candidates(groups_bridge2, by_name_bridge2)
+        @test any(p -> "ABELARDO NUÑEZ BARRIOS" in p && "A. Barrios" in p, proposals_bridge2)
+        @test !any(p -> "Alberto Salazar Barrios" in p, proposals_bridge2)
+
+        # Three formatting variants of the SAME person, forming a plain CHAIN (not required to be a
+        # full clique any more) -- must still merge into ONE proposal covering all three groups.
         names_clique = ["JENARO LEOCADIO VARELA CASELIS", "Jenaro L. Varela Caselis",
                          "Varela Caselis, Jenaro L."]
         vocab_clique = NameVocabulary.build_name_vocabulary(names_clique)
         groups_clique = PrecisionClustering.compute_precision_clusters(names_clique, vocab_clique)
-        proposals_clique = Imputation.impute_candidates(groups_clique)
+        proposals_clique = Imputation.impute_candidates(groups_clique, noauth(names_clique))
         @test any(proposals_clique) do p
             all(nm -> nm in p, names_clique)
         end
