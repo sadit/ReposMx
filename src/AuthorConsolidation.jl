@@ -484,13 +484,29 @@ end
 """
     _is_garbage_name(nm::AbstractString) -> Bool
 
-True for a raw "name" that's actually a bare URL/ORCID literal or digit string — TextSearch's
-tokenizer normalizes any URL to a literal `"url"` placeholder and any digit run to `"0"`, so
-different garbage ORCID/URL "names" collapse to identical tokens (the root cause of a pre-existing
-117-member `"_url"` blob previously produced by `full_key`/`initials_key`). Checked at the raw-
-string level, before tokenizing, in [`_name_match_score`](@ref).
+True for a raw "name" that isn't really a person's name at all:
+
+1. A bare URL/ORCID literal or digit string — TextSearch's tokenizer normalizes any URL to a
+   literal `"url"` placeholder and any digit run to `"0"`, so different garbage ORCID/URL "names"
+   collapse to identical tokens (the root cause of a pre-existing 117-member `"_url"` blob
+   previously produced by `full_key`/`initials_key`). Checked at the raw-string level, before
+   tokenizing, in [`_name_match_score`](@ref).
+2. **More than 10 tokens (2026-09-08).** Found live on a real 50-repo corpus: some `creator`/
+   `contributor` fields are not names at all -- a full sentence of thesis body text (106 tokens),
+   a citation-formatted reference (`"González-Pérez, L.-I., Ramírez Montoya, M. S., ..."`, 37
+   tokens), a list of institutions (`"Tecnológico de Monterrey, Technische Universität Dortmund,
+   ..."`, 59 tokens), a `/`-joined list of several DIFFERENT people's names in one field (33
+   tokens). No genuine single person's name, however long a compound given-name/surname gets in
+   this corpus, comes anywhere close to 10 tokens. Beyond the wrong-clustering risk (these get
+   parsed as if they were one giant, nonsensical surname), this is also a real PERFORMANCE risk:
+   [`_surname_typo_score`](@ref)'s maternal-remainder comparison joins multi-token remainders into
+   one string before scoring, so comparing two such garbage entries costs `O(length_a * length_b)`
+   in [`PrecisionClustering`](@ref)'s Damerau-Levenshtein scoring -- confirmed live to blow up a
+   50-repo `compute_precision_clusters` run to ~75 minutes with no correspondingly large real
+   bucket to explain it.
 """
-_is_garbage_name(nm::AbstractString) = occursin(r"^https?://|orcid|^[\d\-]+$"i, nm)
+_is_garbage_name(nm::AbstractString) = occursin(r"^https?://|orcid|^[\d\-]+$"i, nm) ||
+    length(_qgram_name_tokens(nm)) > 10
 
 """
     _name_match_score(name_a, name_b) -> (; match, mismatch_frac, surname, pairs)
