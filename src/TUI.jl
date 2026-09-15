@@ -7,11 +7,10 @@ using Term.Tables
 using ..Config: DEFAULT_DATA_DIR, DEFAULT_INDEX_DIR
 using ..Storage: get_repo_stats, list_repo_names
 using ..Search: SearchEngine, query_index, search_authors, find_similar_authors_by_profile,
-               find_similar_documents_by_references, search_references,
+               find_similar_documents_by_references,
                get_document_references, get_author_documents, get_coauthors,
                get_topic_elements, search_document_paragraphs, get_detailed_statistics
-using ..DB: normalize_author_name, get_document
-using ..Wikipedia: explain_concept
+using ..DB: get_document
 
 export launch_interactive_shell
 

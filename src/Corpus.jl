@@ -1,15 +1,14 @@
 module Corpus
 
 using EzXML, JSON, SHA
-using ..Config: DEFAULT_DATA_DIR, DEFAULT_OAI_NS
-using ..Types: ReferenceRecord
+using ..Config: DEFAULT_DATA_DIR
 using ..Storage: get_repo_dir, load_metadata_records, save_corpus_records, list_repo_names
 using ..Catalogs: resolve_cti_code
 
 export parse_xml_metadata, parse_author_names, parse_keywords, normalize_doc_type,
        extract_conclusions, extract_reference_section, parse_individual_references,
        extract_document_references, split_into_paragraphs,
-       build_repository_corpus, build_all_corpus, build_authors_index_data, build_references_index_data
+       build_repository_corpus, build_all_corpus, build_authors_index_data
 
 const DC_KEYS = ["title", "creator", "contributor", "date", "description", "subject", "language", "rights", "publisher", "type"]
 const DC_QUERIES = ["//$k" for k in DC_KEYS]
@@ -613,22 +612,6 @@ function build_authors_index_data(all_docs::Vector{Dict{String, Any}})
     
     sort!(profiles, by=x->x["doc_count"], rev=true)
     return profiles
-end
-
-"""
-    build_references_index_data(all_docs::Vector{Dict{String, Any}})
-
-Collects all references from structured documents into a unified, traceable citations corpus.
-"""
-function build_references_index_data(all_docs::Vector{Dict{String, Any}})
-    all_refs = Dict{String, Any}[]
-    for doc in all_docs
-        refs = get(doc, "references", Dict{String, Any}[])
-        for r in refs
-            push!(all_refs, r)
-        end
-    end
-    return all_refs
 end
 
 end # module Corpus

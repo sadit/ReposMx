@@ -3,11 +3,11 @@ module Indexing
 using TextSearch, SimilaritySearch
 import RocksDB
 using ..Config: DEFAULT_DATA_DIR, DEFAULT_INDEX_DIR
-using ..Types: ParagraphHit, ReferenceRecord
+using ..Types: ParagraphHit
 using ..Storage: get_repo_dir, load_corpus_records, list_repo_names
-using ..Corpus: build_repository_corpus, build_authors_index_data, build_references_index_data, split_into_paragraphs
-using ..TextModel: TextProfile, create_bilingual_profile, get_or_create_bilingual_base_profile,
-                    refit_bilingual_profile, create_bilingual_textconfig, save_profile, load_profile
+using ..Corpus: build_repository_corpus, build_authors_index_data, split_into_paragraphs
+using ..TextModel: get_or_create_bilingual_base_profile, refit_bilingual_profile,
+                    create_bilingual_textconfig, save_profile, load_profile
 using ..DB: Database, open_database, close_database, put_document!, put_author_profile!, put_topics!,
             put_reference!, set_document_references!, link_author_document!, add_coauthor_link!,
             put_author_id_mapping!, normalize_author_name, rocksdb_handle, compact_all!, precompute_all_statistics!,

@@ -1,7 +1,7 @@
 module Downloader
 
 using Downloads, EzXML, JSON, URIs, SHA, Dates
-using Downloads: request, Curl
+using Downloads: request
 using ..Config: DEFAULT_HEADERS, DEFAULT_OAI_NS, DEFAULT_DATA_DIR
 using ..Storage: get_repo_dir, load_metadata_records, save_metadata_records
 

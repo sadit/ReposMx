@@ -2,7 +2,7 @@ module OAI
 
 using Downloads, EzXML, JSON, URIs, Dates
 using Downloads: request, Curl
-using ..Config: DEFAULT_HEADERS, DEFAULT_OAI_NS, DEFAULT_DATA_DIR, get_repositories, get_repository_url
+using ..Config: DEFAULT_HEADERS, DEFAULT_OAI_NS, DEFAULT_DATA_DIR, get_repositories
 using ..Storage: get_repo_dir, get_repo_info, save_repo_info
 
 export harvest_repository, harvest_all

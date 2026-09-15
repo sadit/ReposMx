@@ -180,7 +180,7 @@ using ReposMx
 db = open_database()
 
 doc = get_document(db, "cimat", "1008/100")
-theses_2023 = get_documents_by_year(db, "2023"; limit=10)
+tema_docs = get_topic_docs(db, "matematica educativa"; limit=10)
 auth_docs = get_author_documents(db, "Alfinio Flores")
 refs = get_document_references(db, "cimat", "1008/100")
 

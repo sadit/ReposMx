@@ -3,7 +3,7 @@ module Config
 using JSON
 
 export DEFAULT_DATA_DIR, DEFAULT_INDEX_DIR, DEFAULT_CATALOGS_DIR, DEFAULT_HEADERS, DEFAULT_OAI_NS,
-       DEFAULT_AUTHOR_OVERRIDES_TOML, get_repositories, get_repository_url
+       DEFAULT_AUTHOR_OVERRIDES_TOML, get_repositories
 
 const DEFAULT_DATA_DIR = let
     if haskey(ENV, "REPOSMX_DATA_DIR") && !isempty(ENV["REPOSMX_DATA_DIR"])
@@ -115,16 +115,6 @@ function get_repositories(; config_file=DEFAULT_REPOS_JSON)
     else
         return Dict{String,String}()
     end
-end
-
-"""
-    get_repository_url(reponame; config_file=DEFAULT_REPOS_JSON)
-
-Gets the endpoint URL for a specific repository.
-"""
-function get_repository_url(reponame::AbstractString; config_file=DEFAULT_REPOS_JSON)
-    repos = get_repositories(; config_file)
-    return get(repos, String(reponame), nothing)
 end
 
 end # module Config

@@ -1,14 +1,12 @@
 module AuthorConsolidation
 
 using TextSearch
-using SimilaritySearch: SearchGraph, SearchGraphContext, VectorDatabase, index!,
-                        bichromatic_metricjoin, Dist
 using TOML
 using SHA
 using ..Config: DEFAULT_AUTHOR_OVERRIDES_TOML
 
-export build_and_persist, load_all, name_keys, compute_groups, compute_name_clusters,
-       load_overrides, save_imputes, assign_raw_ids, assign_id, compute_similarity_merges
+export build_and_persist, load_all, name_initials_text, compute_groups, compute_name_clusters,
+       load_overrides, save_imputes, assign_raw_ids, assign_id
 
 """
     AUTHOR_NAME_CONFIG
@@ -39,25 +37,23 @@ function _order_normalize(s::AbstractString)
 end
 
 """
-    name_keys(raw::AbstractString) -> (full_key, initials_key, initials_text)
+    name_initials_text(raw::AbstractString) -> String
 
-Two matching keys for `raw`, both computed from the same order-normalized, tokenized
-(`AUTHOR_NAME_CONFIG`: accents stripped, lowercased, punctuation removed) name:
+Abbreviated form of `raw`: order-normalized and tokenized (`AUTHOR_NAME_CONFIG`: accents stripped,
+lowercased, punctuation removed), then every token except the last reduced to its first letter,
+last token (assumed surname) kept whole and space-joined — "Juan García" -> "j garcia". Used for
+the consolidated profile's `name_initials_form`, which `Indexing.jl` appends to the indexed
+`authors_name` document so a query typed in abbreviated form still retrieves the author.
 
-- `full_key`: every token, in order, joined by `_` — matches only near-exact name variants.
-- `initials_key` / `initials_text`: every token except the last reduced to its first letter, last
-  token (assumed surname) kept whole — matches "Juan García" with "J. García". `initials_key` is
-  underscore-joined (for hashing/comparison); `initials_text` is space-joined (for display and for
-  the extra text appended to the indexed `authors_name` document).
-
-Two raw names sharing either key are assumed to be the same person by [`compute_groups`](@ref).
+This is the last survivor of an earlier exact-key clustering design (`full_key`/`initials_key`):
+name-based grouping is [`compute_name_clusters`](@ref)'s job now, and nothing matches on this
+string anymore — it is display/indexing text only.
 """
-function name_keys(raw::AbstractString)
+function name_initials_text(raw::AbstractString)
     toks = String.(collect(tokenize(AUTHOR_NAME_CONFIG, _order_normalize(raw))))
-    isempty(toks) && return (full_key="", initials_key="", initials_text="")
-    full_key = join(toks, "_")
+    isempty(toks) && return ""
     initials_toks = length(toks) == 1 ? toks : vcat([string(first(t)) for t in toks[1:end-1]], [toks[end]])
-    return (full_key=full_key, initials_key=join(initials_toks, "_"), initials_text=join(initials_toks, " "))
+    return join(initials_toks, " ")
 end
 
 """
@@ -293,9 +289,9 @@ end
 """
     _qgram_name_tokens(raw::AbstractString) -> Vector{String}
 
-Tokenizes `raw` the same way as [`name_keys`](@ref) (order-normalized, `AUTHOR_NAME_CONFIG`), then
-[`_collapse_self_annotations`](@ref). Unlike [`_name_tokens`](@ref) (used by
-[`_plausibly_same_person`](@ref)), this does NOT strip parenthetical content: for the q-gram
+Tokenizes `raw` the same way as [`name_initials_text`](@ref) (order-normalized,
+`AUTHOR_NAME_CONFIG`), then
+[`_collapse_self_annotations`](@ref). Unlike an exact-token split, this does NOT strip parenthetical content: for the q-gram
 metric below, a citation-style parenthetical like `"(Alejandro)"` in `"Anaya, A. (Alejandro)"` is
 real signal (`del_punc=true` already unwraps the parens on tokenizing, keeping `"alejandro"` as
 its own token) — stripping it away was verified, while developing this metric, to tank the
@@ -512,9 +508,7 @@ _is_garbage_name(nm::AbstractString) = occursin(r"^https?://|orcid|^[\d\-]+$"i, 
     _name_match_score(name_a, name_b) -> (; match, mismatch_frac, surname, pairs)
 
 Character-q-gram-based name-similarity metric backing [`compute_name_clusters`](@ref) — the
-name-based clustering signal, replacing `full_key`/`initials_key` exact matching. This does NOT
-replace [`_plausibly_same_person`](@ref), which keeps doing its own, different job: vetoing
-*content*-similarity candidates in [`compute_similarity_merges`](@ref).
+name-based clustering signal, replacing an earlier `full_key`/`initials_key` exact-match design.
 
 `surname`: exact match, truncation-aware (a full "Nombre ApellidoPaterno ApellidoMaterno" record's
 PATERNAL surname -- the first FLATTENED content word, see [`_surname_content`](@ref) -- against
@@ -530,7 +524,7 @@ via a shared incidental token (e.g. two different people who happen to share a m
 
 Guards against garbage input (see [`_is_garbage_name`](@ref)) and against a degenerate
 single-character surname head (e.g. a digit run normalized to a literal `"0"`) ever counting as a
-match — the same failure mode [`_plausibly_same_person`](@ref) guards against.
+match.
 """
 function _name_match_score(name_a::AbstractString, name_b::AbstractString)
     (_is_garbage_name(name_a) || _is_garbage_name(name_b)) &&
@@ -690,9 +684,7 @@ end
 Greedy re-partition of a contradiction-flagged component using
 [`_name_cluster_strict_compatible`](@ref) as a must-link test — a name joins an EXISTING
 sub-cluster only if compatible with EVERY member already in it (not just one), which is what
-actually prevents transitive chaining through a bridge name (the exact failure mode that broke an
-earlier, rejected attempt at bucketing [`compute_similarity_merges`](@ref) by surname — see that
-function's docstring). This is a GREEDY, ORDER-DEPENDENT heuristic (processes `names` in sorted
+actually prevents transitive chaining through a bridge name. This is a GREEDY, ORDER-DEPENDENT heuristic (processes `names` in sorted
 order, joins the first compatible existing sub-cluster) — not a general correlation-clustering
 solver; it can rarely miss an obviously-correct merge depending on processing order. Judged a lower
 priority to fix than a precision bug: a missed merge is recoverable (a later rebuild, or a manual
@@ -731,32 +723,29 @@ end
 """
     compute_name_clusters(raw_names::Vector{String}) -> Vector{Vector{String}}
 
-Groups `raw_names` by a two-phase, name-only (no profile content — see
-[`compute_similarity_merges`](@ref) for the separate content-based signal) matching design,
-replacing `full_key`/`initials_key` exact-match clustering as [`compute_groups`](@ref)'s name-based
+Groups `raw_names` by a two-phase, name-only (no profile content) matching design, replacing an
+earlier `full_key`/`initials_key` exact-match clustering as [`compute_groups`](@ref)'s name-based
 signal: [`_name_cluster_edge`](@ref) (generous, recall-oriented, via q-gram similarity) proposes
 connections within cheap candidate buckets ([`_name_cluster_keys`](@ref)); every resulting
 component then goes through [`_name_cluster_contradiction`](@ref)/[`_name_cluster_split`](@ref)
 (precision-oriented) — a component stays merged UNLESS the oracle finds a genuine counter-example
 inside it.
 
-Built to replace `full_key`/`initials_key`, which silently merged different people sharing two
+Built to replace exact `full_key`/`initials_key` matching, which silently merged different people sharing two
 initials plus a surname (e.g. `"JOSE CAMARGO PEREZ"`/`"JUAN CONTRERAS PEREZ"`/`"JULIO CANDELA
 PEREZ"` all reduced to the same `initials_key`). Validated end-to-end on a real 10-repo corpus
 (19,543 names) against a mined ground truth: this design correctly separates that exact case, plus
 the harder `"MANUEL ALBERTO CHAVEZ GONZALEZ"`/`"MARIA ANTONIETA CHAVEZ GONZALEZ"` case (identical
 double surname, different given name), while still merging real typo/transliteration variants
 (`"Fedorovish"`/`"Federovish"`) pure exact-key matching would have missed too. End-to-end error
-rate: FN≈0.35% (2,842 known-good pairs), FP≈0.18% (22,785 known-bad pairs) — both far lower than a
-standalone (non-content-gated) `_plausibly_same_person` achieves at the same job (an earlier,
-rejected replacement attempt grew max group size from ~10 to 76).
+rate: FN≈0.35% (2,842 known-good pairs), FP≈0.18% (22,785 known-bad pairs).
 
-`_name_cluster_keys` bucketing is an efficiency step only — the earlier surname-bucketing failure
-documented in [`compute_similarity_merges`](@ref)'s docstring does NOT apply here: that failure
-came from bucketing an ADAPTIVE, population-relative similarity signal (`bichromatic_metricjoin`'s
-per-point quantile threshold), which shifts meaning depending on what population it's given;
+`_name_cluster_keys` bucketing is an efficiency step only, safe here because
 [`_name_match_score`](@ref) is an ABSOLUTE fixed threshold, unaffected by what else shares a
-candidate bucket.
+candidate bucket. (Bucketing an ADAPTIVE, population-relative similarity signal — a per-point
+quantile threshold, say — is NOT safe the same way: the threshold's meaning shifts with the
+population it is computed over. A now-removed content-similarity join in this module was broken
+exactly that way; keep the distinction in mind if issue #2's content signal reintroduces one.)
 
 Known, accepted limitations (not chased further without new evidence):
 - [`_name_cluster_split`](@ref)'s greedy partition is order-dependent — a rare recall cost, not a
@@ -772,8 +761,7 @@ Known, accepted limitations (not chased further without new evidence):
   content-similarity join, RocksDB persistence, BM25 rebuilds) took ~10 minutes. Full-corpus
   (~95-repo) runtime has not been measured; a very large candidate bucket (a common surname across
   the whole corpus) could make the O(bucket²) phase-1 pass slower still. Revisit if it actually
-  turns out to be a problem, same policy as [`compute_similarity_merges`](@ref)'s own bucketing
-  note — correctness came first here too.
+  turns out to be a problem — correctness came first here.
 """
 function compute_name_clusters(raw_names::Vector{String})
     n = length(raw_names)
@@ -920,121 +908,12 @@ end
     _surname_of_name(raw::AbstractString) -> String
 
 Last tokenized word of `raw` (order-normalized, same `AUTHOR_NAME_CONFIG` tokenization as
-[`name_keys`](@ref)) — the "apellido" convention already implicit in `initials_key`, factored
-out here since both [`_bucket_for`](@ref) (one name) and [`compute_similarity_merges`](@ref)
-(pairs of names) need it.
+[`name_initials_text`](@ref)) — the "apellido" convention, used by [`_bucket_for`](@ref) to pick a
+group's on-disk bucket directory.
 """
 function _surname_of_name(raw::AbstractString)
     toks = String.(collect(tokenize(AUTHOR_NAME_CONFIG, _order_normalize(raw))))
     isempty(toks) ? "" : toks[end]
-end
-
-"""
-    _strip_parenthetical(s::AbstractString) -> String
-
-Removes any "(...)" span. A citation-style raw name like `"Anaya, A. (Alejandro)"` redundantly
-spells out the abbreviated given name in parentheses — left in, `"(Alejandro)"` tokenizes into
-its own given-name token, making a genuine match (`"Alejandro Anaya"`) look like it has a
-different number of given-name components than the abbreviated form. Stripped before tokenizing
-in [`_name_tokens`](@ref) so both forms reduce to the same given-name token.
-"""
-_strip_parenthetical(s::AbstractString) = replace(s, r"\([^)]*\)" => "")
-
-"""
-    _name_tokens(raw::AbstractString) -> (given::Vector{String}, surname::String)
-
-`raw`, order-normalized and parenthetical-stripped, tokenized (same `AUTHOR_NAME_CONFIG` as
-[`name_keys`](@ref)) and split into given-name tokens (all but the last) and surname (the last
-one, matching [`_surname_of_name`](@ref)/`initials_key`'s "apellido" convention).
-"""
-function _name_tokens(raw::AbstractString)
-    toks = String.(collect(tokenize(AUTHOR_NAME_CONFIG, _order_normalize(_strip_parenthetical(raw)))))
-    isempty(toks) && return (String[], "")
-    return (toks[1:end-1], toks[end])
-end
-
-"""
-    _given_name_token_compatible(a, b) -> Bool
-
-Two given-name tokens are compatible if they're equal, or if one is a single-character initial
-matching the other's first letter (e.g. `"j"` / `"juan"`) — but NOT merely sharing a first
-letter (`"juan"` vs `"julio"` is `false`): that distinction is exactly what separates a real name
-abbreviation from two different people who happen to start with the same letter.
-"""
-function _given_name_token_compatible(a::AbstractString, b::AbstractString)
-    a == b && return true
-    (length(a) == 1 && !isempty(b) && a[1] == first(b)) && return true
-    (length(b) == 1 && !isempty(a) && b[1] == first(a)) && return true
-    return false
-end
-
-"""
-    _surnames_plausibly_match(given_a, surname_a, given_b, surname_b) -> Bool
-
-Surname half of [`_plausibly_same_person`](@ref)'s gate. This corpus mixes two real, common
-conventions for the *same* researcher's name across different raw records: the full Mexican form
-("Nombre[s] ApellidoPaterno ApellidoMaterno" — tokenized here as `given` ending with the paternal
-surname, `surname` holding the maternal one) and a single-surname form the same person is often
-recorded under internationally ("Nombre Apellido" — `given` is just the given name(s), `surname`
-holds the one reported surname). A hyphenated combined surname like `"Tellez-Avila"` tokenizes
-into the same two tokens as `"Tellez Avila"` (the tokenizer treats `-` as a separator, verified
-elsewhere in this module), so it's already the full-form case, not a third one to handle here.
-
-Mixing full and single-surname records for the same person can never share an exact last-token
-surname (`"avila" != "tellez"`), so on top of requiring an exact match, this also accepts a
-single-surname name (`length(given) == 1`) whose one surname equals the *other* name's paternal
-surname (`given[end]`, when that other name has 2+ given-position tokens) — the surname a Mexican
-researcher keeps when publishing under the single-surname convention is, by convention, the
-paternal one, never the maternal. Both sides of every comparison still require `length >= 2` (see
-[`_plausibly_same_person`](@ref)'s docstring on why: garbage data degenerating to single-character
-tokens must never count as a match).
-"""
-function _surnames_plausibly_match(given_a::Vector{String}, surname_a::AbstractString,
-                                    given_b::Vector{String}, surname_b::AbstractString)
-    length(surname_a) >= 2 && length(surname_b) >= 2 && surname_a == surname_b && return true
-    length(given_a) == 1 && length(given_b) >= 2 && length(surname_a) >= 2 && surname_a == given_b[end] && return true
-    length(given_b) == 1 && length(given_a) >= 2 && length(surname_b) >= 2 && surname_b == given_a[end] && return true
-    return false
-end
-
-"""
-    _plausibly_same_person(name_a, name_b) -> Bool
-
-Name-based gate for [`compute_similarity_merges`](@ref): requires the surname to plausibly match
-(exact last-token match, or a full-vs-single-surname truncation — see
-[`_surnames_plausibly_match`](@ref)), and the **first given-name token** to be equal or an
-initial-abbreviation of the other's (see [`_given_name_token_compatible`](@ref)) —  deliberately
-does not require every given-name token to match, since middle names are routinely dropped or
-added between how the same person's name appears in different raw records (e.g. `"Jewel Todd"`
-vs `"JEWEL NICOLE ANNA TODD"`).
-
-Two weaker gates were tried and rejected empirically, on a real 10-repo rebuild, before landing
-on this one:
-- **surname alone**: let through pairs like `("A. Alberto R. Fernandes", "PATRICIA FERNANDES")`
-  and `("ADDY LETICIA ZARZA GARCIA", "Jesús Ortega García")` — different people sharing only a
-  common (often maternal, in the "Nombre ApellidoPaterno ApellidoMaterno" convention the
-  last-token rule picks up) surname.
-- **surname + bare first-letter-of-first-token**: still let through clusters of clearly
-  different people sharing a common surname (Pérez, González, Hernández...) and a coincidental
-  first initial — e.g. `("JHON LEANDRO PEREZ", "JULIO CESAR PEREZ PEREZ")` and
-  `("RIGOBERTO ORTEGA PEREZ", "RODOLFO ORTIZ PEREZ")` all pass a bare "same starting letter"
-  check, but none of those given names is actually an abbreviation of the other.
-
-This version rejects every one of those while still passing genuine variants like
-`("Juan Antonio Garcia Lopez", "J. A. Garcia-Lopez")`, citation-style forms like
-`("Alejandro Anaya", "Anaya, A. (Alejandro)")`, and — via
-[`_surnames_plausibly_match`](@ref) — a Mexican double-surname record next to that same person's
-single-surname (paternal-only) record, e.g. `("Juan Tellez Avila", "Juan Tellez")`, without also
-accepting two different people who each have one of the two surnames but in swapped
-paternal/maternal roles, e.g. `("Juan Perez Gomez", "Juan Gomez Hernandez")` (still rejected: both
-are full two-surname forms, so only the exact-match rule applies, and `"gomez" != "hernandez"`).
-"""
-function _plausibly_same_person(name_a::AbstractString, name_b::AbstractString)
-    given_a, surname_a = _name_tokens(name_a)
-    given_b, surname_b = _name_tokens(name_b)
-    (!isempty(given_a) && !isempty(given_b)) || return false
-    _surnames_plausibly_match(given_a, surname_a, given_b, surname_b) || return false
-    _given_name_token_compatible(given_a[1], given_b[1])
 end
 
 function _bucket_for(raw_names_in_group::Vector{String})
@@ -1189,15 +1068,13 @@ function rollup(raw_names_in_group::Vector{String}, by_name::AbstractDict, raw_i
 
     canonical_entry = entries[argmax([e["doc_count"] for e in entries])]
     canonical = canonical_entry["name"]
-    k = name_keys(canonical)
-
     cap(v, n) = first(v, min(n, length(v)))
 
     profile = Dict{String,Any}(
         "consolidated_id" => consolidated_id,
         "leader_raw_name" => leader_name,
         "name" => canonical,
-        "name_initials_form" => k.initials_text,
+        "name_initials_form" => name_initials_text(canonical),
         "role" => get(canonical_entry, "role", "Autor"),
         "raw_names" => sorted_raw,
         "doc_count" => sum(e["doc_count"] for e in entries),
@@ -1210,94 +1087,6 @@ function rollup(raw_names_in_group::Vector{String}, by_name::AbstractDict, raw_i
         "cited_references" => cap(unique(vcat([collect(get(e, "cited_references", String[])) for e in entries]...)), 30),
     )
     return profile
-end
-
-"""
-    compute_similarity_merges(authors_data; k::Int=16) -> Vector{Tuple{String,String}}
-
-Finds pairs of raw profiles whose *content* (keywords, topics, cited references, institutions —
-never the name) is similar enough to plausibly be the same person, complementing
-[`compute_groups`](@ref)'s name-key matching: that catches near-identical name spellings, this
-catches the opposite case — a genuinely different-looking name (typo, alternate transliteration,
-married name) whose *work* is unmistakably the same person's.
-
-Built with `TextSearch.VectorModel` (classical TFIDF, sparse) over a `SimilaritySearch.SearchGraph`
-and `bichromatic_metricjoin` (self-join with an adaptive per-point threshold — no cosine cutoff to
-tune by hand). Every candidate pair from the join is vetoed unless [`_plausibly_same_person`](@ref)
-(surname AND given-name initial) holds between the two raw names — a real risk of pure content
-similarity is two *different* people who coauthor constantly (near-identical topic/keyword
-profiles) or who simply share a common surname; the gate rejects both cases while still letting
-the join find same-name variants that the exact name-key match missed.
-
-**Tried and reverted: partitioning by surname before joining.** The obvious way to cut the cost of
-this at full-corpus scale (~100K+ raw profiles) is to bucket `authors_data` by
-[`_surname_of_name`](@ref) and join each bucket independently — since
-[`_plausibly_same_person`](@ref) requires an exact surname match anyway, a global join's
-cross-surname candidates are guaranteed to be vetoed, so bucketing looks like pure waste avoided.
-**Verified empirically on a real 10-repo rebuild that this silently breaks the join's precision**:
-merges jumped from 4 (correct) to 5,575, with consolidated groups like "garcia" swallowing 47
-raw names spanning obviously unrelated people (`"JESSICA ARBALLO GARCIA"`, `"JOEL ANTUNEZ GARCIA"`,
-`"JOSE ALBERTO ALVARADO GARCIA"`, ...). Root cause: `bichromatic_metricjoin`'s adaptive per-point
-threshold is a *quantile of the dataset it's given* — computed against the whole diverse corpus, it
-is strict (most profiles are simply unlike most other profiles); computed within one surname's
-bucket alone, that population is far more homogeneous (same language, overlapping general academic
-vocabulary, often overlapping institutions), so many merely-similar pairs looked "unusually close"
-*relative to their bucket*. That let far more pairs reach the veto, and the veto's own known-weak
-spot — a bare single-letter initial (e.g. `"J."`) is compatible with *any* given name starting with
-that letter — turned into a bridge: connected-component grouping in
-[`compute_groups`](@ref) chained dozens of different "Jaime"/"Javier"/"Jessica"/"Joel"/"Jose*"
-people together through such a bridge node. None of this showed up in the un-bucketed design
-because the (properly calibrated) join rarely proposed a candidate needing the veto's help in the
-first place. A real fix would need a similarity floor calibrated from the *whole* corpus, not
-per-bucket — worth doing if full-corpus runtime turns out to actually require it, but not without
-its own dedicated validation pass; until then this stays a single join over `authors_data` as a
-whole, correctness over speed.
-
-Returns `(name_a, name_b)` pairs meant to be folded into `overrides.merges` before calling
-`compute_groups` (see [`build_and_persist`](@ref)) — this function knows nothing about the
-override/graph machinery, it just proposes additional edges from a different signal.
-
-`authors_data` is sorted by name internally before building the index — verified empirically
-that without this, the exact same underlying profiles in a different order (which happens
-across separate rebuilds: `Corpus.build_authors_index_data` collects them via a `Dict`, whose
-iteration order depends on Julia's per-process randomized string hashing) can make
-`bichromatic_metricjoin` propose a different candidate set, since a `SearchGraph`'s structure is
-sensitive to insertion order. Sorting first makes the result reproducible across rebuilds, same
-as [`assign_raw_ids`](@ref)/[`build_and_persist`](@ref) already do for id assignment.
-"""
-function compute_similarity_merges(authors_data::Vector{<:AbstractDict}; k::Int=16)
-    authors_data = sort(authors_data; by=a -> a["name"])
-    n = length(authors_data)
-    n < 3 && return Tuple{String,String}[]
-
-    profile_text(a) = join(vcat(
-        collect(get(a, "keywords", String[])),
-        collect(get(a, "topic_texts", String[])),
-        collect(get(a, "cited_references", String[])),
-        collect(get(a, "institutions", String[])),
-    ), " \n ")
-
-    texts = [profile_text(a) for a in authors_data]
-    voc = Vocabulary(AUTHOR_NAME_CONFIG, texts)
-    vocsize(voc) == 0 && return Tuple{String,String}[]  # every profile had empty content text
-    model = VectorModel(IdfWeighting(), TfWeighting(), voc)
-    vecs = vectorize_corpus(model, texts; verbose=false)
-    db = VectorDatabase(vecs)
-
-    G = SearchGraph(Dist.NormCosine(), db)
-    ctx = SearchGraphContext()
-    index!(G, ctx)
-
-    joined = bichromatic_metricjoin(G, ctx, db; k=min(k, n - 1), samedata=true)
-
-    merges = Tuple{String,String}[]
-    for (ia, ib, _dist) in joined
-        ia == ib && continue
-        na, nb = authors_data[ia]["name"], authors_data[ib]["name"]
-        _plausibly_same_person(na, nb) || continue
-        push!(merges, (na, nb))
-    end
-    return merges
 end
 
 """
@@ -1320,16 +1109,10 @@ group's id) instead of the id silently changing whenever group membership shifts
 Still wipes and rewrites every `.toml` file each call — only the id/leader CHOICE is carried over,
 not the files themselves.
 
-Does NOT call [`compute_similarity_merges`](@ref) — full-corpus scale (317K raw profiles) made
-its `SearchGraph` construction / `bichromatic_metricjoin` step impractically slow (a real rebuild
-attempt on the full ~93-repo corpus stalled for hours with no forward progress and no error, after
-successfully processing the 10-repo development subset in minutes). Content-similarity-based
-matching is being redesigned (tracked in
-[issue #2](https://github.com/sadit/ReposMx/issues/2)) as evidence FOR the [`compute_name_clusters`](@ref)
-oracle to justify *splitting* a cluster (a precision tool), not as a source of *merge* candidates
-(the job it does today) — clustering stays recall-oriented and name-only per that plan.
-`compute_similarity_merges`/`_plausibly_same_person` are left in place, tested, and still callable
-directly; they're just not wired into this function until that redesign lands.
+Name-only: content-similarity evidence is NOT used here. A content-based signal is being designed
+(tracked in [issue #2](https://github.com/sadit/ReposMx/issues/2)) as evidence FOR the
+[`compute_name_clusters`](@ref) oracle to justify *splitting* a cluster (a precision tool), not as
+a source of *merge* candidates — clustering stays recall-oriented and name-only per that plan.
 """
 function build_and_persist(authors_data::Vector{<:AbstractDict}, index_dir::AbstractString, raw_id_of::AbstractDict;
                             overrides_path::AbstractString=DEFAULT_AUTHOR_OVERRIDES_TOML)

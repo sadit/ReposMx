@@ -3,23 +3,21 @@ module DB
 using RocksDB, JSON, JSON3, Dates, SHA
 import ..Types: get_document_references
 using ..Config: DEFAULT_DATA_DIR
-using ..Storage: load_metadata_records, load_corpus_records, list_repo_names, get_repo_dir
+using ..Storage: load_corpus_records, list_repo_names, get_repo_dir
 
 export Database, open_database, close_database,
-       put_document!, get_document, scan_documents, put_xml!, get_xml,
+       put_document!, get_document, scan_documents,
        put_author_profile!, get_author_profile, get_author_documents, get_coauthors, normalize_author_name,
        put_consolidated_profile!, get_consolidated_profile, get_consolidated_id_for_raw,
        get_author_documents_for_group, get_coauthors_for_group,
        put_reference!, get_reference, get_document_references, get_documents_citing_author,
        put_topics!, get_topic_docs, get_topic_authors, intersect_topic_repo_docs, intersect_topic_repo_authors,
-       put_facets!, scan_facet, get_documents_by_year, get_documents_by_type, get_documents_by_repo, get_documents_by_keyword,
-       put_fulltext!, get_fulltext, put_paragraphs!, get_paragraphs,
        put_stats!, get_stats, compute_detailed_statistics, precompute_all_statistics!,
        ingest_repository_to_db!, ingest_all_to_db!,
        DEFAULT_ROCKSDB_DIR, rocksdb_handle, compact_all!
 
 const DEFAULT_ROCKSDB_DIR = joinpath(DEFAULT_DATA_DIR, "rocksdb")
-const COLUMN_FAMILIES = ["default", "authors", "references", "topics", "fulltext", "stats", "postings", "docvecs", "dockeys", "authorkeys", "consolidated_authors"]
+const COLUMN_FAMILIES = ["default", "authors", "references", "topics", "stats", "postings", "docvecs", "dockeys", "authorkeys", "consolidated_authors"]
 
 """
     Database
@@ -151,10 +149,6 @@ function doc_key(repo::AbstractString, doc_id::AbstractString)
     return "doc:$(strip(repo)):$(normalize_id(doc_id))"
 end
 
-function xml_key(repo::AbstractString, doc_id::AbstractString)
-    return "xml:$(strip(repo)):$(normalize_id(doc_id))"
-end
-
 """
     put_document!(db::Database, repo, doc_id, doc_dict; batch=nothing)
 
@@ -212,31 +206,6 @@ function scan_documents(f::Function, d::Database; repo::Union{AbstractString, No
         advance!(iter)
     end
     return nothing
-end
-
-"""
-    put_xml!(db::Database, repo, doc_id, xml_str; batch=nothing)
-
-Stores raw harvested XML metadata in the `default` column family.
-"""
-function put_xml!(d::Database, repo::AbstractString, doc_id::AbstractString, xml_str::AbstractString; batch=nothing)
-    k = xml_key(repo, doc_id)
-    if batch !== nothing
-        put!(batch, k, xml_str; cf=d.cfs["default"])
-    else
-        put!(d.db, k, xml_str; cf="default")
-    end
-end
-
-"""
-    get_xml(db::Database, repo, doc_id)
-
-Retrieves raw harvested XML metadata.
-"""
-function get_xml(d::Database, repo::AbstractString, doc_id::AbstractString)
-    k = xml_key(repo, doc_id)
-    val = get(d.db, k; cf="default")
-    return val !== nothing ? String(val) : nothing
 end
 
 # ====================================================================
@@ -754,79 +723,8 @@ function intersect_topic_repo_authors(d::Database, topic::AbstractString, repo::
     return results
 end
 
-put_facets!(d::Database, doc::AbstractDict; batch=nothing) = put_topics!(d, doc; batch=batch)
-get_documents_by_keyword(d::Database, kw::AbstractString; limit=100) = get_topic_docs(d, kw; limit=limit)
-
 # ====================================================================
-# 5. Fulltext & Paragraph Operations (CF: fulltext)
-# ====================================================================
-
-"""
-    put_fulltext!(db::Database, repo, doc_id, text_str; batch=nothing)
-
-Saves raw document text in the `fulltext` column family.
-"""
-function put_fulltext!(d::Database, repo::AbstractString, doc_id::AbstractString, txt::AbstractString; batch=nothing)
-    k = "text:$(strip(repo)):$(normalize_id(doc_id))"
-    if batch !== nothing
-        put!(batch, k, txt; cf=d.cfs["fulltext"])
-    else
-        put!(d.db, k, txt; cf="fulltext")
-    end
-end
-
-"""
-    get_fulltext(db::Database, repo, doc_id)
-
-Retrieves full text for a document.
-"""
-function get_fulltext(d::Database, repo::AbstractString, doc_id::AbstractString)
-    k = "text:$(strip(repo)):$(normalize_id(doc_id))"
-    val = get(d.db, k; cf="fulltext")
-    return val !== nothing ? String(val) : nothing
-end
-
-"""
-    put_paragraphs!(db::Database, repo, doc_id, paragraphs; batch=nothing)
-
-Stores individual paragraphs with ordinal indexing for In-Depth searches.
-"""
-function put_paragraphs!(d::Database, repo::AbstractString, doc_id::AbstractString, paragraphs::Vector{String}; batch=nothing)
-    cf_ft = d.cfs["fulltext"]
-    for (i, p) in enumerate(paragraphs)
-        k = "para:$(strip(repo)):$(normalize_id(doc_id)):$(lpad(i, 4, '0'))"
-        if batch !== nothing
-            put!(batch, k, p; cf=cf_ft)
-        else
-            put!(d.db, k, p; cf="fulltext")
-        end
-    end
-end
-
-"""
-    get_paragraphs(db::Database, repo, doc_id; limit=200)
-
-Retrieves all paragraphs of a document in order.
-"""
-function get_paragraphs(d::Database, repo::AbstractString, doc_id::AbstractString; limit::Int=200)
-    prefix = "para:$(strip(repo)):$(normalize_id(doc_id)):"
-    paras = String[]
-    
-    iter = DBIterator(d.db; cf="fulltext")
-    seek!(iter, prefix)
-    
-    while valid(iter) && length(paras) < limit
-        k = String(key(iter))
-        !startswith(k, prefix) && break
-        push!(paras, String(value(iter)))
-        advance!(iter)
-    end
-    
-    return paras
-end
-
-# ====================================================================
-# 6. Statistics Operations (CF: stats)
+# 5. Statistics Operations (CF: stats)
 # ====================================================================
 
 """
@@ -997,7 +895,7 @@ function precompute_all_statistics!(db::Database, n_authors::Int)
 end
 
 # ====================================================================
-# 7. Batch Ingestion & Database Population
+# 6. Batch Ingestion & Database Population
 # ====================================================================
 
 """
@@ -1029,7 +927,7 @@ function ingest_repository_to_db!(d::Database, repo::AbstractString; data_dir=DE
                 put_document!(d, repo, doc_id, doc; batch=b)
                 
                 # Secondary indexes in facets CF
-                put_facets!(d, doc; batch=b)
+                put_topics!(d, doc; batch=b)
                 
                 # Authors in authors CF
                 creators = get(doc, "creators", String[])

@@ -1,15 +1,14 @@
 module Search
 
 using TextSearch, SimilaritySearch, JSON, JSON3
-using ..Types: SearchHit, SearchResponse, AuthorProfile, ParagraphHit, ReferenceRecord
 using ..Config: DEFAULT_INDEX_DIR, DEFAULT_DATA_DIR
 import ..DB: get_author_documents, get_coauthors, get_document_references
-using ..DB: Database, open_database, close_database, get_document, scan_documents, get_author_profile,
+using ..DB: Database, open_database, close_database, get_document, get_author_profile,
             get_consolidated_profile, get_consolidated_id_for_raw,
             get_author_documents_for_group, get_coauthors_for_group,
-            get_reference, get_topic_docs, get_topic_authors,
+            get_topic_docs, get_topic_authors,
             intersect_topic_repo_docs, intersect_topic_repo_authors, normalize_author_name,
-            get_documents_citing_author, put_stats!, get_stats, compute_detailed_statistics
+            get_documents_citing_author, get_stats, compute_detailed_statistics
 using ..Indexing: load_docs_content_index, load_docs_refs_index, load_authors_name_index,
                     load_authors_profile_index, search_document_in_depth
 using ..Wikipedia: explain_concept

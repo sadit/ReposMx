@@ -1,18 +1,17 @@
 module CLI
 
-using ..Config: DEFAULT_DATA_DIR, DEFAULT_INDEX_DIR, get_repositories
-using ..Storage: get_repo_stats, list_repo_names
-using ..OAI: harvest_all, harvest_repository
-using ..Downloader: download_all_files, download_repository_files
+using ..Config: DEFAULT_DATA_DIR, DEFAULT_INDEX_DIR
+using ..Storage: get_repo_stats
+using ..OAI: harvest_all
+using ..Downloader: download_all_files
 using ..Catalogs: fetch_cti_catalogs
-using ..Parser: parse_all_documents, parse_repository_documents
-using ..Corpus: build_all_corpus, build_repository_corpus
+using ..Parser: parse_all_documents
+using ..Corpus: build_all_corpus
 using ..Indexing: build_search_index, rebuild_authors_index
-using ..DB: open_database, close_database, ingest_all_to_db!, get_stats
+using ..DB: open_database, close_database, ingest_all_to_db!
 using ..Search: SearchEngine, query_index, get_detailed_statistics
 using ..Server: start_server
 using ..TUI: launch_interactive_shell
-using ..Wikipedia: explain_concept
 
 export main_cli
 

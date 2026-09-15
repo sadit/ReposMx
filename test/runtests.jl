@@ -390,15 +390,13 @@ using TOML
                                 "Jose Gutierrez", "Jose Ruiz", "Jose Flores",
                                 "Guadalupe Sanchez", "Guadalupe Morales", "Guadalupe Vargas"])
         v2 = NameVocabulary.build_name_vocabulary(bigger)
-        # "jsoe" is a single transposition of "jose" (distance 1 under :damerau) -- the BK-tree
-        # candidate generation finds it directly by edit-distance radius, fixing a real limitation
-        # q-gram-index candidate generation had (a transposition on a token this short shares ZERO
-        # q-grams with the correct spelling, so :qgram never even considers it a candidate).
+        # "jsoe" is a single transposition of "jose" (distance 1 under DamerauLevenshtein) -- the
+        # BK-tree candidate generation finds it directly by edit-distance radius, fixing a real
+        # limitation the earlier q-gram-index candidate generation had (a transposition on a token
+        # this short shares ZERO q-grams with the correct spelling, so it was never even a
+        # candidate).
         @test NameVocabulary.correct_token(v2, "jsoe", :given) == ("jose", 0.5)
-        # :qgram is unaffected -- still uses the q-gram index, still has the old limitation.
-        @test NameVocabulary.correct_token(v2, "jsoe", :given; method=:qgram) == ("jsoe", 0.0)
-        # "guadalup" (missing trailing "e") must correct to "guadalupe" -- a real truncation typo,
-        # not a transposition, so q-gram candidate generation actually finds it.
+        # "guadalup" (missing trailing "e") must correct to "guadalupe" -- a real truncation typo.
         c2, conf2 = NameVocabulary.correct_token(v2, "guadalup", :given)
         @test c2 == "guadalupe"
         @test conf2 > 0.0
@@ -471,7 +469,8 @@ using TOML
         # a genuine transposition typo ("Fedorovish"/"Federovish", distance 1 under :damerau,
         # length 10 -> score 1-1/10=0.9, right at this stage's threshold) DOES connect here --
         # this is exactly what motivated switching this stage's default scoring metric from
-        # :qgram (where the same pair only scored ~0.79, comfortably below 0.9) to :damerau.
+        # q-gram Jaccard (where the same pair only scored ~0.79, comfortably below 0.9) to
+        # edit-distance scoring.
         @test same_cluster(groups, "ALEXEI FEDOROVISH LICEA NAVARRO", "Alexei Federovish Licea Navarro")
         # compound-surname truncation, full words only -- still must merge
         @test same_cluster(groups, "Victor Manuel Torres De La Cruz", "Victor Torres")
@@ -627,115 +626,14 @@ using TOML
         end
     end
 
-    @testset "AuthorConsolidation similarity-join merges (compute_similarity_merges, isolated)" begin
-        # Guards the TFIDF + SimilaritySearch bichromatic_metricjoin clustering signal that
-        # complements name-key matching: it should catch a same-surname near-duplicate profile
-        # that shares no name key at all, while a surname-mismatched pair must NEVER be proposed
-        # regardless of how similar its content looks — the veto is a hard filter, not a nudge.
-        mkp(name, kws, topics, insts) = Dict{String,Any}(
-            "name" => name, "doc_count" => 1, "keywords" => kws, "topic_texts" => topics,
-            "cited_references" => String[], "institutions" => insts,
-        )
-        authors_data = [
-            mkp("Juan Antonio Garcia Lopez",
-                ["redes neuronales", "aprendizaje profundo", "vision computacional"],
-                ["clasificacion de imagenes con redes convolucionales"], ["cimat"]),
-            mkp("J. A. Garcia-Lopez",  # no full_key/initials_key overlap with the name above
-                ["redes neuronales", "aprendizaje profundo", "vision por computadora"],
-                ["clasificacion de imagenes usando redes convolucionales"], ["cimat"]),
-            mkp("Roberto Hernandez Diaz",  # same content as the Garcia Lopez profiles on purpose
-                ["redes neuronales", "aprendizaje profundo", "vision computacional"],
-                ["clasificacion de imagenes con redes convolucionales"], ["cimat"]),
-            mkp("Maria Fernanda Torres",
-                ["ecologia marina", "biodiversidad", "cambio climatico"],
-                ["impacto del cambio climatico en arrecifes de coral"], ["cicese"]),
-            mkp("Pedro Ramirez Soto",
-                ["historia colonial", "independencia de mexico"],
-                ["la lucha por la independencia en el bajio"], ["cide"]),
-        ]
-
-        # sanity: _surname_of_name matches what name_keys already treats as "apellido"
+    @testset "AuthorConsolidation._surname_of_name (bucket key, isolated)" begin
+        # The "apellido" convention _bucket_for uses to pick a consolidated group's on-disk
+        # directory: last tokenized word, with a hyphenated compound surname tokenizing exactly
+        # like its space-separated form.
         @test AuthorConsolidation._surname_of_name("Juan Antonio Garcia Lopez") == "lopez"
         @test AuthorConsolidation._surname_of_name("J. A. Garcia-Lopez") == "lopez"
         @test AuthorConsolidation._surname_of_name("Roberto Hernandez Diaz") == "diaz"
-
-        # regression: two weaker gates were tried and rejected on a real 10-repo rebuild before
-        # landing on "surname + first given-name token, exact-or-initial" (see
-        # _plausibly_same_person's docstring) — these are real examples from that rebuild.
-
-        # surname-only: different people sharing only a common (often maternal, per the
-        # "Nombre ApellidoPaterno ApellidoMaterno" convention) surname.
-        @test !AuthorConsolidation._plausibly_same_person("A. Alberto R. Fernandes", "PATRICIA FERNANDES")
-        @test !AuthorConsolidation._plausibly_same_person("ADDY LETICIA ZARZA GARCIA", "Jesús Ortega García")
-        @test !AuthorConsolidation._plausibly_same_person("Carlos Corona-García", "Salomon Vasquez-Garcia")
-        @test !AuthorConsolidation._plausibly_same_person("Méndez Cabrera, Socorro", "Valdez Cabrera, Celia")
-        @test !AuthorConsolidation._plausibly_same_person("Paul Dupree", "ray dupree")
-
-        # surname + bare first-letter: still let through different people sharing a common
-        # surname AND a coincidental first initial (none of these given names is actually an
-        # abbreviation of the other, just the same starting letter).
-        @test !AuthorConsolidation._plausibly_same_person("JHON LEANDRO PEREZ", "JULIO CESAR PEREZ PEREZ")
-        @test !AuthorConsolidation._plausibly_same_person("JULIAN RAMIREZ GONZALEZ", "Javier Rendón González")
-        @test !AuthorConsolidation._plausibly_same_person("RIGOBERTO ORTEGA PEREZ", "RODOLFO ORTIZ PEREZ")
-        @test !AuthorConsolidation._plausibly_same_person("MANUEL ALBERTO CHAVEZ GONZALEZ", "MARIA ANTONIETA CHAVEZ GONZALEZ")
-        @test !AuthorConsolidation._plausibly_same_person("MIGUEL ANGEL LARA TREJO", "Mario Trejo")
-
-        # still passes genuine variants, including ones a full given-name-token-count match would
-        # have missed (middle name dropped, or a citation-style "Apellido, A. (Nombre)" form)
-        @test AuthorConsolidation._plausibly_same_person("Juan Antonio Garcia Lopez", "J. A. Garcia-Lopez")
-        @test AuthorConsolidation._plausibly_same_person("JEWEL NICOLE ANNA TODD", "Jewel Todd")
-        @test AuthorConsolidation._plausibly_same_person("Alejandro Anaya", "Anaya, A. (Alejandro)")
-        @test AuthorConsolidation._plausibly_same_person("Barrón, L. (Luis)", "Luis Felipe Barrón")
-
-        # regression: a garbage "name" (e.g. a bare ORCID literal from bad upstream data, seen on
-        # a real rebuild) degenerates to single-character tokens under this tokenization — must
-        # never count as a surname match no matter how identical the degenerate tokens look.
-        @test !AuthorConsolidation._plausibly_same_person("0000-0001-7887-7580", "0000-0002-8080-8186")
-
-        # one of the most common patterns in this corpus: the same researcher recorded under the
-        # full Mexican double-surname convention ("Nombre ApellidoPaterno ApellidoMaterno") in
-        # some records and under the single-surname convention used internationally ("Nombre
-        # ApellidoPaterno") in others -- an exact last-token match can never catch this (the
-        # maternal surname is simply absent from the truncated form). The paternal surname is
-        # kept in both, so that's what must match. A hyphenated combined surname (e.g.
-        # "Tellez-Avila") tokenizes the same as the space-separated form, so it needs no special
-        # case of its own.
-        @test AuthorConsolidation._plausibly_same_person("Juan Tellez Avila", "Juan Tellez")
-        @test AuthorConsolidation._plausibly_same_person("Juan Tellez-Avila", "Juan Tellez")
-        @test AuthorConsolidation._plausibly_same_person("J. Tellez Avila", "Juan Tellez")
-
-        # must NOT accept two different people who each carry one of the same two surnames, but
-        # in swapped paternal/maternal roles -- both are full two-surname forms, so only the
-        # exact last-token rule applies, and it correctly tells them apart.
-        @test !AuthorConsolidation._plausibly_same_person("Juan Perez Gomez", "Juan Gomez Hernandez")
-
-        merges = AuthorConsolidation.compute_similarity_merges(authors_data; k=4)
-        pair_present(a, b) = any(p -> Set(p) == Set((a, b)), merges)
-
-        @test pair_present("Juan Antonio Garcia Lopez", "J. A. Garcia-Lopez")
-        # same content as the Garcia Lopez pair, but a different surname -> must be vetoed no
-        # matter how similar the profile text is (this is the whole point of the gate)
-        @test !pair_present("Juan Antonio Garcia Lopez", "Roberto Hernandez Diaz")
-        @test !pair_present("J. A. Garcia-Lopez", "Roberto Hernandez Diaz")
-
-        # regression: verified on a real 10-repo rebuild that bichromatic_metricjoin's candidate
-        # set is sensitive to the *order* authors_data arrives in (SearchGraph insertion order),
-        # and that order isn't reproducible across process runs on its own (Corpus.build_authors_
-        # index_data collects raw profiles via a Dict, whose iteration order depends on Julia's
-        # per-process randomized string hashing) — compute_similarity_merges must sort internally
-        # so the same underlying profiles, in ANY input order, give the same result.
-        shuffled = authors_data[[5, 3, 1, 4, 2]]
-        @test Set(AuthorConsolidation.compute_similarity_merges(shuffled; k=4)) ==
-              Set(AuthorConsolidation.compute_similarity_merges(authors_data; k=4))
-
-        # too few profiles for a self-join to mean anything -> returns empty, doesn't error
-        @test AuthorConsolidation.compute_similarity_merges(authors_data[1:2]) == Tuple{String,String}[]
-
-        # profiles with no content text at all (matches build_and_persist's own round-trip test
-        # above, which uses bare {"name"=>..., "doc_count"=>...} dicts) -> empty vocabulary,
-        # returns no merges instead of erroring
-        bare = [Dict{String,Any}("name" => n, "doc_count" => 1) for n in ("Ana Ruiz", "A. Ruiz", "Pedro Soto")]
-        @test AuthorConsolidation.compute_similarity_merges(bare) == Tuple{String,String}[]
+        @test AuthorConsolidation._surname_of_name("") == ""
     end
 
     @testset "AuthorConsolidation short id assignment (assign_id/_short_hash, isolated)" begin

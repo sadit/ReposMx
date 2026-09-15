@@ -14,7 +14,8 @@ Single shared `Dist.Seqs.DamerauLevenshtein()` instance (its scratch-buffer pool
 construction) -- restricted Damerau-Levenshtein (OSA): `Levenshtein` plus adjacent-character
 transposition as a FOURTH edit operation at cost 1, instead of plain Levenshtein's 2 (a
 substitution at each of the two swapped positions). Directly fixes a real, confirmed limitation
-of this module's own `:levenshtein` method: `"rcuz"` (a transposition typo of `"cruz"`) scored
+of the plain-Levenshtein scoring this module used earlier: `"rcuz"` (a transposition typo of
+`"cruz"`) scored
 edit-distance 1 to the WRONG `"cuz"` (a deletion) but distance 2 to the intended `"cruz"` under
 plain Levenshtein, so plain Levenshtein confidently proposed the wrong correction. Under
 `DamerauLevenshtein`, `"rcuz"` is distance 1 from BOTH `"cruz"` and `"cuz"` -- correctly recognizing
@@ -27,7 +28,7 @@ const _DAMERAU = Dist.Seqs.DamerauLevenshtein()
     _bk_search(bkt, ctx, query::AbstractString, radius::Int) -> Vector{Tuple{String,Int}}
 
 Every vocabulary token within [`_DAMERAU`](@ref)-distance `radius` of `query` (`query` itself
-excluded IF present in the tree, matching [`_candidates`](@ref)'s own exclusion), paired with its
+excluded IF present in the tree), paired with its
 exact distance -- returning the distance too avoids [`correct_token`](@ref) recomputing it.
 `bkt === nothing` (an empty tree) returns no candidates, not an error.
 
@@ -60,13 +61,11 @@ some people, part of a compound surname for others), and that's tracked as two i
 not forced into one. Bare initials (`length(token) == 1`) never appear here at all (see
 [`build_name_vocabulary`](@ref)).
 
-`qgram_index` is a per-role inverted index (q-gram -> tokens containing it), used by
-[`correct_token`](@ref)'s `:qgram` method. `bktree` is a per-role `SimilaritySearch.BKT`
-([`_DAMERAU`](@ref)-keyed, built once per role below), used by `:damerau`/`:levenshtein` instead --
-an exact edit-distance-radius query, rather than a q-gram-shared candidate SET that still needs its
-distance computed afterward. `bktctx` is the shared `SimilaritySearch.GenericContext` those trees
-were built with and are searched with -- `BKT` search allocates no scratch of its own (per its own
-docstring), so reusing one context for every concurrent search is safe.
+`bktree` is a per-role `SimilaritySearch.BKT` ([`_DAMERAU`](@ref)-keyed, built once per role
+below), which [`correct_token`](@ref) queries by exact edit-distance radius. `bktctx` is the shared
+`SimilaritySearch.GenericContext` those trees were built with and are searched with -- `BKT` search
+allocates no scratch of its own (per its own docstring), so reusing one context for every
+concurrent search is safe.
 
 **`BKT` is keyed by `:damerau` with `checkmetric=false`, NOT a hand-rolled tree anymore
 (2026-09-07).** `BKT` prunes via the triangle inequality, which restricted Damerau-Levenshtein
@@ -83,7 +82,6 @@ this module's own radius never needs to go that high.
 """
 struct Vocabulary
     counts::Dict{Tuple{String,Symbol},Int}
-    qgram_index::Dict{Symbol,Dict{String,Vector{String}}}
     bktree::Dict{Symbol,Any}
     bktctx::SimilaritySearch.GenericContext
 end
@@ -92,8 +90,8 @@ end
     Vocabulary(counts::Dict{Tuple{String,Symbol},Int}) -> Vocabulary
 
 Builds a `Vocabulary` directly from an already-computed `(token, role) -> count` table -- the
-q-gram index and the BK-trees are both derived from `counts` alone, so this is all
-[`build_name_vocabulary`](@ref) does beyond scanning raw names for `counts` in the first place.
+BK-trees are derived from `counts` alone, so this is all [`build_name_vocabulary`](@ref) does
+beyond scanning raw names for `counts` in the first place.
 Meant for reloading a vocabulary saved as a plain counts artifact (e.g. built once over a large
 corpus for threshold-tuning experiments) without re-scanning any raw names.
 
@@ -102,14 +100,8 @@ construction internally via `@BATCHES` (see that function's own docstring) -- mu
 whenever this call itself runs with `Threads.nthreads() > 1`, with no extra effort needed here.
 """
 function Vocabulary(counts::Dict{Tuple{String,Symbol},Int})
-    qgram_index = Dict{Symbol,Dict{String,Vector{String}}}(:given => Dict{String,Vector{String}}(),
-                                                             :surname => Dict{String,Vector{String}}())
     tokens_by_role = Dict{Symbol,Vector{String}}(:given => String[], :surname => String[])
     for ((tok, role), _) in counts
-        idx = qgram_index[role]
-        for g in AC._name_qgrams(tok)
-            push!(get!(idx, g, String[]), tok)
-        end
         push!(tokens_by_role[role], tok)
     end
     ctx = SimilaritySearch.GenericContext(; reporters=[])
@@ -120,7 +112,7 @@ function Vocabulary(counts::Dict{Tuple{String,Symbol},Int})
         SimilaritySearch.index!(bkt, ctx)
         bktree[role] = bkt
     end
-    return Vocabulary(counts, qgram_index, bktree, ctx)
+    return Vocabulary(counts, bktree, ctx)
 end
 
 """
@@ -189,81 +181,21 @@ Whether `token` has at least one recorded occurrence under `role`.
 in_vocab(v::Vocabulary, token::AbstractString, role::Symbol) = haskey(v.counts, (token, role))
 
 """
-    _candidates(v::Vocabulary, token, role) -> Vector{String}
-
-Every DISTINCT vocabulary token under `role` sharing at least one q-gram with `token` (via
-`v.qgram_index`) -- the search space [`correct_token`](@ref) actually scores, instead of the whole
-vocabulary. A genuine typo/transliteration variant always shares at least one q-gram with the
-correct spelling for any real-world token length this problem sees (see `AC._name_qgrams`'s own
-docstring for the same assumption elsewhere in this codebase).
-"""
-function _candidates(v::Vocabulary, token::AbstractString, role::Symbol)
-    idx = v.qgram_index[role]
-    seen = Set{String}()
-    for g in AC._name_qgrams(token)
-        for cand in get(idx, g, String[])
-            push!(seen, cand)
-        end
-    end
-    delete!(seen, token)
-    return collect(seen)
-end
-
-"""
-    _levenshtein(a, b) -> Int
-
-Plain edit distance, iterative DP with two rolling rows (no external dependency -- this codebase
-has no string-distance package, and the algorithm is a dozen lines).
-"""
-function _levenshtein(a::AbstractString, b::AbstractString)
-    ac, bc = collect(a), collect(b)
-    la, lb = length(ac), length(bc)
-    la == 0 && return lb
-    lb == 0 && return la
-    prev = collect(0:lb)
-    curr = similar(prev)
-    for i in 1:la
-        curr[1] = i
-        for j in 1:lb
-            cost = ac[i] == bc[j] ? 0 : 1
-            curr[j+1] = min(prev[j+1] + 1, curr[j] + 1, prev[j] + cost)
-        end
-        prev, curr = curr, prev
-    end
-    return prev[end]
-end
-
-"""
-    _accept(best_tok, best_score, best_pop, cand, score, cand_pop, min_popularity_ratio, own_pop)
-        -> (best_tok, best_score, best_pop)
-
-The acceptance/tie-break decision shared by every `method` branch in [`correct_token`](@ref),
-factored out as a plain value-in-value-out function (not a closure over the caller's locals) so
-none of those branches' hot loops pay for capturing/boxing a mutable outer variable.
-"""
-function _accept(best_tok, best_score, best_pop, cand, score, cand_pop, min_popularity_ratio, own_pop)
-    score <= 0.0 && return (best_tok, best_score, best_pop)  # below the method's own floor
-    cand_pop >= min_popularity_ratio * max(own_pop, 1) || return (best_tok, best_score, best_pop)
-    # accept if strictly better, OR tied with strictly better popularity -- otherwise a tie is
-    # resolved by candidate-iteration order instead of by evidence.
-    (score > best_score || (score == best_score && cand_pop > best_pop)) || return (best_tok, best_score, best_pop)
-    return (cand, score, cand_pop)
-end
-
-"""
     _accept_by_distance(best_tok, best_dist, best_pop, cand, d, cand_pop, min_popularity_ratio, own_pop)
         -> (best_tok, best_dist, best_pop)
 
-The `:damerau`/`:levenshtein` analogue of [`_accept`](@ref) -- ranks candidates by RAW edit
-distance (smaller wins), not by a length-normalized score. **Deliberately not just `_accept` called
-on `1 - d/maxlen`**: that normalization makes the SAME raw distance mean something different
+Acceptance/tie-break decision for [`correct_token`](@ref)'s candidate loop, factored out as a
+plain value-in-value-out function (not a closure over the caller's locals) so the hot loop pays
+nothing for capturing/boxing a mutable outer variable. Ranks candidates by RAW edit distance
+(smaller wins), not by a length-normalized score. **Deliberately not a `1 - d/maxlen` score**:
+that normalization makes the SAME raw distance mean something different
 depending on token length (distance 1 on a 6-letter token scores far lower than distance 1 on a
 12-letter one), and conflates a genuinely CLOSER candidate at a larger distance-to-length ratio
 with a genuinely FARTHER one -- found live to matter once `max_distance > 1` lets candidates at
 different distances compete for the same slot; under the ranking here, distance strictly decides
-first, with popularity breaking a tie only between candidates at the IDENTICAL distance (still
-needed for the same reason `_accept` needed it: a transposition and e.g. a deletion can land at the
-SAME edit distance, see [`_DAMERAU`](@ref)'s docstring for the concrete `"cruz"`/`"cuz"` case).
+first, with popularity breaking a tie only between candidates at the IDENTICAL distance (needed
+because a transposition and e.g. a deletion can land at the SAME edit distance, see
+[`_DAMERAU`](@ref)'s docstring for the concrete `"cruz"`/`"cuz"` case).
 """
 function _accept_by_distance(best_tok, best_dist, best_pop, cand, d, cand_pop, min_popularity_ratio, own_pop)
     cand_pop >= min_popularity_ratio * max(own_pop, 1) || return (best_tok, best_dist, best_pop)
@@ -272,8 +204,8 @@ function _accept_by_distance(best_tok, best_dist, best_pop, cand, d, cand_pop, m
 end
 
 """
-    correct_token(v::Vocabulary, token, role; method=:damerau, min_popularity_ratio=2.0,
-                  max_own_popularity=1, max_distance=1, min_qgram_sim=0.5)
+    correct_token(v::Vocabulary, token, role; min_popularity_ratio=2.0,
+                  max_own_popularity=1, max_distance=1)
         -> (corrected::String, confidence::Float64)
 
 Corrects `token` (assumed to already be in the given/surname ROLE it will be compared under)
@@ -286,36 +218,23 @@ against `v`'s vocabulary for that same role -- never crosses given<->surname.
   precondition, not just a tie-break: a token that already occurs more than once in the corpus is
   treated as an established, real spelling and is NEVER touched, no matter how popular some
   q-gram-similar alternative is. See below for why this gate exists.
-- Only for a token that clears that bar: scores candidates via `method`, each with its OWN
-  candidate-generation strategy (not a shared candidate set filtered differently per method):
-  - `:damerau` -- candidates from [`_bk_search`](@ref)'s exact edit-distance-radius query
-    (`max_distance`, [`_DAMERAU`](@ref): transposition as a 4th edit op at cost 1), which also
-    hands back the exact distance so it's never recomputed. Ranked by RAW distance
-    ([`_accept_by_distance`](@ref) -- smaller wins, NOT a length-normalized score, see that
-    function's docstring for why), and `confidence = 1/(1+distance)` -- distance-native, meaning the
-    same thing regardless of `token`'s length, unlike a `1 - distance/length` proportion would.
-  - `:levenshtein` -- candidates from the SAME BK-tree (built with `:damerau` distances, a safe
-    superset since Damerau-Levenshtein `<=` plain Levenshtein always -- see [`_BKNode`](@ref)),
-    re-scored with plain edit distance `<= max_distance`, same distance-native ranking/confidence --
-    kept only for comparison against `:damerau`; see the tuning results below for why `:damerau`
-    should be preferred over it whenever the choice is between the two.
-  - `:qgram` -- candidates from `_candidates` (q-gram index), `AC._qgram_jaccard(token, cand)`,
-    kept only if `>= min_qgram_sim`; ranked by that Jaccard score directly (its own natural [0,1]
-    scale -- q-gram similarity has no equivalent "raw distance" the way an edit-distance metric
-    does, so there's nothing to convert here). **This value is NOT comparable to `:damerau`'s
-    `confidence` or to its own `min_qgram_sim`-vs-`max_distance` threshold shape -- a `0.9` under
-    Jaccard and a `0.9` under `1/(1+distance)` mean different things; never tune one against the
-    other's threshold by reusing the same numeric constant** (found live: this is exactly what made
-    `PrecisionClustering`'s `contradiction_floor`, tuned for `:qgram`, fail to transfer to
-    `:damerau`).
+- Only for a token that clears that bar: candidates come from [`_bk_search`](@ref)'s exact
+  edit-distance-radius query (`max_distance`, [`_DAMERAU`](@ref): transposition as a 4th edit op at
+  cost 1), which also hands back the exact distance so it's never recomputed. Ranked by RAW distance
+  ([`_accept_by_distance`](@ref) -- smaller wins, NOT a length-normalized score, see that function's
+  docstring for why), and `confidence = 1/(1+distance)` -- distance-native, meaning the same thing
+  regardless of `token`'s length, unlike a `1 - distance/length` proportion would. **A confidence
+  here is NOT comparable to a q-gram Jaccard score on the same [0,1] scale -- a `0.9` under Jaccard
+  and a `0.9` under `1/(1+distance)` mean different things; never carry a threshold tuned against
+  one over to the other** (found live: exactly what made `PrecisionClustering`'s
+  `contradiction_floor`, tuned when this module still scored by q-gram Jaccard, fail to transfer).
 - A candidate is only ACCEPTED if it is ALSO meaningfully more popular than `token` itself
   (`popularity(cand) >= min_popularity_ratio * max(popularity(token), 1)`) -- a second,
   independent bar on top of the own-popularity gate above.
-- Among candidates that clear both bars, the best one wins -- highest Jaccard for `:qgram`, SMALLEST
-  raw distance for `:damerau`/`:levenshtein`; a TIE (same score, or same distance) is broken by
-  popularity (higher wins) rather than by candidate-iteration order -- needed for `:damerau`
-  specifically, since a transposition and e.g. a deletion can land at the exact same edit distance
-  (see [`_DAMERAU`](@ref)'s docstring for the concrete `"cruz"`/`"cuz"` case).
+- Among candidates that clear both bars, the SMALLEST raw distance wins; a TIE (same distance) is
+  broken by popularity (higher wins) rather than by candidate-iteration order -- needed because a
+  transposition and e.g. a deletion can land at the exact same edit distance (see
+  [`_DAMERAU`](@ref)'s docstring for the concrete `"cruz"`/`"cuz"` case).
 - If no candidate clears both bars, `token` is returned unchanged -- `confidence=1.0` if it was
   already an exact vocabulary hit (nothing needed correcting), `confidence=0.0` otherwise (correction
   was attempted and failed to find anything plausible -- distinct from the `1.0` case, useful for
@@ -343,54 +262,51 @@ against `v`'s vocabulary for that same role -- never crosses given<->surname.
    only a spelling that's (by default) essentially unique gets subjected to the popularity-ratio
    check at all.
 
-**Candidate generation for `:damerau`/`:levenshtein` now comes from a BK-tree ([`_BKNode`](@ref)/
-[`_bk_search`](@ref)), not `_candidates`' q-gram index -- this fixes a real limitation the q-gram
-approach had for EITHER metric.** `"jsoe"` (a transposition of `"jose"`) shares ZERO 4-grams with
-`"jose"` -- every 4-char window is corrupted by the swap on a word this short -- so under the OLD
-q-gram-index candidate generation, `"jose"` never even reached the scoring step regardless of which
-metric would have scored it. The BK-tree searches by ACTUAL edit-distance radius (`max_distance`),
-so a transposition-heavy short-token typo like this is found directly: confirmed live,
-`correct_token(vocab, "jsoe", :given)` now returns `"jose"` (assuming it's the more popular
-spelling) where it previously returned `"jsoe"` unchanged. `:qgram` is unaffected -- it still uses
-`_candidates`, unchanged, and still has this limitation (kept only for comparison, see below).
+**Candidate generation comes from a BK-tree ([`_bk_search`](@ref)), NOT from a q-gram inverted
+index -- this fixed a real limitation the earlier q-gram design had.** `"jsoe"` (a transposition of
+`"jose"`) shares ZERO 4-grams with `"jose"` -- every 4-char window is corrupted by the swap on a
+word this short -- so under q-gram candidate generation, `"jose"` never even reached the scoring
+step, regardless of which metric would have scored it. The BK-tree searches by ACTUAL edit-distance
+radius (`max_distance`), so a transposition-heavy short-token typo like this is found directly:
+confirmed live, `correct_token(vocab, "jsoe", :given)` returns `"jose"` (assuming it's the more
+popular spelling) where the q-gram design returned `"jsoe"` unchanged.
 
-**93-repo vocabulary tuning (`experiments/author_matching/tune_correction_thresholds.jl`) --
-`:qgram` was NOT the safer default it looked like at 10-repo scale; that earlier framing was
-wrong.** Two purpose-built evaluation sets (597 synthetic single-edit typos of the most popular
+**93-repo vocabulary tuning (`experiments/author_matching/tune_correction_thresholds.jl`) -- why
+q-gram Jaccard, this module's original scoring, was dropped: it was NOT the safer choice it looked
+like at 10-repo scale.** Two purpose-built evaluation sets (597 synthetic single-edit typos of the most popular
 tokens per role; 1,000 real pairs of DIFFERENT, q-gram-similar, BOTH-independently-established --
 popularity `>= 2` on both sides -- tokens per role, generated from `NameVocabulary`'s own candidate
 index so this stays cheap at 73K-token scale) show, at `max_own_popularity=1`:
 
 | method | recall | precision (0 real-name conflations wanted) |
 |---|---|---|
-| `:qgram` (the old default) | 12.1% (72/597) | 100% (1000/1000) |
-| `:levenshtein`, `max_distance=2` | 73.0% (436/597) | 100% (1000/1000) |
-| `:damerau`, `max_distance=1` (the new default) | **83.8% (500/597)** | **100% (1000/1000)** |
+| q-gram Jaccard (the original scoring) | 12.1% (72/597) | 100% (1000/1000) |
+| plain Levenshtein, `max_distance=2` | 73.0% (436/597) | 100% (1000/1000) |
+| Damerau-Levenshtein, `max_distance=1` (what shipped) | **83.8% (500/597)** | **100% (1000/1000)** |
 
-`max_distance=1` gives `:damerau` the SAME recall as `max_distance=2` (both 83.8%) -- expected,
+`max_distance=1` gives Damerau-Levenshtein the SAME recall as `max_distance=2` (both 83.8%) -- expected,
 since every synthetic test corruption is exactly one edit away and `DamerauLevenshtein` now costs
 every one of its four edit types (substitution/insertion/deletion/transposition) at 1, so
 `max_distance=1` already catches all of them; the more conservative value is the new default since
 it costs nothing here.
 
-`max_own_popularity=1` is confirmed load-bearing regardless of method: relaxing it to `2` collapses
-`:damerau`/`:levenshtein`'s precision from 100% to ~30-49% in the same test (`:qgram` degrades far
-less sharply, 100%->61-89% depending on `min_qgram_sim`, but starts from such low recall that it's
-not a useful tradeoff regardless). The earlier "`:qgram` is safer" conclusion (drawn from a much
-smaller, noisier 10-repo vocabulary) does not hold up at this scale -- `:qgram`'s low recall was
+`max_own_popularity=1` is confirmed load-bearing regardless of metric: relaxing it to `2` collapses
+edit-distance precision from 100% to ~30-49% in the same test (q-gram Jaccard degrades far less
+sharply, 100%->61-89% depending on the similarity floor, but starts from such low recall that it's
+not a useful tradeoff regardless). The earlier "q-gram is safer" conclusion (drawn from a much
+smaller, noisier 10-repo vocabulary) does not hold up at this scale -- its low recall was
 previously read as caution, but the larger vocabulary shows the POPULARITY gate is what actually
-protects precision, not the choice of string metric; `:qgram` was just leaving most of the
-available recall on the table for no corresponding safety benefit.
+protects precision, not the choice of string metric; q-gram was just leaving most of the available
+recall on the table for no corresponding safety benefit.
 
-This is exactly why `:damerau` exists as a THIRD option rather than replacing `:levenshtein`'s
-implementation in place: plain Levenshtein's specific failure mode (a transposition typo scores
-distance-2, so a same-distance-1 WRONG neighbor -- e.g. `"rcuz"` -> `"cuz"` instead of the intended
-`"cruz"` -- confidently wins) is a real, additional cost on top of `:levenshtein`'s already-better-
-than-`:qgram` numbers (accounting for most of the recall gap between the two: 73.0% -> 83.8%), and
-`Dist.Seqs.DamerauLevenshtein` (this package's own restricted/OSA implementation) removes exactly
-that cost by costing the transposition at 1 instead of 2 -- at the price of then tying with e.g. a
-deletion at the same distance, which is why the popularity tie-break above exists: it is what
-actually resolves `"rcuz"` toward `"cruz"` over `"cuz"`, not the distance metric alone.
+Damerau-Levenshtein rather than plain Levenshtein, specifically: plain Levenshtein's failure mode
+(a transposition typo scores distance-2, so a same-distance-1 WRONG neighbor -- e.g. `"rcuz"` ->
+`"cuz"` instead of the intended `"cruz"` -- confidently wins) accounts for most of the recall gap
+between the two (73.0% -> 83.8%). `Dist.Seqs.DamerauLevenshtein` (this package's own restricted/OSA
+implementation) removes that cost by costing the transposition at 1 instead of 2 -- at the price of
+then tying with e.g. a deletion at the same distance, which is why the popularity tie-break above
+exists: it is what actually resolves `"rcuz"` toward `"cruz"` over `"cuz"`, not the distance metric
+alone.
 
 **`Dist.Seqs.DamerauLevenshtein.evaluate` accepts `String`/`SubString` directly as of
 SimilaritySearch 1.3.4** (`evaluate(::DamerauLevenshtein, a::AbstractString, b::AbstractString)`,
@@ -404,51 +320,24 @@ both sides to `Vector{Char}` (once per call for `token`, once per token at `Voca
 for every candidate) -- no longer needed now that the caller can just pass `token`/`cand` as-is.
 """
 function correct_token(v::Vocabulary, token::AbstractString, role::Symbol;
-                        method::Symbol=:damerau,
                         min_popularity_ratio::Float64=2.0,
                         max_own_popularity::Int=1,
-                        max_distance::Int=1,
-                        min_qgram_sim::Float64=0.5)
+                        max_distance::Int=1)
     length(token) <= 1 && return (token, 1.0)
 
     own_pop = popularity(v, token, role)
     own_pop > max_own_popularity && return in_vocab(v, token, role) ? (token, 1.0) : (token, 0.0)
 
-    if method == :damerau
-        best_tok, best_dist, best_pop = token, max_distance + 1, own_pop
-        for (cand, d) in _bk_search(v.bktree[role], v.bktctx, token, max_distance)
-            best_tok, best_dist, best_pop = _accept_by_distance(best_tok, best_dist, best_pop, cand, d,
-                                                                   popularity(v, cand, role), min_popularity_ratio, own_pop)
-        end
-        # confidence is distance-native (NOT length-normalized): 1/(1+distance), so it depends only
-        # on how many edits away the match was, the same meaning regardless of token length -- never
-        # 0.0 for a found correction (that value is reserved for "nothing plausible found").
-        best_tok != token && return (best_tok, 1.0 / (1.0 + best_dist))
-    elseif method == :levenshtein
-        # Candidates come from the SAME BK-tree (built/pruned by :damerau distance) -- safe as a
-        # superset for :levenshtein scoring too, since Damerau-Levenshtein <= plain Levenshtein
-        # always (never rules out a true Levenshtein-radius candidate; the exact recheck below
-        # just drops the few extra ones the Damerau radius let through that Levenshtein wouldn't).
-        best_tok, best_dist, best_pop = token, max_distance + 1, own_pop
-        for (cand, _) in _bk_search(v.bktree[role], v.bktctx, token, max_distance)
-            d = _levenshtein(token, cand)
-            d > max_distance && continue
-            best_tok, best_dist, best_pop = _accept_by_distance(best_tok, best_dist, best_pop, cand, d,
-                                                                   popularity(v, cand, role), min_popularity_ratio, own_pop)
-        end
-        best_tok != token && return (best_tok, 1.0 / (1.0 + best_dist))
-    elseif method == :qgram
-        best_tok, best_score, best_pop = token, 0.0, own_pop
-        for cand in _candidates(v, token, role)
-            s = AC._qgram_jaccard(token, cand)
-            s < min_qgram_sim && continue
-            best_tok, best_score, best_pop = _accept(best_tok, best_score, best_pop, cand, s,
-                                                       popularity(v, cand, role), min_popularity_ratio, own_pop)
-        end
-        best_tok != token && return (best_tok, best_score)
-    else
-        error("unknown correction method $method (expected :levenshtein, :damerau, or :qgram)")
+    best_tok, best_dist, best_pop = token, max_distance + 1, own_pop
+    for (cand, d) in _bk_search(v.bktree[role], v.bktctx, token, max_distance)
+        best_tok, best_dist, best_pop = _accept_by_distance(best_tok, best_dist, best_pop, cand, d,
+                                                               popularity(v, cand, role), min_popularity_ratio, own_pop)
     end
+    # confidence is distance-native (NOT length-normalized): 1/(1+distance), so it depends only
+    # on how many edits away the match was, the same meaning regardless of token length -- never
+    # 0.0 for a found correction (that value is reserved for "nothing plausible found").
+    best_tok != token && return (best_tok, 1.0 / (1.0 + best_dist))
+
     return in_vocab(v, token, role) ? (token, 1.0) : (token, 0.0)
 end
 

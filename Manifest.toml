@@ -2,7 +2,7 @@
 
 julia_version = "1.12.7"
 manifest_format = "2.0"
-project_hash = "05659e9f27911c533c600a658659bc62ea0a4bca"
+project_hash = "ecdfba95cc102bd1817cf88a838be779f17f7b89"
 
 [[deps.AbstractFFTs]]
 deps = ["LinearAlgebra"]
@@ -868,9 +868,9 @@ version = "2.1.0"
 
 [[deps.TextSearch]]
 deps = ["Accessors", "Arpack", "Downloads", "JSON3", "LinearAlgebra", "ProgressMeter", "Random", "SimilaritySearch", "SparseArrays", "StatsBase", "Unicode", "ZipArchives"]
-git-tree-sha1 = "997a28c6e280b6466d8b5bb1953193246fc327e2"
+git-tree-sha1 = "679746bd0449010861a8885244c338855538d2e5"
 uuid = "7f6f6c8a-3b03-11e9-223d-e7d88259bd6c"
-version = "1.1.1"
+version = "1.1.2"
 
 [[deps.TranscodingStreams]]
 git-tree-sha1 = "0c45878dcfdcfa8480052b6ab162cdd138781742"

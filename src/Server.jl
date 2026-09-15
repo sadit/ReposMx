@@ -2,10 +2,10 @@ module Server
 
 using HTTP, JSON, URIs
 using ..Config: DEFAULT_DATA_DIR, DEFAULT_INDEX_DIR
-using ..Storage: get_repo_stats, list_repo_names, get_repo_dir
+using ..Storage: get_repo_stats
 using ..Search: SearchEngine, query_index, search_authors, find_similar_authors_by_profile,
                 find_similar_documents_by_references, search_references,
-                get_document_references, get_author_documents, get_coauthors,
+                get_document_references, get_author_documents,
                 get_topic_elements, search_document_paragraphs, get_detailed_statistics,
                 get_author_network
 using ..Wikipedia: explain_concept

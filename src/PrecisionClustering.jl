@@ -1,8 +1,8 @@
 module PrecisionClustering
 
 using ..AuthorConsolidation: AuthorConsolidation
-using ..NameVocabulary: NameVocabulary, Vocabulary, correct_token, _DAMERAU
-using SimilaritySearch: SimilaritySearch, @BATCHES, @BEGIN, @BEGINBATCH, @LOOP, @END, @nbatches, @batchid, getminbatch
+using ..NameVocabulary: Vocabulary, correct_token, _DAMERAU
+using SimilaritySearch: SimilaritySearch, @BATCHES, @BEGIN, @BEGINBATCH, @LOOP, @nbatches, @batchid, getminbatch
 const AC = AuthorConsolidation
 const Dist = SimilaritySearch.Dist
 
@@ -25,10 +25,9 @@ const PRECISION_SURNAME_THRESHOLD = 0.9
 const PRECISION_STRICT_SURNAME_THRESHOLD = PRECISION_SURNAME_THRESHOLD
 const PRECISION_STRICT_MATCH_THRESHOLD = PRECISION_MATCH_THRESHOLD
 const PRECISION_CONTRADICTION_FLOOR = 0.2        # matches AC._NAME_CLUSTER_CONTRADICTION_FLOOR
-const PRECISION_SCORE_METHOD = :damerau
 
 """
-    correct_name(vocab, raw; method=:damerau) -> (; given::Vector{String}, surname::Vector{String}, content::Vector{String})
+    correct_name(vocab, raw) -> (; given::Vector{String}, surname::Vector{String}, content::Vector{String})
 
 Splits `raw` into given/surname tokens using the same `AC._split_given_surname` logic as production
 clustering, then corrects each REAL content word against `vocab` (see `NameVocabulary.correct_token`).
@@ -39,9 +38,6 @@ element, with each of its REAL words corrected individually and the connectors (
 `NameVocabulary.build_name_vocabulary`), then rejoined with the same hyphens. Bare initials also
 pass through unchanged (`correct_token` is a no-op on them by construction) -- this stage never
 fabricates a full word out of an initial, it only fixes typos in words that are ALREADY full words.
-`method` default matches `NameVocabulary.correct_token`'s own (validated against the 93-repo
-vocabulary artifact, see that function's docstring) rather than being pinned independently -- keep
-the two in sync if either one's default ever changes again.
 
 `content` (2026-09-08) is `AC._surname_content(surname)` (the flattened, connector-free words),
 computed ONCE here rather than by every caller that needs it. Found live via Julia's sampling
@@ -50,13 +46,13 @@ on EVERY pairwise comparison (not once per name), a real, significant chunk of a
 `compute_precision_clusters` run that took ~74 minutes there -- `corrected` is already a per-name
 cache (built once per name in [`compute_precision_clusters`](@ref)), so `content` belongs in it too.
 """
-function correct_name(vocab::Vocabulary, raw::AbstractString; method::Symbol=:damerau)
+function correct_name(vocab::Vocabulary, raw::AbstractString)
     toks = AC._qgram_name_tokens(raw)
     isempty(toks) && return (given=String[], surname=String[], content=String[])
     gs = AC._split_given_surname(toks)
     given_toks, surname_toks = gs.given, gs.surname
-    given = [first(correct_token(vocab, t, :given; method)) for t in given_toks]
-    _correct_word(w) = (w in AC._SURNAME_PARTICLES || w == "y") ? w : first(correct_token(vocab, w, :surname; method))
+    given = [first(correct_token(vocab, t, :given)) for t in given_toks]
+    _correct_word(w) = (w in AC._SURNAME_PARTICLES || w == "y") ? w : first(correct_token(vocab, w, :surname))
     surname = [occursin('-', s) ? join(_correct_word.(split(s, "-")), "-") : _correct_word(s)
                for s in surname_toks]
     return (given=given, surname=surname, content=AC._surname_content(surname))
@@ -80,23 +76,20 @@ function precision_cluster_keys(corrected)
 end
 
 """
-    _precision_token_score(a, b; method=PRECISION_SCORE_METHOD, dl=_DAMERAU, cache=nothing) -> Float64
+    _precision_token_score(a, b; dl=_DAMERAU, cache=nothing) -> Float64
 
 String-similarity for THIS stage -- used both for a single given-name token pair AND (via
-[`precision_match_score`](@ref)) for a whole joined surname phrase. Two methods, kept side by side
-for empirical comparison (same reasoning as `NameVocabulary.correct_token`'s own `method` options --
-pick by measuring against real corpus runs, not by assumption):
+[`precision_match_score`](@ref)) for a whole joined surname phrase.
 
-- `:damerau` (the default) -- restricted Damerau-Levenshtein (`dl`, defaulting to [`_DAMERAU`](@ref)
-  imported from `NameVocabulary` -- but see [`compute_precision_clusters`](@ref)'s `@BATCHES` loop
-  for why a caller might pass its OWN instance instead), normalized the same way
-  `NameVocabulary.correct_token` does: `1 - distance/max(length(a), length(b))`. Needs
-  SimilaritySearch >= 1.3.4 for its `AbstractString`-accepting `evaluate` method (`a`/`b` passed
-  straight through, no `Vector{Char}` conversion -- see that version's changelog).
-- `:qgram` -- `AC._qgram_jaccard(a, b)`, the ORIGINAL scoring for this module, kept only for
-  side-by-side comparison while thresholds get retuned for `:damerau` (see
-  `experiments/author_matching/tune_clustering_metric.jl`). Neither `dl` nor `cache` applies to this
-  method.
+Restricted Damerau-Levenshtein (`dl`, defaulting to [`_DAMERAU`](@ref) imported from
+`NameVocabulary` -- but see [`compute_precision_clusters`](@ref)'s `@BATCHES` loop for why a caller
+might pass its OWN instance instead), normalized the same way `NameVocabulary.correct_token` does:
+`1 - distance/max(length(a), length(b))`. Needs SimilaritySearch >= 1.3.4 for its
+`AbstractString`-accepting `evaluate` method (`a`/`b` passed straight through, no `Vector{Char}`
+conversion -- see that version's changelog). This module originally scored by q-gram Jaccard
+(`AC._qgram_jaccard`); it was dropped after the retuning documented in
+`NameVocabulary.correct_token` -- edit distance won on recall at equal precision, and the two
+scores are NOT on a comparable scale, so every threshold here is tuned for THIS one.
 
 **Bare-initial shortcut (2026-09-08): a CLOSED FORM, not an approximation.** A length-1 token `a`
 against a longer `b` has a PROVABLY EXACT Damerau-Levenshtein distance of `length(b) - 1` when their
@@ -126,7 +119,7 @@ outside a small search radius is not safely "far" for the LOW `contradiction_flo
 for the high `0.9` connect bar, so an approximate "not found = far" answer would risk manufacturing
 contradictions that don't exist).
 """
-function _precision_token_score(a::AbstractString, b::AbstractString; method::Symbol=PRECISION_SCORE_METHOD,
+function _precision_token_score(a::AbstractString, b::AbstractString;
                                  dl=_DAMERAU, cache::Union{Nothing,AbstractDict}=nothing)
     a == b && return 1.0
     la, lb = length(a), length(b)
@@ -134,8 +127,6 @@ function _precision_token_score(a::AbstractString, b::AbstractString; method::Sy
         shorter, longer = la <= lb ? (a, b) : (b, a)
         return (!isempty(longer) && shorter[1] == first(longer)) ? 1.0 / length(longer) : 0.0
     end
-    method == :qgram && return AC._qgram_jaccard(a, b)
-    method == :damerau || error("unknown score method $method (expected :damerau or :qgram)")
     cache === nothing && return 1.0 - SimilaritySearch.evaluate(dl, a, b) / max(la, lb)
     key = a < b ? (a, b) : (b, a)
     return get!(cache, key) do
@@ -144,7 +135,7 @@ function _precision_token_score(a::AbstractString, b::AbstractString; method::Sy
 end
 
 """
-    _surname_typo_score(content_a, content_b; method=PRECISION_SCORE_METHOD, dl=_DAMERAU) -> Float64
+    _surname_typo_score(content_a, content_b; dl=_DAMERAU) -> Float64
 
 Mirrors `AC._surname_typo_score` exactly (see that function's docstring for the full rationale,
 the concrete "MIGUEL ANGEL RODRIGUEZ RODRIGUEZ"/"MIGUEL ANGEL SANCHEZ RODRIGUEZ" false-positive it
@@ -162,24 +153,24 @@ overwhelmingly common shape, so this was a real, significant cost in exactly the
 matters most. `join` is now only ever called when there are genuinely 2+ words on EITHER side.
 """
 function _surname_typo_score(content_a::Vector{String}, content_b::Vector{String};
-                              method::Symbol=PRECISION_SCORE_METHOD, dl=_DAMERAU,
+                              dl=_DAMERAU,
                               cache::Union{Nothing,AbstractDict}=nothing)
-    paternal_score = _precision_token_score(content_a[1], content_b[1]; method, dl, cache)
+    paternal_score = _precision_token_score(content_a[1], content_b[1]; dl, cache)
     maternal_a, maternal_b = @view(content_a[2:end]), @view(content_b[2:end])
     maternal_score = if isempty(maternal_a) && isempty(maternal_b)
         1.0
     elseif isempty(maternal_a) || isempty(maternal_b)
         0.0
     elseif length(maternal_a) == 1 && length(maternal_b) == 1
-        _precision_token_score(maternal_a[1], maternal_b[1]; method, dl, cache)
+        _precision_token_score(maternal_a[1], maternal_b[1]; dl, cache)
     else
-        _precision_token_score(join(maternal_a, " "), join(maternal_b, " "); method, dl, cache)
+        _precision_token_score(join(maternal_a, " "), join(maternal_b, " "); dl, cache)
     end
     return min(paternal_score, maternal_score)
 end
 
 """
-    precision_match_score(corrected_a, corrected_b; method=PRECISION_SCORE_METHOD, dl=_DAMERAU,
+    precision_match_score(corrected_a, corrected_b; dl=_DAMERAU,
                           cache=nothing, surname_shortcut=nothing) -> (; match, surname, pairs)
 
 Precision-oriented analogue of `AC._name_match_score`, operating on pre-corrected `(given,
@@ -208,7 +199,7 @@ each real caller passes its OWN threshold.
 `cache` is forwarded to every [`_precision_token_score`](@ref) call (surname AND given-name) -- see
 that function's docstring for what it memoizes and why.
 """
-function precision_match_score(corrected_a, corrected_b; method::Symbol=PRECISION_SCORE_METHOD, dl=_DAMERAU,
+function precision_match_score(corrected_a, corrected_b; dl=_DAMERAU,
                                 cache::Union{Nothing,AbstractDict}=nothing,
                                 surname_shortcut::Union{Nothing,Float64}=nothing)
     given_a, given_b = corrected_a.given, corrected_b.given
@@ -222,7 +213,7 @@ function precision_match_score(corrected_a, corrected_b; method::Symbol=PRECISIO
     trunc = (valid_a && valid_b && (length(content_a) == 1 || length(content_b) == 1) &&
              (content_a[1] == content_b[1] || content_a[end] == content_b[end])) ? 1.0 : 0.0
     surname_typo = (surname_exact < 1.0 && valid_a && valid_b) ?
-        _surname_typo_score(content_a, content_b; method, dl, cache) : 0.0
+        _surname_typo_score(content_a, content_b; dl, cache) : 0.0
     surname = max(surname_exact, trunc, surname_typo)
 
     if surname_shortcut !== nothing && surname < surname_shortcut
@@ -242,7 +233,7 @@ function precision_match_score(corrected_a, corrected_b; method::Symbol=PRECISIO
         best_j, best_s = 0, -1.0
         for (j, lt) in enumerate(longer)
             used[j] && continue
-            s = _precision_token_score(st, lt; method, dl, cache)
+            s = _precision_token_score(st, lt; dl, cache)
             s > best_s && ((best_s, best_j) = (s, j))
         end
         if best_j > 0
@@ -258,7 +249,7 @@ end
 
 """
     precision_edge(corrected_a, corrected_b;
-                   method=PRECISION_SCORE_METHOD, dl=_DAMERAU,
+                   dl=_DAMERAU,
                    match_threshold=PRECISION_MATCH_THRESHOLD,
                    surname_threshold=PRECISION_SURNAME_THRESHOLD) -> Bool
 
@@ -272,16 +263,16 @@ concrete false-positive this alone lets through regardless of how high the thres
 that function's docstring for why).
 """
 function precision_edge(corrected_a, corrected_b;
-                         method::Symbol=PRECISION_SCORE_METHOD, dl=_DAMERAU,
+                         dl=_DAMERAU,
                          cache::Union{Nothing,AbstractDict}=nothing,
                          match_threshold::Float64=PRECISION_MATCH_THRESHOLD,
                          surname_threshold::Float64=PRECISION_SURNAME_THRESHOLD)
-    r = precision_match_score(corrected_a, corrected_b; method, dl, cache, surname_shortcut=surname_threshold)
+    r = precision_match_score(corrected_a, corrected_b; dl, cache, surname_shortcut=surname_threshold)
     r.surname >= surname_threshold && r.match >= match_threshold
 end
 
 """
-    precision_contradiction(names, corrected; method=PRECISION_SCORE_METHOD,
+    precision_contradiction(names, corrected;
                             surname_threshold=PRECISION_SURNAME_THRESHOLD,
                             contradiction_floor=PRECISION_CONTRADICTION_FLOOR)
         -> Union{Tuple{String,String}, Nothing}
@@ -291,11 +282,12 @@ surname score between two members, or a per-position given-name mismatch
 ([`_precision_token_score`](@ref) below `contradiction_floor`) between two full-word tokens.
 Mirrors `AC._name_cluster_contradiction` exactly, adapted to pre-corrected tokens.
 
-**`contradiction_floor`'s right value is `method`-dependent, NOT a universal constant -- found live
-while validating the `:damerau` switch against the real 10-repo corpus.** `:qgram`'s
-`PRECISION_CONTRADICTION_FLOOR=0.2` default assumed two genuinely DIFFERENT same-length words
-always score near `0.0` -- true often enough for q-gram Jaccard, but NOT for `:damerau`'s
-`1 - distance/max(length)` formula: `"torres"`/`"morales"` (distance 4 of 7) scores `0.571`,
+**`contradiction_floor`'s right value depends on the SCORING FUNCTION, not on some universal
+notion of "different" -- found live while switching this module from q-gram Jaccard to edit
+distance, against the real 10-repo corpus.** The original
+`PRECISION_CONTRADICTION_FLOOR=0.2` assumed two genuinely DIFFERENT same-length words always score
+near `0.0` -- true often enough for q-gram Jaccard, but NOT for
+[`_precision_token_score`](@ref)'s `1 - distance/max(length)` formula: `"torres"`/`"morales"` (distance 4 of 7) scores `0.571`,
 `"alejandra"`/`"alejandro"` (distance 1 of 9, a single letter that happens to flip grammatical
 gender) scores `0.889` -- both comfortably above a `0.2` floor despite being unambiguously different
 people, letting a transitively-bridged false pair slip through uncaught. See
@@ -315,12 +307,12 @@ González ..." people formed via exactly this bridge, chained pairwise through t
 component for [`precision_split`](@ref) even though the two never directly connected in phase 1.
 """
 function precision_contradiction(names::Vector{String}, corrected;
-                                  method::Symbol=PRECISION_SCORE_METHOD, dl=_DAMERAU,
+                                  dl=_DAMERAU,
                                   cache::Union{Nothing,AbstractDict}=nothing,
                                   surname_threshold::Float64=PRECISION_SURNAME_THRESHOLD,
                                   contradiction_floor::Float64=PRECISION_CONTRADICTION_FLOOR)
     for i in 1:length(names), j in (i+1):length(names)
-        r = precision_match_score(corrected[names[i]], corrected[names[j]]; method, dl, cache,
+        r = precision_match_score(corrected[names[i]], corrected[names[j]]; dl, cache,
                                    surname_shortcut=surname_threshold)
         r.surname >= surname_threshold || return (names[i], names[j])
         for (ta, tb, s) in r.pairs
@@ -356,12 +348,12 @@ raising `contradiction_floor` alone (this function's caller) could never fix tha
 high, because this function never looked at per-position scores at all until now.
 """
 function precision_strict_compatible(corrected_a, corrected_b;
-                                      method::Symbol=PRECISION_SCORE_METHOD, dl=_DAMERAU,
+                                      dl=_DAMERAU,
                                       cache::Union{Nothing,AbstractDict}=nothing,
                                       surname_threshold::Float64=PRECISION_STRICT_SURNAME_THRESHOLD,
                                       match_threshold::Float64=PRECISION_STRICT_MATCH_THRESHOLD,
                                       contradiction_floor::Float64=PRECISION_CONTRADICTION_FLOOR)
-    r = precision_match_score(corrected_a, corrected_b; method, dl, cache, surname_shortcut=surname_threshold)
+    r = precision_match_score(corrected_a, corrected_b; dl, cache, surname_shortcut=surname_threshold)
     r.surname >= surname_threshold || return false
     r.match >= match_threshold || return false
     for (ta, tb, s) in r.pairs
@@ -377,13 +369,13 @@ Greedy re-partition of a contradiction-flagged component, mirroring `AC._name_cl
 exactly (same greedy, order-dependent must-link-to-every-existing-member behavior, same known
 limitation -- see that function's docstring).
 """
-function precision_split(names::Vector{String}, corrected; method::Symbol=PRECISION_SCORE_METHOD,
+function precision_split(names::Vector{String}, corrected;
                           contradiction_floor::Float64=PRECISION_CONTRADICTION_FLOOR)
     clusters = Vector{Vector{String}}()
     for nm in sort(names)
         placed = false
         for c in clusters
-            if all(m -> precision_strict_compatible(corrected[nm], corrected[m]; method, contradiction_floor), c)
+            if all(m -> precision_strict_compatible(corrected[nm], corrected[m]; contradiction_floor), c)
                 push!(c, nm)
                 placed = true
                 break
@@ -400,7 +392,7 @@ end
 Splits a candidate bucket into what can be resolved FOR FREE and what actually needs a comparison
 (the "clustering más fino" step, 2026-09-08). Members of `bucket` sharing the EXACT same corrected
 `(given, surname)` signature are, by construction, already a perfect match under
-[`precision_edge`](@ref) (`a == b` scores `1.0` regardless of method) -- grouping by signature and
+[`precision_edge`](@ref) (`a == b` scores `1.0`) -- grouping by signature and
 star-connecting each group (first member to every other) gets those edges for free, no
 [`precision_edge`](@ref) call at all, instead of every such pair being independently rediscovered by
 an O(bucket²) scan. `comparable_reps` returns ONE representative name per DISTINCT signature that
@@ -449,16 +441,15 @@ function _bucket_signature_groups(bucket::Vector{String}, corrected, idx::Abstra
 end
 
 """
-    compute_precision_clusters(raw_names, vocab; correct_method=:damerau, method=PRECISION_SCORE_METHOD,
+    compute_precision_clusters(raw_names, vocab;
                                match_threshold=PRECISION_MATCH_THRESHOLD,
                                surname_threshold=PRECISION_SURNAME_THRESHOLD,
                                contradiction_floor=PRECISION_CONTRADICTION_FLOOR) -> Vector{Vector{String}}
 
-Precision-first replacement for `AC.compute_name_clusters`: corrects every name once (see
-[`correct_name`](@ref), controlled by `correct_method` -- the VOCABULARY correction method, kept
-independent from `method` below), buckets by corrected surname ([`precision_cluster_keys`](@ref)),
+Precision-first replacement for `AC.compute_name_clusters`: corrects every name once
+([`correct_name`](@ref)), buckets by corrected surname ([`precision_cluster_keys`](@ref)),
 connects pairs within a bucket via union-find using [`precision_edge`](@ref) (high thresholds, no
-bare-initial shortcut, string-similarity scored by `method` -- see [`_precision_token_score`](@ref)),
+bare-initial shortcut -- see [`_precision_token_score`](@ref)),
 THEN checks every resulting component for a [`precision_contradiction`](@ref) and
 [`precision_split`](@ref)s it if found -- this last step is required for correctness, not an extra
 safety margin (see [`precision_contradiction`](@ref)'s docstring for the concrete false-positive it
@@ -466,12 +457,11 @@ catches that no connect threshold alone can). A name whose given-name list is en
 never connects to anything here regardless of how well its surname matches -- it stays a singleton
 group, to be picked up by a later, separately-designed imputation stage (not part of this module).
 
-`correct_method` and `method` are deliberately two separate knobs: the first controls whether/how a
-TYPO gets fixed against the vocabulary before anything else happens (gated on the token's own
-popularity, see `NameVocabulary.correct_token`); the second controls how two ALREADY-corrected
-strings that still differ get scored against each other during clustering itself (no popularity
-gate -- every established spelling variant correction deliberately leaves untouched still needs
-SOME tolerance here, or it would never connect to anything).
+Correction and clustering are two deliberately separate stages: the first fixes a TYPO against the
+vocabulary before anything else happens (gated on the token's own popularity, see
+`NameVocabulary.correct_token`); the second scores two ALREADY-corrected strings that still differ
+(no popularity gate -- every established spelling variant correction deliberately leaves untouched
+still needs SOME tolerance here, or it would never connect to anything).
 
 Garbage names (`AC._is_garbage_name`) are never bucketed -- they fall through to singleton groups
 via the union-find default, same guard as `AC.compute_name_clusters`.
@@ -546,8 +536,6 @@ other change here. `precision_contradiction`/`precision_split` afterward stay se
 uncached -- not yet shown to be the bottleneck, but not re-measured at 93-repo scale either.
 """
 function compute_precision_clusters(raw_names::Vector{String}, vocab::Vocabulary;
-                                     correct_method::Symbol=:damerau,
-                                     method::Symbol=PRECISION_SCORE_METHOD,
                                      match_threshold::Float64=PRECISION_MATCH_THRESHOLD,
                                      surname_threshold::Float64=PRECISION_SURNAME_THRESHOLD,
                                      contradiction_floor::Float64=PRECISION_CONTRADICTION_FLOOR,
@@ -555,7 +543,7 @@ function compute_precision_clusters(raw_names::Vector{String}, vocab::Vocabulary
     n = length(raw_names)
     n == 0 && return Vector{Vector{String}}()
     idx = Dict(nm => i for (i, nm) in enumerate(raw_names))
-    corrected = Dict(nm => correct_name(vocab, nm; method=correct_method) for nm in raw_names if !AC._is_garbage_name(nm))
+    corrected = Dict(nm => correct_name(vocab, nm) for nm in raw_names if !AC._is_garbage_name(nm))
 
     candidate_buckets = Dict{String,Vector{String}}()
     for nm in raw_names
@@ -591,7 +579,7 @@ function compute_precision_clusters(raw_names::Vector{String}, vocab::Vocabulary
                 bucket = small_buckets[bi]
                 for i in 1:length(bucket), j in (i+1):length(bucket)
                     a, b = bucket[i], bucket[j]
-                    precision_edge(corrected[a], corrected[b]; method, dl, cache, match_threshold, surname_threshold) &&
+                    precision_edge(corrected[a], corrected[b]; dl, cache, match_threshold, surname_threshold) &&
                         push!(bedges, (idx[a], idx[b]))
                 end
             end
@@ -616,7 +604,7 @@ function compute_precision_clusters(raw_names::Vector{String}, vocab::Vocabulary
                 a = bucket[i]
                 for j in (i+1):sz
                     b = bucket[j]
-                    precision_edge(corrected[a], corrected[b]; method, dl, cache, match_threshold, surname_threshold) &&
+                    precision_edge(corrected[a], corrected[b]; dl, cache, match_threshold, surname_threshold) &&
                         push!(bedges, (idx[a], idx[b]))
                 end
             end
@@ -653,11 +641,11 @@ function compute_precision_clusters(raw_names::Vector{String}, vocab::Vocabulary
             push!(groups, comp)
             continue
         end
-        cx = precision_contradiction(comp, corrected; method, surname_threshold, contradiction_floor)
+        cx = precision_contradiction(comp, corrected; surname_threshold, contradiction_floor)
         if cx === nothing
             push!(groups, comp)
         else
-            append!(groups, precision_split(comp, corrected; method, contradiction_floor))
+            append!(groups, precision_split(comp, corrected; contradiction_floor))
         end
     end
     return groups

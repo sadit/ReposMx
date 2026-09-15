@@ -1,10 +1,10 @@
 module Wikipedia
 
 using Downloads, JSON, URIs
-using Downloads: request, Curl
+using Downloads: request
 using ..Config: DEFAULT_HEADERS
 
-export get_wikipedia_summary, explain_concept, search_wikipedia_topics
+export get_wikipedia_summary, explain_concept
 
 """
     get_wikipedia_summary(title::AbstractString; lang::String="es", timeout::Float64=5.0)
@@ -60,30 +60,6 @@ function explain_concept(concept::AbstractString; timeout::Float64=5.0)
     end
     
     return nothing
-end
-
-"""
-    search_wikipedia_topics(query::AbstractString; lang::String="es", limit::Int=3, timeout::Float64=5.0)
-
-Searches Wikipedia for relevant topic titles related to a search query.
-"""
-function search_wikipedia_topics(query::AbstractString; lang::String="es", limit::Int=3, timeout::Float64=5.0)
-    encoded = URIs.escapeuri(query)
-    url = "https://$lang.wikipedia.org/w/api.php?action=opensearch&search=$encoded&limit=$limit&namespace=0&format=json"
-    
-    output = IOBuffer()
-    res = request(url; output, timeout, throw=false, headers=DEFAULT_HEADERS)
-    
-    if res isa Downloads.Response && res.status == 200
-        try
-            data = JSON.parse(String(take!(output)))
-            if length(data) >= 2 && data[2] isa Vector
-                return String.(data[2])
-            end
-        catch
-        end
-    end
-    return String[]
 end
 
 end # module Wikipedia

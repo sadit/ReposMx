@@ -48,7 +48,7 @@ using .Server
 using .TUI
 using .CLI
 
-export Record, RepoInfo, SearchHit, SearchResponse, AuthorProfile, ParagraphHit, ReferenceRecord,
+export ParagraphHit,
        DEFAULT_DATA_DIR, DEFAULT_INDEX_DIR, get_repositories,
        get_repo_dir, get_repo_info, get_repo_stats, list_repo_names,
        load_metadata_records, load_corpus_records,
@@ -64,7 +64,7 @@ export Record, RepoInfo, SearchHit, SearchResponse, AuthorProfile, ParagraphHit,
        put_author_profile!, get_author_profile, get_author_documents, get_coauthors, normalize_author_name,
        put_reference!, get_reference, get_document_references, get_documents_citing_author,
        put_topics!, get_topic_docs, get_topic_authors, intersect_topic_repo_docs, intersect_topic_repo_authors,
-       get_fulltext, get_paragraphs, ingest_repository_to_db!, ingest_all_to_db!,
+       ingest_repository_to_db!, ingest_all_to_db!,
        SearchEngine, query_index, search_authors, find_similar_authors_by_profile, find_similar_documents_by_references,
        search_references, search_document_paragraphs, get_detailed_statistics, get_topic_elements, get_author_network,
        start_server, launch_interactive_shell, main_cli

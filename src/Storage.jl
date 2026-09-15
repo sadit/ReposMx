@@ -1,10 +1,10 @@
 module Storage
 
 using JSON, Dates
-using ..Config: DEFAULT_DATA_DIR, get_repositories
+using ..Config: DEFAULT_DATA_DIR
 
 export get_repo_dir, get_repo_info, save_repo_info, list_repo_names,
-       load_metadata_records, save_metadata_records, append_metadata_record,
+       load_metadata_records, save_metadata_records,
        load_corpus_records, save_corpus_records, get_repo_stats
 
 """
