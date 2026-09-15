@@ -289,7 +289,10 @@ end
 """
     extract_document_references(doc_id::AbstractString, repo::AbstractString, doc_title::AbstractString, fulltext::AbstractString)
 
-Extracts structured ReferenceRecords with full traceability to source doc and repository.
+Extracts the document's citations as a `Vector{Dict{String, Any}}`, one entry per reference,
+each fully traceable back to its source doc and repository: `ref_id` (`"<repo>:<doc_id>#<n>"`),
+`doc_id`, `doc_title`, `repo`, `ref_num`, the raw `text`, and the heuristically inferred
+`year` and `authors`.
 """
 function extract_document_references(doc_id::AbstractString, repo::AbstractString, doc_title::AbstractString, fulltext::AbstractString)
     ref_block = extract_reference_section(fulltext)
