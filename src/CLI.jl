@@ -29,7 +29,8 @@ MODO INTERACTIVO:
 SUBCOMANDOS PRINCIPALES DE FLUJO:
   update-db [repos...]       1. Cosecha OAI-PMH + 2. Descarga PDFs + 3. Extrae texto
   prepare-index [repos...]   Toma lo no indexado, construye corpus y genera índices bilingües
-  populate-db [repos...]     Puebla la base de datos embebida RocksDB (Documentos, Autores, Citas, Facetas)
+  populate-db [repos...]     Puebla la base de datos embebida RocksDB (Documentos, Tópicos,
+                             Autores y coautorías, Citas)
   update-all [repos...]      Ejecuta 'update-db' seguido de 'prepare-index' (todo-en-uno)
   serve [--port N]           Lanza el servidor HTTP y la interfaz web interactiva
 

@@ -901,7 +901,9 @@ end
 """
     ingest_repository_to_db!(db::Database, repo; data_dir=DEFAULT_DATA_DIR, batch_size=1000)
 
-Populates RocksDB with records, metadata, facets, authors, and references from `data/repos/<repo>/`.
+Populates RocksDB from `data/repos/<repo>/`: document metadata (`default` CF), topics (`topics`),
+authors with their document links and coauthorship edges (`authors`), and the references extracted
+from each document (`references`).
 """
 function ingest_repository_to_db!(d::Database, repo::AbstractString; data_dir=DEFAULT_DATA_DIR, batch_size::Int=1000)
     rdir = get_repo_dir(repo; data_dir)
@@ -910,7 +912,7 @@ function ingest_repository_to_db!(d::Database, repo::AbstractString; data_dir=DE
     
     println("[$repo] Ingesting $(length(records)) documents into RocksDB...")
     
-    # 1. Ingest Documents, Facets, and Fulltext in batches
+    # 1. Ingest documents and their topic/author/reference indexes in batches
     count = 0
     total = length(records)
     
@@ -926,7 +928,7 @@ function ingest_repository_to_db!(d::Database, repo::AbstractString; data_dir=DE
                 # Document metadata in default CF
                 put_document!(d, repo, doc_id, doc; batch=b)
                 
-                # Secondary indexes in facets CF
+                # Secondary indexes in topics CF
                 put_topics!(d, doc; batch=b)
                 
                 # Authors in authors CF

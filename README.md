@@ -89,7 +89,7 @@ reposmx update-db cimat cicese
 # Construye el corpus estructurado y los índices de búsqueda
 reposmx prepare-index cimat cicese
 
-# Puebla la base de datos embebida (RocksDB) con documentos, autores, citas y facetas
+# Puebla la base de datos embebida (RocksDB) con documentos, tópicos, autores y citas
 reposmx populate-db cimat cicese
 
 # Tubería equivalente a update-db + prepare-index en un solo paso
