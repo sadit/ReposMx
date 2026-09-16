@@ -138,8 +138,9 @@ end
 """
     build_name_vocabulary(raw_names::Vector{String}) -> Vocabulary
 
-Builds the (token, role) -> popularity table over `raw_names`, plus the q-gram candidate index
-used by [`correct_token`](@ref). Garbage names (`AC._is_garbage_name`, bare URLs/ORCIDs/digit
+Builds the (token, role) -> popularity table over `raw_names`; the per-role BK-trees
+[`correct_token`](@ref) searches for candidates are derived from that table by the
+[`Vocabulary`](@ref) constructor. Garbage names (`AC._is_garbage_name`, bare URLs/ORCIDs/digit
 runs) are skipped entirely. Compound names are already split into individual tokens by
 [`_tokens_by_role`](@ref) -- each contributes its own popularity count independently. Bare
 single-character tokens (real initials in the raw data) are discarded: they carry no name
@@ -217,7 +218,7 @@ against `v`'s vocabulary for that same role -- never crosses given<->surname.
   singleton spelling) before ANY candidate search happens at all.** This is a necessary
   precondition, not just a tie-break: a token that already occurs more than once in the corpus is
   treated as an established, real spelling and is NEVER touched, no matter how popular some
-  q-gram-similar alternative is. See below for why this gate exists.
+  near-identical alternative is. See below for why this gate exists.
 - Only for a token that clears that bar: candidates come from [`_bk_search`](@ref)'s exact
   edit-distance-radius query (`max_distance`, [`_DAMERAU`](@ref): transposition as a 4th edit op at
   cost 1), which also hands back the exact distance so it's never recomputed. Ranked by RAW distance
@@ -275,8 +276,8 @@ popular spelling) where the q-gram design returned `"jsoe"` unchanged.
 q-gram Jaccard, this module's original scoring, was dropped: it was NOT the safer choice it looked
 like at 10-repo scale.** Two purpose-built evaluation sets (597 synthetic single-edit typos of the most popular
 tokens per role; 1,000 real pairs of DIFFERENT, q-gram-similar, BOTH-independently-established --
-popularity `>= 2` on both sides -- tokens per role, generated from `NameVocabulary`'s own candidate
-index so this stays cheap at 73K-token scale) show, at `max_own_popularity=1`:
+popularity `>= 2` on both sides -- tokens per role, generated from the q-gram candidate index this
+module still had at the time, so building the eval set stayed cheap at 73K-token scale) show, at `max_own_popularity=1`:
 
 | method | recall | precision (0 real-name conflations wanted) |
 |---|---|---|

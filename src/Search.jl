@@ -339,7 +339,7 @@ barely move a BM25 score but still cost a full posting-list evaluation each. IDF
 own measure of "how much does this token matter" (`log(N/ndocs)`, monotonic in `ndocs`), so
 keeping the lowest-`ndocs` tokens keeps the ones that actually drive the ranking.
 
-Returns a [`BOW`](@ref) (`Dict{UInt32,Int32}`, vocabulary ids -> presence), which `search` accepts
+Returns a `TextSearch.BOW` (`Dict{UInt32,Int32}`, vocabulary ids -> presence), which `search` accepts
 directly — no re-tokenization round trip.
 """
 function top_informative_bow(idx, text::AbstractString; top_k_tokens::Int)

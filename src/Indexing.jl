@@ -476,7 +476,8 @@ end
 
 Loads the vocabulary from its `.zip` (via `VocabIO.load_vocabulary_zip`) plus the small shell —
 BM25 params/doc lengths/query pipeline — from its own `.zip` (via
-`IndexShellIO.load_index_shell_zip`; see that module's docstring for why this replaced a JLD2
+`IndexShellIO.load_index_shell_zip`; see `IndexShellIO.save_index_shell_zip`'s docstring for why
+this replaced a JLD2
 `jldsave`/`JLD2.load` round-trip), and assembles a `BM25InvertedFile` whose posting lists and
 per-document term vectors are read lazily from RocksDB (`postings`/`docvecs` column families)
 instead of being deserialized eagerly into RAM.

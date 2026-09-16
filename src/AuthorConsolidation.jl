@@ -90,8 +90,9 @@ end
 Rewrites ONLY the `impute` section of the overrides file, read-modify-write: `merge`/`split` (and
 anything else already in the file) are read back verbatim and preserved untouched, since those are
 human-edited and this function must never silently clobber a hand-curated entry. Meant to be
-called once per rebuild by the (not yet implemented — interface only, see this module's docs)
-imputation pass, after [`compute_groups`](@ref) has run with the PREVIOUS `impute` contents, so
+called once per rebuild by the imputation pass ([`Imputation.impute_candidates`](@ref) —
+implemented and validated on the 10-repo corpus, but NOT yet wired into the production rebuild, so
+nothing calls this function in production today), after [`compute_groups`](@ref) has run with the PREVIOUS `impute` contents, so
 each run's imputation proposals fully replace the last run's rather than accumulating stale ones.
 Creates the file (with empty `merge`/`split`) if it doesn't exist yet.
 """
@@ -758,7 +759,8 @@ Known, accepted limitations (not chased further without new evidence):
 - [`_SURNAME_PARTICLES`](@ref) is not exhaustively validated (see its docstring).
 - Not fast: on the real 10-repo development corpus (19,543 raw names), a full
   `reposmx consolidate-authors` run (this clustering plus everything else that command does —
-  content-similarity join, RocksDB persistence, BM25 rebuilds) took ~10 minutes. Full-corpus
+  RocksDB persistence, BM25 rebuilds, and, at the time of this measurement, the content-similarity
+  join since removed from this module) took ~10 minutes. Full-corpus
   (~95-repo) runtime has not been measured; a very large candidate bucket (a common surname across
   the whole corpus) could make the O(bucket²) phase-1 pass slower still. Revisit if it actually
   turns out to be a problem — correctness came first here.
@@ -846,8 +848,9 @@ Overrides are applied AFTER clustering, unconditionally (never re-checked by the
 shouldn't have made — neither should be second-guessed by [`_name_cluster_contradiction`](@ref).
 `impute` is mechanically IDENTICAL to `merge` (a forced edge, same as-is treatment) — the only
 difference is who writes that section of the overrides file: a person edits `merge`/`split` by
-hand, a separate (not-yet-implemented) recall-oriented pass computes and rewrites `impute` on its
-own each run (see [`load_overrides`](@ref)/the module docstring's persistence-format note). Plain
+hand, a separate recall-oriented pass ([`Imputation.impute_candidates`](@ref)) computes and
+rewrites `impute` on its own each run (see [`load_overrides`](@ref)/[`save_imputes`](@ref), which
+also records how far that wiring actually got). Plain
 BFS over an adjacency `Dict`, no graph library needed.
 """
 function compute_groups(raw_names::Vector{String}, overrides)
