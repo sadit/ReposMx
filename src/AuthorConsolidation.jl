@@ -1,3 +1,62 @@
+"""
+    AuthorConsolidation
+
+Identity resolution over author names: groups the RAW author profiles (one per exact OAI
+creator/contributor string, as produced by `Corpus.build_authors_index_data`) into CONSOLIDATED
+profiles, one per person, each with an id that stays stable across rebuilds. Raw profiles are never
+collapsed or rewritten — consolidation is a layer on top of them, and it is the consolidated corpus
+that `Indexing.jl` builds the `authors_name`/`authors_profile` BM25 indices over.
+
+## Pipeline
+
+1. [`assign_raw_ids`](@ref) — one deterministic id per raw name, assigned in sorted order so it
+   does not depend on corpus scan order.
+2. [`compute_name_clusters`](@ref) — the name-only clustering signal: a recall-oriented edge
+   proposal within cheap candidate buckets, then a precision-oriented oracle that splits a
+   component only when it finds a genuine counter-example inside it.
+3. [`compute_groups`](@ref) — connected components of those clusters plus the human/automatic
+   overrides (`merge`/`impute` force an edge, `split` removes one), applied AFTER clustering and
+   never re-checked by the oracle.
+4. [`rollup`](@ref)/[`resolve_leader`](@ref) — one consolidated profile per group: sums, unions,
+   a canonical display name, and the id.
+5. [`build_and_persist`](@ref) — writes the result to disk; [`load_all`](@ref) reads it back.
+
+## Stable ids: the leader model
+
+A group's `consolidated_id` IS the raw id of its LEADER, so choosing an id and choosing a leader
+are one decision ([`resolve_leader`](@ref)). Because every raw name has a unique raw id and belongs
+to exactly one group, two groups can never pick the same id — no hashing or disambiguation
+bookkeeping is needed for it. [`build_and_persist`](@ref) is therefore STATEFUL: it reads the
+previous run's profiles before wiping them, so a group whose membership shifted keeps its id, a
+split's non-leader piece gets a fresh one, and a merge inherits the larger previous group's id.
+
+## On disk
+
+One TOML file per group, at
+`<index_dir>/authors_consolidated/<apellido_bucket>/<consolidated_id>.toml`. TOML because these
+files are meant to be read and edited by a person during review, and it costs no new dependency
+(Julia stdlib) — the point is a corpus on disk that is re-read before indexing, not just an
+in-memory rollup. The bucket directory is PURELY organizational: it only keeps a single flat
+directory from holding hundreds of thousands of files. Nothing ever looks a profile up by bucket —
+[`load_all`](@ref) walks the whole subtree — so [`_bucket_for`](@ref)'s scheme can change without
+invalidating anything already written.
+
+Human review lives in a separate TOML (`Config.DEFAULT_AUTHOR_OVERRIDES_TOML`, versioned at the
+repo root): `merge`/`split` are hand-edited, `impute` is machine-written and fully rewritten each
+run ([`load_overrides`](@ref)/[`save_imputes`](@ref)). The two are mechanically identical as edges;
+they are separate sections only because a rewrite of `impute` must never clobber a hand-curated
+entry.
+
+## Deliberately not here
+
+Clustering is NAME-ONLY: no profile-content evidence. A content signal is being designed
+([issue #2](https://github.com/sadit/ReposMx/issues/2)) as justification for the oracle to SPLIT a
+cluster — a precision tool — not as a source of merge candidates. An earlier content-similarity
+join lived in this module and was removed: it bucketed an adaptive, population-relative threshold,
+which is not safe the way [`_name_match_score`](@ref)'s absolute threshold is (see
+[`compute_name_clusters`](@ref)). Recall on names carrying a bare initial is `Imputation`'s job
+instead, and that pass is implemented but not yet wired into the production rebuild.
+"""
 module AuthorConsolidation
 
 using TextSearch

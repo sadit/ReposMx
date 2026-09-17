@@ -1,3 +1,30 @@
+"""
+    IndexShellIO
+
+Persistence for the "shell" of a `TextSearch.BM25InvertedFile` — the small part that is neither the
+vocabulary nor the bulk postings. A search index in this project is stored in three pieces, each
+with its own medium chosen by size and access pattern:
+
+| piece | where | written by |
+|---|---|---|
+| vocabulary | a `.zip` on disk | `VocabIO` |
+| posting lists, per-document term vectors | RocksDB (`postings`/`docvecs` CFs), read lazily | `LazyBM25` |
+| shell: BM25 params, doc lengths, index length, query pipeline | a `.zip` on disk | this module |
+
+The shell is a few scalars, one `Vector{Int32}` and a handful of `Union{Nothing,Dict}` fields, so
+its size is not what matters. What matters is the deserialization machinery it pulls in:
+[`save_index_shell_zip`](@ref)/[`load_index_shell_zip`](@ref) encode it as one `shell.json` inside a
+`.zip`, via `JSON3`/`ZipArchives`, precisely so loading it costs nothing beyond what
+`VocabIO.load_vocabulary_zip` already pays a few lines earlier in the same loader — see
+[`save_index_shell_zip`](@ref)'s docstring for the ~8s per-process JIT tax that the JLD2 round-trip
+it replaced used to add to a cold `SearchEngine()`.
+
+Because JSON has no notion of the Julia types involved, each field is encoded and decoded field by
+field (`_encode_bm25`/`_decode_bm25`, `_encode_query`/`_decode_query`) rather than reflected over
+generically. That is the deliberate tradeoff: a `TextSearch.BM25Scorer` or `QueryPipeline` field
+added upstream will NOT appear here on its own and has to be threaded through both directions by
+hand.
+"""
 module IndexShellIO
 
 using JSON3
