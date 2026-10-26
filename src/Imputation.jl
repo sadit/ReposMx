@@ -36,6 +36,53 @@ function _has_bare_initial(nm::AbstractString)
 end
 
 """
+    _surname_words(nm::AbstractString) -> Vector{String}
+
+The surname words of `nm` ([`_impute_given_surname`](@ref)) with two letters or more. Words of one
+letter are dropped, because the split sometimes takes a middle initial as a surname
+(`"S. V Koshevaya"`).
+"""
+_surname_words(nm::AbstractString) = filter(w -> length(w) >= 2, _impute_given_surname(nm)[2])
+
+"""
+    _first_surname_agrees(name_a, name_b) -> Bool
+
+False when the two surnames have a different number of words and the shorter one matches only
+the last word of the longer one, written with a hyphen. A name usually omits its second surname,
+not its first: `"Juan Icaza"` is not a short form of `"María J. Anchustegui-Icaza"`.
+
+Without a hyphen, a match on the last word is accepted. The split cannot tell a second given name
+from a first surname: in `"LILIANA INES HOMILKA"` it takes `"Ines"` as the first surname, and
+`"L. Homilka"` is the same person. The wrong matches of this shape seen on 2026-10-26 also leave
+out a first given name (`"Jorge A. Sayago Valerio"` and `"Angelo Valerio"`), so
+[`_weak_match`](@ref) handles them.
+"""
+function _first_surname_agrees(name_a::AbstractString, name_b::AbstractString)
+    ca, cb = _surname_words(name_a), _surname_words(name_b)
+    (isempty(ca) || isempty(cb) || length(ca) == length(cb) || ca[1] == cb[1]) && return true
+    longer_name = length(ca) > length(cb) ? name_a : name_b
+    return ca[end] == cb[end] && !occursin('-', longer_name)
+end
+
+"""
+    _weak_match(name_a, name_b) -> Bool
+
+True when the alignment of given names leaves out the first given name of the name with more
+given names. `"Francisco J. Grajeda-Sandoval"` and `"Jonathan Grajeda"` match only through `"J."`;
+`"Karla G. Ramírez-Morales"` and `"Gerardo Ramírez Morales"` match only through `"G."`. The same
+shape also describes one person who uses a middle name: `"Jesús A. Carrasco Ochoa"` and
+`"Ariel Carrasco"`. [`impute_candidates`](@ref) keeps such an edge only when the two groups share a
+coauthor.
+"""
+function _weak_match(name_a::AbstractString, name_b::AbstractString)
+    ga, gb = _impute_given_surname(name_a)[1], _impute_given_surname(name_b)[1]
+    (isempty(ga) || isempty(gb) || length(ga) == length(gb)) && return false
+    longer = length(ga) > length(gb) ? ga : gb
+    pairs = AC._name_match_score(name_a, name_b).pairs
+    return !any(p -> p[2] == longer[1], pairs)
+end
+
+"""
     _impute_edge(name_a, name_b) -> Bool
 
 Purpose-built pairwise test for this module — replaces the earlier reused
@@ -52,10 +99,23 @@ Two differences, both deliberate:
    downstream contradiction check to catch that the way `compute_name_clusters`'s oracle does, so
    it must not create the ambiguity in the first place. Extra tokens on the longer side (never
    entering [`AC._align_given_tokens`](@ref)'s pairs at all) are still, as always, never penalized.
+
+Two more rules, added 2026-10-26 after a review of the 2,755 proposals of the 93-repo corpus:
+
+3. **Both names must have a given name.** A bare surname (`"Rivero"`) has no given-name pairs, so
+   rule 2 accepted it against every person with that surname. It then joined `"M. Rivero"`,
+   `"R. Rivero"` and `"Valentín Rivero Gajá"` into one group. 329 proposals had a bare surname.
+4. **A shorter surname must match the first surname of the longer one** (see
+   [`_first_surname_agrees`](@ref)). `AC._name_match_score` also accepts a match on the last
+   surname, so `"Gonzalo Camacho"` matched `"Luis G. Barragán-Camacho"` through the initial `"G."`.
+   `first_surname=false` skips this rule; [`impute_candidates`](@ref) applies it to a pair of
+   groups as a whole.
 """
-function _impute_edge(name_a::AbstractString, name_b::AbstractString)
+function _impute_edge(name_a::AbstractString, name_b::AbstractString; first_surname::Bool=true)
     r = AC._name_match_score(name_a, name_b)
     r.surname >= IMPUTE_SURNAME_THRESHOLD || return false
+    isempty(r.pairs) && return false
+    first_surname && !_first_surname_agrees(name_a, name_b) && return false
     for (ta, tb, _) in r.pairs
         ta == tb && continue
         (length(ta) == 1 && !isempty(tb) && ta[1] == first(tb)) && continue
@@ -140,14 +200,32 @@ coauthorship, normalized through this run's own clustering, is trusted instead. 
 coauthor corroboration is simply dropped, same as a merely-uncorroborated edge always was -- never a
 reason to also discard the rest of either endpoint's component the way the old clique check did.
 
-## No clique requirement: plain connected components (union-find)
+## Rules for a pair of groups (2026-10-26)
 
-Final grouping is the connected components of whatever edges survive the risky-edge filter above --
-deliberately NOT requiring the resulting component to be a clique. A person's name variants are a
-CHAIN relationship (`"Eric S. Tellez"` ~ `"Eric Tellez"` ~ `"Eric Sadit Tellez Avila"`), not
-necessarily a set of mutually-direct matches; the ambiguity a clique requirement was trying to catch
-is now caught locally (above), so requiring global pairwise agreement on top of that is pure
-over-conservatism, not extra safety.
+Two groups are compatible when every pair of their names passes [`_impute_edge`](@ref) without
+its first-surname rule, and at least one pair passes [`_first_surname_agrees`](@ref). The second
+condition is checked on one pair only, because a group often holds a variant without the first
+surname: the group of `"Flor Isela Retana Rentería"` also holds `"Flor Rentería"`.
+
+An edge between two groups whose name pairs are all [`_weak_match`](@ref) is kept only when the
+groups share a coauthor group. Without that rule, `"Jonathan Grajeda"` joined
+`"Francisco J. Grajeda-Sandoval"`, and `"Karla G. Ramírez-Morales"` joined
+`"Gerardo Ramírez Morales"`.
+
+## Components, checked pairwise
+
+Final grouping is the connected components of whatever edges survive the filters above. Each
+component is then checked pairwise: every two of its groups must pass `groups_compatible`. A
+component that fails loses, in this order, the weak edges kept by a shared coauthor, and then the
+risky edges kept by a shared coauthor. After each step the check is repeated on each remaining
+piece. A piece that still fails is not proposed.
+
+The pairwise check was added on 2026-10-26. Without it, 106 of 2,755 proposals of the 93-repo corpus
+joined two names that fail [`_impute_edge`](@ref) directly. The links between them were risky
+edges that a shared coauthor kept. The largest one joined 30 names, among them
+`"Pranil Man Singh Pradhan"`, `"Paramjit Singh Gill"`, `"P. Singh"` and `"J. Singh"`. The
+variants of one person usually pass the check: `"Eric Tellez"`, `"Eric S. Tellez"` and
+`"Eric Sadit Tellez Avila"` are compatible two by two.
 
 Returns raw-name groups to merge (each proposal is every source group in one component, flattened
 together) -- meant to be fed to [`AC.save_imputes`](@ref); this function only proposes, it never
@@ -185,8 +263,10 @@ function impute_candidates(groups::Vector{Vector{String}}, by_name::AbstractDict
 
     function groups_compatible(a::Int, b::Int)
         a == b && return true
-        all(_impute_edge(x, y) for x in groups[a] for y in groups[b])
+        all(_impute_edge(x, y; first_surname=false) for x in groups[a] for y in groups[b]) &&
+            any(_first_surname_agrees(x, y) for x in groups[a] for y in groups[b])
     end
+    groups_weak(a::Int, b::Int) = all(_weak_match(x, y) for x in groups[a] for y in groups[b])
 
     compat_adj = Dict{Int,Set{Int}}()
     for (a, b) in candidate_pairs
@@ -207,48 +287,85 @@ function impute_candidates(groups::Vector{Vector{String}}, by_name::AbstractDict
         end
     end
 
+    share_coauthor(a, b) = !isempty(intersect(coauthor_groups_of(a), coauthor_groups_of(b)))
+    weak_kept = Set{Tuple{Int,Int}}()
+    for (a, nbrs) in compat_adj, b in collect(nbrs)
+        (a < b && groups_weak(a, b)) || continue
+        if share_coauthor(a, b)
+            push!(weak_kept, (a, b))
+        else
+            delete!(compat_adj[a], b)
+            delete!(compat_adj[b], a)
+        end
+    end
+
     to_drop = Set{Tuple{Int,Int}}()
+    risky_kept = Set{Tuple{Int,Int}}()
     for (a, nbrs) in compat_adj, b in nbrs
         a < b || continue
         risky = any(c -> c != b && !groups_compatible(b, c), compat_adj[a]) ||
                 any(c -> c != a && !groups_compatible(a, c), compat_adj[b])
-        if risky && isempty(intersect(coauthor_groups_of(a), coauthor_groups_of(b)))
-            push!(to_drop, (a, b))
-        end
+        risky || continue
+        push!(share_coauthor(a, b) ? risky_kept : to_drop, (a, b))
     end
     for (a, b) in to_drop
         delete!(compat_adj[a], b)
         delete!(compat_adj[b], a)
     end
 
-    parent = collect(1:n)
-    function find(x::Int)
-        while parent[x] != x
-            parent[x] = parent[parent[x]]
-            x = parent[x]
+    compat_cache = Dict{Tuple{Int,Int},Bool}()
+    compatible(a, b) = get!(() -> groups_compatible(a, b), compat_cache, minmax(a, b))
+    is_clique(gis) = all(compatible(gis[i], gis[j]) for i in eachindex(gis) for j in i+1:lastindex(gis))
+    function cut!(gis, edges)
+        inside = Set(gis)
+        for (a, b) in edges
+            (a in inside && b in inside) || continue
+            delete!(compat_adj[a], b)
+            delete!(compat_adj[b], a)
         end
-        return x
+        return _components(compat_adj, gis)
     end
-    function do_union!(a::Int, b::Int)
-        ra, rb = find(a), find(b)
-        ra != rb && (parent[ra] = rb)
-    end
-    for (a, nbrs) in compat_adj, b in nbrs
-        do_union!(a, b)
-    end
-
-    by_root = Dict{Int,Vector{Int}}()
-    for gi in keys(compat_adj)
-        isempty(compat_adj[gi]) && continue
-        push!(get!(by_root, find(gi), Int[]), gi)
-    end
-
     proposals = Vector{Vector{String}}()
-    for (_, gis) in by_root
-        length(gis) < 2 && continue
-        push!(proposals, vcat((groups[c] for c in gis)...))
+    for gis in _components(compat_adj)
+        pieces = [gis]
+        for edges in (weak_kept, risky_kept)
+            all(is_clique, pieces) && break
+            pieces = vcat((is_clique(p) ? [p] : cut!(p, edges) for p in pieces)...)
+        end
+        for p in pieces
+            length(p) >= 2 && is_clique(p) && push!(proposals, vcat((groups[c] for c in p)...))
+        end
     end
     return proposals
+end
+
+"""
+    _components(adj, nodes=keys(adj)) -> Vector{Vector{Int}}
+
+Connected components of the graph `adj` (node -> set of neighbors), restricted to `nodes`. Each
+component is sorted. Nodes without neighbors form components of size 1.
+"""
+function _components(adj::AbstractDict{Int,Set{Int}}, nodes=keys(adj))
+    inside = Set{Int}(nodes)
+    seen = Set{Int}()
+    comps = Vector{Vector{Int}}()
+    for s in sort!(collect(inside))
+        s in seen && continue
+        comp = Int[]
+        stack = [s]
+        push!(seen, s)
+        while !isempty(stack)
+            x = pop!(stack)
+            push!(comp, x)
+            for y in get(adj, x, Set{Int}())
+                (y in inside && y ∉ seen) || continue
+                push!(seen, y)
+                push!(stack, y)
+            end
+        end
+        push!(comps, sort!(comp))
+    end
+    return comps
 end
 
 end # module

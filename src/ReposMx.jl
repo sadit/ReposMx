@@ -18,6 +18,7 @@ include("AuthorConsolidation.jl")
 include("NameVocabulary.jl")
 include("PrecisionClustering.jl")
 include("Imputation.jl")
+include("AuthorGrouping.jl")
 include("Indexing.jl")
 include("Search.jl")
 include("Server.jl")
@@ -42,6 +43,7 @@ using .AuthorConsolidation
 using .NameVocabulary
 using .PrecisionClustering
 using .Imputation
+using .AuthorGrouping
 using .Indexing
 using .Search
 using .Server
@@ -57,7 +59,7 @@ export ParagraphHit,
        fetch_cti_catalogs, resolve_cti_code,
        extract_text_from_file, parse_repository_documents, parse_all_documents,
        build_repository_corpus, build_all_corpus,
-       TextProfile, create_bilingual_profile, get_or_create_bilingual_base_profile, refit_bilingual_profile, create_bilingual_textconfig,
+       TextProfile, base_profile, refit_corpus_profile, create_textconfig,
        get_wikipedia_summary, explain_concept,
        build_search_index, rebuild_authors_index, load_docs_content_index, load_docs_refs_index, load_authors_name_index, load_authors_profile_index,
        Database, open_database, close_database, put_document!, get_document,

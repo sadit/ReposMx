@@ -1,7 +1,7 @@
 using Test
 using Random
 using ReposMx
-using ReposMx: LazyBM25, IndexShellIO, VocabIO, AuthorConsolidation, Corpus, NameVocabulary,
+using ReposMx: LazyBM25, IndexShellIO, VocabIO, AuthorConsolidation, AuthorGrouping, Corpus, NameVocabulary,
                PrecisionClustering, Imputation
 using RocksDB
 using SimilaritySearch, TextSearch
@@ -125,30 +125,116 @@ using TOML
         @test any(nm -> occursin("Bernardez", nm) && occursin("Carmen", nm) && !occursin("orcid", lowercase(nm)) &&
                         !occursin("coordinadora", lowercase(nm)), coord)
 
-        # regression: role-marker/colon cleanup must NEVER corrupt a real URL/ORCID elsewhere in
-        # the corpus (an earlier version's blanket colon-strip turned "https://" into "https //").
-        @test Corpus.parse_author_names("https://orcid.org/0000-0001-5058-1227") ==
-              ["https://orcid.org/0000-0001-5058-1227"]
+        # a bare ORCID URL is not a name (since 2026-10-25; it used to be kept as one).
+        @test Corpus.parse_author_names("https://orcid.org/0000-0001-5058-1227") == String[]
 
         # plain real names and the existing comma-order-swap must be completely untouched.
         @test Corpus.parse_author_names("Juan Perez") == ["Juan Perez"]
         @test Corpus.parse_author_names("Perez, Juan") == ["Perez, Juan", "Juan Perez"]
+
+        # Formats found on the 93-repo corpus on 2026-10-24, which the cleanup above let through:
+        # a token with a digit (life dates, ids joined with ":", ":-", "%" or "*", bare numbers).
+        @test Corpus.parse_author_names("HERRERA GARCÍA, FERNANDO:-HEGF870702HMNRRR03") ==
+              ["HERRERA GARCÍA, FERNANDO", "FERNANDO HERRERA GARCÍA"]
+        @test Corpus.parse_author_names("HERIBERTO ORTIZ BECERRIL:3176060") == ["HERIBERTO ORTIZ BECERRIL"]
+        @test Corpus.parse_author_names("Valencia Palomo %200705, Guillermo") ==
+              ["Valencia Palomo, Guillermo", "Guillermo Valencia Palomo"]
+        @test Corpus.parse_author_names("Barcia Carballido y Zúñiga, Andrés González de, 1673-1743") ==
+              ["Barcia Carballido y Zúñiga, Andrés González de", "Andrés González de Barcia Carballido y Zúñiga"]
+        @test Corpus.parse_author_names("Ahumada, Juan Antonio de, fl. 1725") ==
+              ["Ahumada, Juan Antonio de", "Juan Antonio de Ahumada"]
+        @test Corpus.parse_author_names("Burgos, Juan Manuel, 1961-") == ["Burgos, Juan Manuel", "Juan Manuel Burgos"]
+        for junk in ("201476", "D 224701", "RN3191515", "*CA1218347", "sinodal")
+            @test Corpus.parse_author_names(junk) == String[]
+        end
+        # a role written as its own comma segment, and the marks of a continued list.
+        @test Corpus.parse_author_names("Verdugo Córdoba, Joel, sinodal") == ["Verdugo Córdoba, Joel", "Joel Verdugo Córdoba"]
+        @test Corpus.parse_author_names("Rodríguez Gutiérrez, J. Guadalupe, sustentante") ==
+              ["Rodríguez Gutiérrez, J. Guadalupe", "J. Guadalupe Rodríguez Gutiérrez"]
+        @test Corpus.parse_author_names("Beverido-Pereau, Francisco... [y otros]") ==
+              ["Beverido-Pereau, Francisco", "Francisco Beverido-Pereau"]
+        @test Corpus.parse_author_names("Marquet, Antonio ... [et al.]") == ["Marquet, Antonio", "Antonio Marquet"]
+        # academic titles.
+        @test Corpus.parse_author_names("M. en C. HERNANDEZ GARCIA, JOSUE AARON") ==
+              ["HERNANDEZ GARCIA, JOSUE AARON", "JOSUE AARON HERNANDEZ GARCIA"]
+        @test Corpus.parse_author_names("MORENO AVALOS, MVZ. CUAHUTEMOC") ==
+              ["MORENO AVALOS, CUAHUTEMOC", "CUAHUTEMOC MORENO AVALOS"]
+        @test Corpus.parse_author_names("RUBÉN C.P.C. y E.I. LÓPEZ SÁNCHEZ") == ["RUBÉN LÓPEZ SÁNCHEZ"]
+        # a role word or a title that is also part of a real name is kept.
+        @test Corpus.parse_author_names("Roberto García Jurado") == ["Roberto García Jurado"]
+        @test Corpus.parse_author_names("Aritz Tutor Anton") == ["Aritz Tutor Anton"]
+        @test Corpus.parse_author_names("M. Enzo García") == ["M. Enzo García"]
+        @test Corpus.parse_author_names("García, M.C.") == ["García, M.C.", "M.C. García"]
+        @test Corpus.parse_author_names("Gutiérrez Espíndola, José Luis") ==
+              ["Gutiérrez Espíndola, José Luis", "José Luis Gutiérrez Espíndola"]
+        # URLs, organizations and long segments are not names.
+        for junk in ("https://orcid.org/0000-0001-5889-4420", "https://ror.org/05xg5y175",
+                     "info:eu-repo/dai/mx/curp/", "Tecnológico de Monterrey, Universidad Virtual",
+                     "Universiadad Virtual Tecnológico de Monterrey", "Raynor & Co., Samuel",
+                     "Imprenta de M. Heredia Argüelles", "Zambrano Hermanos y Compañía",
+                     "González-Pérez, L.-I., Ramírez Montoya, M. S., & García-Peñalvo, F. J. Habilitadores tecnológicos para impulsar la educación abierta")
+            @test Corpus.parse_author_names(junk) == String[]
+        end
+        @test Corpus.parse_author_names("Jorge Yahir Colegio Chiu") == ["Jorge Yahir Colegio Chiu"]
+        # characters: dashes, invisible marks, separate accents and tildes, parentheses, brackets.
+        @test Corpus.parse_author_names("Armenta‐Quiroga, Ana Sofía") == ["Armenta-Quiroga, Ana Sofía", "Ana Sofía Armenta-Quiroga"]
+        @test Corpus.parse_author_names("\u202aJürgen Mahlknecht") == ["Jürgen Mahlknecht"]
+        @test Corpus.parse_author_names("Jonathan Avalos Hern´andez") == ["Jonathan Avalos Hernández"]
+        @test Corpus.parse_author_names("Rocio Esmeralda García Sa´nchez") == ["Rocio Esmeralda García Sánchez"]
+        @test Corpus.parse_author_names("DAVID FERNANDO NOVELLA RODR´ IGUEZ") == ["DAVID FERNANDO NOVELLA RODRÍGUEZ"]
+        @test Corpus.parse_author_names("E. Martı´nez") == ["E. Martínez"]
+        @test Corpus.parse_author_names("John O´Sullivan") == ["John O'Sullivan"]
+        @test Corpus.parse_author_names("OSCAR NU˜NEZ ORTEGA") == ["OSCAR NUÑEZ ORTEGA"]
+        @test Corpus.parse_author_names("Anaya, A. (Alejandro)") == ["Anaya, A.", "A. Anaya"]
+        @test Corpus.parse_author_names("Alo[n]so Paredes") == ["Alonso Paredes"]
+        @test Corpus.parse_author_names("Ocharte, Melchior, ?,--impresor") == ["Ocharte, Melchior", "Melchior Ocharte"]
+        # a lost letter is kept for build_authors_index_data to repair.
+        @test Corpus.parse_author_names("Garc?a L?pez, Mar?a") == ["Garc?a L?pez, Mar?a", "Mar?a Garc?a L?pez"]
+        # a list of several people is split; one person with two commas is not.
+        @test Corpus.parse_author_names("María Soledad Ramírez Montoya, Anna Vater, José Vladimir Burgos Aguilar") ==
+              ["María Soledad Ramírez Montoya", "Anna Vater", "José Vladimir Burgos Aguilar"]
+        @test Corpus.parse_author_names("Rivas-Treviño, Brenda, J.") == ["Rivas-Treviño, Brenda, J.", "Brenda, J. Rivas-Treviño"]
+        @test length(Corpus.parse_author_names("Herrera y Tordesillas, Antonio de, m. Descripción de las Indias")) == 2
+        @test length(Corpus.parse_author_names("Doña Benavides, Maria de Viuda de Ribera, Juan de")) == 2
+    end
+
+    @testset "Corpus._lost_letter_repairs (isolated)" begin
+        names = ["García López, María", "García, Juan", "Garcia, Pedro", "Núñez Ruiz, Ana",
+                 "Garc?a L?pez, Mar?a", "Silvia N??ez Garc?a", "Xq?z Y"]
+        r = Corpus._lost_letter_repairs(names)
+        @test r["Garc?a L?pez, Mar?a"] == "García López, María"
+        @test r["Silvia N??ez Garc?a"] == "Silvia Núñez García"
+        @test !haskey(r, "García, Juan")
+        # a word that no other name explains loses its `?`.
+        @test r["Xq?z Y"] == "Xqz Y"
+        # uppercase when the rest of the word is uppercase.
+        names2 = ["Ángel Castro", "ángel", "?NGEL CASTRO"]
+        @test Corpus._lost_letter_repairs(names2)["?NGEL CASTRO"] == "ÁNGEL CASTRO"
+
+        # the documents themselves are repaired, so their names match the author profiles.
+        docs = [Dict{String,Any}("creators" => ["García López, María", "Garc?a L?pez, Mar?a"],
+                                 "contributors" => ["Garc?a, Juan", "??"])]
+        @test Corpus.repair_author_names!(docs) == 3
+        @test docs[1]["creators"] == ["García López, María"]
+        @test docs[1]["contributors"] == ["García, Juan"]
+        @test Set(a["name"] for a in Corpus.build_authors_index_data(docs)) ==
+              Set(["García López, María", "García, Juan"])
     end
 
     @testset "AuthorConsolidation (clustering + overrides, isolated)" begin
         # Guards the graph-based clustering that groups raw author profiles into consolidated
-        # ones: q-gram-based name matching (compute_name_clusters — see its own testset below for
-        # the cases it exists to get right) and human overrides (merge forces an edge the
-        # algorithm can't find; split removes one it shouldn't have made) — see
-        # AuthorConsolidation.jl.
+        # ones: precision clustering plus imputation (AuthorGrouping.group_names) and human
+        # overrides (merge forces an edge the algorithm can't find; split removes one it
+        # shouldn't have made) — see AuthorConsolidation.jl and AuthorGrouping.jl.
         mk(name) = Dict{String,Any}("name" => name, "doc_count" => 1)
+        groups_of(names, ov) = AuthorGrouping.group_names(names, Dict{String,Any}(n => mk(n) for n in names), ov).groups
 
         names = ["Juan Perez Gonzalez", "J. Perez Gonzalez", "JUAN PEREZ GONZALEZ",
                   "Ana Ruiz", "A. Ruiz",
                   "Pedro Soto", "Maria Soto"]  # last two share no key at all -> must stay separate
 
         no_overrides = (merges=Vector{Vector{String}}(), splits=Vector{Tuple{String,String}}(), imputes=Vector{Vector{String}}())
-        groups = AuthorConsolidation.compute_groups(names, no_overrides)
+        groups = groups_of(names, no_overrides)
         by_first = Dict(sort(g)[1] => sort(g) for g in groups)
 
         @test by_first["J. Perez Gonzalez"] == sort(["Juan Perez Gonzalez", "J. Perez Gonzalez", "JUAN PEREZ GONZALEZ"])
@@ -158,7 +244,7 @@ using TOML
 
         # merge: force two names together that share no automatic key at all
         merge_overrides = (merges=[["Pedro Soto", "Maria Soto"]], splits=Tuple{String,String}[], imputes=Vector{Vector{String}}())
-        merged_groups = AuthorConsolidation.compute_groups(names, merge_overrides)
+        merged_groups = groups_of(names, merge_overrides)
         @test any(g -> sort(g) == ["Maria Soto", "Pedro Soto"], merged_groups)
 
         # split: break an automatic match apart (isolated pair, no third name bridging them
@@ -166,10 +252,10 @@ using TOML
         # which is the real, documented limit of a single pairwise split, not a bug)
         split_names = ["Carla Nunez", "C. Nunez"]
         no_overrides_2 = (merges=Vector{Vector{String}}(), splits=Tuple{String,String}[], imputes=Vector{Vector{String}}())
-        @test length(AuthorConsolidation.compute_groups(split_names, no_overrides_2)) == 1
+        @test length(groups_of(split_names, no_overrides_2)) == 1
 
         split_overrides = (merges=Vector{Vector{String}}(), splits=[("Carla Nunez", "C. Nunez")], imputes=Vector{Vector{String}}())
-        split_groups = AuthorConsolidation.compute_groups(split_names, split_overrides)
+        split_groups = groups_of(split_names, split_overrides)
         @test length(split_groups) == 2
         @test !any(g -> "Carla Nunez" in g && "C. Nunez" in g, split_groups)
 
@@ -178,7 +264,7 @@ using TOML
         authors_data = [by_name[n] for n in names]
         raw_id_of, _ = AuthorConsolidation.assign_raw_ids(authors_data)
         tmpdir = mktempdir()
-        n = AuthorConsolidation.build_and_persist(authors_data, tmpdir, raw_id_of)
+        n = AuthorConsolidation.build_and_persist(authors_data, groups_of(names, no_overrides), tmpdir, raw_id_of)
         reloaded = AuthorConsolidation.load_all(tmpdir)
         @test length(reloaded) == n
         @test sum(p["doc_count"] for p in reloaded) == length(names)
@@ -198,7 +284,7 @@ using TOML
             raw_id_of, _ = AuthorConsolidation.assign_raw_ids(authors_data)
             by_name = Dict{String,Any}(a["name"] => a for a in authors_data)
             raw_names = collect(keys(by_name))
-            groups = AuthorConsolidation.compute_groups(raw_names, overrides)
+            groups = AuthorGrouping.group_names(raw_names, by_name, overrides).groups
             prev_leaders = AuthorConsolidation.previous_leader_info(AuthorConsolidation.load_all(tmpdir))
             base_dir = joinpath(tmpdir, AuthorConsolidation.CONSOLIDATED_SUBDIR)
             isdir(base_dir) && rm(base_dir; recursive=true, force=true)
@@ -257,6 +343,23 @@ using TOML
         _, profiles_4b = rebuild([("Roberto Diaz", 2), ("ROBERTO DIAZ", 1), ("Elena Diaz", 1)], tmp4; overrides=merge_diaz_ov)
         all_merged_key = sort(["Roberto Diaz", "ROBERTO DIAZ", "Elena Diaz"])
         @test profiles_4b[all_merged_key]["consolidated_id"] == bigger_old_id
+
+        # raw ids shift between runs (2026-10-25, martinez_5457): the previous leader keeps its id,
+        # and a fresh leader whose new raw id is that same id gets another one.
+        tmp5 = mktempdir()
+        run1 = [mk("Pedro Soto", 1)]
+        AuthorConsolidation.build_and_persist(run1, [["Pedro Soto"]], tmp5, Dict("Pedro Soto" => "soto_1111"))
+        run2 = [mk("Pedro Soto", 1), mk("Maria Soto", 3)]
+        raw_ids_2 = Dict("Pedro Soto" => "soto_2222", "Maria Soto" => "soto_1111")
+        AuthorConsolidation.build_and_persist(run2, [["Pedro Soto"], ["Maria Soto"]], tmp5, raw_ids_2)
+        ids_5 = Dict(p["leader_raw_name"] => p["consolidated_id"] for p in AuthorConsolidation.load_all(tmp5))
+        @test ids_5["Pedro Soto"] == "soto_1111"
+        @test ids_5["Maria Soto"] ∉ ("soto_1111", "soto_2222")
+        @test !isdir(joinpath(tmp5, AuthorConsolidation.CONSOLIDATED_SUBDIR * ".tmp"))
+
+        # a failed call leaves the previous profiles on disk
+        @test_throws KeyError AuthorConsolidation.build_and_persist(run2, [["Nadie"]], tmp5, raw_ids_2)
+        @test length(AuthorConsolidation.load_all(tmp5)) == 2
     end
 
     @testset "AuthorConsolidation overrides TOML (load_overrides/save_imputes, isolated)" begin
@@ -292,7 +395,7 @@ using TOML
         # compute_groups treats merge and impute identically as forced edges
         names = ["X Y", "Z W"]
         ov = (merges=Vector{Vector{String}}(), splits=Tuple{String,String}[], imputes=[["X Y", "Z W"]])
-        groups = AuthorConsolidation.compute_groups(names, ov)
+        groups = AuthorConsolidation.compute_groups([[n] for n in names], ov)
         @test any(g -> sort(g) == sort(names), groups)
     end
 
@@ -571,7 +674,7 @@ using TOML
         @test !any(p -> "ALEXEI FEDOROVISH LICEA NAVARRO" in p && "Alexei Federovish Licea Navarro" in p, proposals)
     end
 
-    @testset "Imputation (v2: structural ambiguity detection, coauthor-cluster rescue, no clique requirement)" begin
+    @testset "Imputation (v2: structural ambiguity detection, coauthor-cluster rescue, pairwise check)" begin
         function same_cluster(groups, a, b)
             for g in groups
                 (a in g) && (b in g) && return true
@@ -582,37 +685,37 @@ using TOML
 
         # Two DIFFERENT real people sharing a surname, plus an ambiguous bare-initial-only group
         # that independently satisfies Imputation._impute_edge against BOTH of them (found live on
-        # the real 10-repo corpus, e.g. "A. Barrios" bridging "ABELARDO NUÑEZ BARRIOS" and "Alberto
+        # the real 10-repo corpus, e.g. "A. Barrios" bridging "ABELARDO BARRIOS NUÑEZ" and "Alberto
         # Salazar Barrios") -- with no coauthor evidence to rescue either edge, BOTH must be dropped:
         # the ambiguity is detected because Abelardo's and Alberto's groups are NOT compatible with
         # each other (checked directly, even though they were never a name-based candidate pair
         # themselves), not by counting how many initials aligned in one single edge.
-        names_bridge = ["ABELARDO NUÑEZ BARRIOS", "Alberto Salazar Barrios", "A. Barrios", "Barrios, A."]
+        names_bridge = ["ABELARDO BARRIOS NUÑEZ", "Alberto Barrios Salazar", "A. Barrios", "Barrios, A."]
         vocab_bridge = NameVocabulary.build_name_vocabulary(names_bridge)
         groups_bridge = PrecisionClustering.compute_precision_clusters(names_bridge, vocab_bridge)
-        @test !same_cluster(groups_bridge, "ABELARDO NUÑEZ BARRIOS", "Alberto Salazar Barrios")
+        @test !same_cluster(groups_bridge, "ABELARDO BARRIOS NUÑEZ", "Alberto Barrios Salazar")
         proposals_bridge = Imputation.impute_candidates(groups_bridge, noauth(names_bridge))
-        @test !any(p -> "ABELARDO NUÑEZ BARRIOS" in p, proposals_bridge)
-        @test !any(p -> "Alberto Salazar Barrios" in p, proposals_bridge)
+        @test !any(p -> "ABELARDO BARRIOS NUÑEZ" in p, proposals_bridge)
+        @test !any(p -> "Alberto Barrios Salazar" in p, proposals_bridge)
 
         # Same ambiguous bridge, but now "A. Barrios" and Abelardo's profile share a coauthor (whose
         # own name is itself part of this corpus, so its identity resolves through the SAME
         # clustering) -- that specific risky edge is rescued (Abelardo merges with "A. Barrios"),
         # while the OTHER risky edge (Alberto, uncorroborated) is still dropped. This is the
         # mechanism that replaces the old blanket clique requirement.
-        names_bridge2 = ["ABELARDO NUÑEZ BARRIOS", "Alberto Salazar Barrios", "A. Barrios",
+        names_bridge2 = ["ABELARDO BARRIOS NUÑEZ", "Alberto Barrios Salazar", "A. Barrios",
                           "MARIA LOPEZ SANCHEZ"]
         vocab_bridge2 = NameVocabulary.build_name_vocabulary(names_bridge2)
         groups_bridge2 = PrecisionClustering.compute_precision_clusters(names_bridge2, vocab_bridge2)
         by_name_bridge2 = Dict{String,Any}(
-            "ABELARDO NUÑEZ BARRIOS" => Dict{String,Any}("coauthors" => ["MARIA LOPEZ SANCHEZ"]),
-            "Alberto Salazar Barrios" => Dict{String,Any}("coauthors" => String[]),
+            "ABELARDO BARRIOS NUÑEZ" => Dict{String,Any}("coauthors" => ["MARIA LOPEZ SANCHEZ"]),
+            "Alberto Barrios Salazar" => Dict{String,Any}("coauthors" => String[]),
             "A. Barrios" => Dict{String,Any}("coauthors" => ["MARIA LOPEZ SANCHEZ"]),
             "MARIA LOPEZ SANCHEZ" => Dict{String,Any}("coauthors" => String[]),
         )
         proposals_bridge2 = Imputation.impute_candidates(groups_bridge2, by_name_bridge2)
-        @test any(p -> "ABELARDO NUÑEZ BARRIOS" in p && "A. Barrios" in p, proposals_bridge2)
-        @test !any(p -> "Alberto Salazar Barrios" in p, proposals_bridge2)
+        @test any(p -> "ABELARDO BARRIOS NUÑEZ" in p && "A. Barrios" in p, proposals_bridge2)
+        @test !any(p -> "Alberto Barrios Salazar" in p, proposals_bridge2)
 
         # Three formatting variants of the SAME person, forming a plain CHAIN (not required to be a
         # full clique any more) -- must still merge into ONE proposal covering all three groups.
@@ -624,6 +727,63 @@ using TOML
         @test any(proposals_clique) do p
             all(nm -> nm in p, names_clique)
         end
+
+        # A coauthor shared with BOTH people rescues both risky edges. The component then holds two
+        # incompatible groups, so its rescued edges are removed and nothing is proposed.
+        names_both = ["ABELARDO BARRIOS NUÑEZ", "Alberto Barrios Salazar", "A. Barrios", "MARIA LOPEZ SANCHEZ"]
+        groups_both = PrecisionClustering.compute_precision_clusters(names_both, NameVocabulary.build_name_vocabulary(names_both))
+        by_name_both = Dict{String,Any}(nm => Dict{String,Any}("coauthors" => ["MARIA LOPEZ SANCHEZ"]) for nm in names_both)
+        proposals_both = Imputation.impute_candidates(groups_both, by_name_both)
+        @test !any(p -> "ABELARDO BARRIOS NUÑEZ" in p || "Alberto Barrios Salazar" in p, proposals_both)
+    end
+
+    @testset "Imputation rules of 2026-10-26 (bare surname, first surname)" begin
+        noauth(names) = Dict{String,Any}(nm => Dict{String,Any}("coauthors" => String[]) for nm in names)
+        function proposals_of(names)
+            groups = PrecisionClustering.compute_precision_clusters(names, NameVocabulary.build_name_vocabulary(names))
+            Imputation.impute_candidates(groups, noauth(names))
+        end
+
+        # a bare surname matches nobody; the initial still joins the full name
+        p = proposals_of(["Valentín Rivero Gajá", "V. Rivero", "Rivero"])
+        @test any(x -> "Valentín Rivero Gajá" in x && "V. Rivero" in x, p)
+        @test !any(x -> "Rivero" in x, p)
+        @test !Imputation._impute_edge("Rivero", "Valentín Rivero")
+
+        # a match on the second surname only is rejected; on the first surname it is accepted
+        @test !Imputation._impute_edge("Luis G. Barragán-Camacho", "Gonzalo Camacho")
+        @test !Imputation._impute_edge("María J. Anchustegui-Icaza", "Juan Icaza")
+        @test Imputation._impute_edge("Jesús A. Carrasco Ochoa", "Ariel Carrasco")
+        @test isempty(proposals_of(["Luis G. Barragán-Camacho", "Gonzalo Camacho"]))
+
+        # a one-letter word taken as a surname does not count as the first surname
+        @test Imputation._first_surname_agrees("S. V Koshevaya", "Svetlana Koshevaya")
+        # without a hyphen, the middle word may be a given name: a match on the last word is accepted
+        @test Imputation._first_surname_agrees("LILIANA INES HOMILKA", "L. Homilka")
+        @test !Imputation._first_surname_agrees("María J. Anchustegui-Icaza", "Juan Icaza")
+
+        # the first-surname rule is met by one pair of names of the two groups
+        p = proposals_of(["Flor Isela Retana Rentería", "FLOR ISELA RETANA RENTERIA", "Flor Rentería",
+                          "F. Isela Retana Rentería"])
+        @test any(x -> "Flor Isela Retana Rentería" in x && "F. Isela Retana Rentería" in x, p)
+
+        # first given name left out and surname truncated: kept only with a shared coauthor
+        @test Imputation._weak_match("Francisco J. Grajeda-Sandoval", "Jonathan Grajeda")
+        @test !Imputation._weak_match("Francisco J. Grajeda-Sandoval", "Francisco Grajeda")
+        @test !Imputation._weak_match("J. Grajeda Sandoval", "Jonathan Grajeda Sandoval")
+        @test isempty(proposals_of(["Francisco J. Grajeda-Sandoval", "Jonathan Grajeda"]))
+        names_co = ["Francisco J. Grajeda-Sandoval", "Jonathan Grajeda", "MARIA LOPEZ SANCHEZ"]
+        groups_co = PrecisionClustering.compute_precision_clusters(names_co, NameVocabulary.build_name_vocabulary(names_co))
+        by_name_co = Dict{String,Any}(nm => Dict{String,Any}("coauthors" => ["MARIA LOPEZ SANCHEZ"]) for nm in names_co)
+        @test any(x -> "Jonathan Grajeda" in x, Imputation.impute_candidates(groups_co, by_name_co))
+
+        # an incompatible component loses its weak coauthor-kept edge first, and keeps the rest
+        names_alma = ["Alma Guadalupe Rodriguez Ramirez", "Alma G. Rodriguez Ramirez", "Guerrero Rodríguez", "MARIA LOPEZ SANCHEZ"]
+        groups_alma = PrecisionClustering.compute_precision_clusters(names_alma, NameVocabulary.build_name_vocabulary(names_alma))
+        by_name_alma = Dict{String,Any}(nm => Dict{String,Any}("coauthors" => ["MARIA LOPEZ SANCHEZ"]) for nm in names_alma)
+        p = Imputation.impute_candidates(groups_alma, by_name_alma)
+        @test any(x -> "Alma Guadalupe Rodriguez Ramirez" in x && "Alma G. Rodriguez Ramirez" in x, p)
+        @test !any(x -> "Guerrero Rodríguez" in x, p)
     end
 
     @testset "AuthorConsolidation._surname_of_name (bucket key, isolated)" begin
@@ -729,6 +889,34 @@ using TOML
         finally
             close(db)
         end
+    end
+
+    @testset "VocabIO round-trip (policy + lemmas + stopwords, isolated)" begin
+        # The index built on 2026-10-24 lost its lemmas here: the vocabulary was reloaded without
+        # them, and the query "ministros" no longer reached the indexed lemma "ministro".
+        pipeline = TextSearch.TokenPipeline(lemmas=Dict("gatos" => "gato", "perros" => "perro"),
+                                            stopwords=Set(["el", "un"]))
+        config = TextConfig(del_diac=true, del_punc=true, lc=true, nlist=[1], pipeline=pipeline)
+        docs = ["el gato negro corre", "los perros duermen", "un gato y un perro"]
+        voc = Vocabulary(config, docs)
+        path = joinpath(mktempdir(), "vocab.zip")
+        VocabIO.save_vocabulary_zip(path, voc)
+        v = VocabIO.load_vocabulary_zip(path)
+
+        @test v.token == voc.token
+        @test v.ndocs == voc.ndocs
+        @test v.occs == voc.occs
+        @test v.textconfig.pipeline == voc.textconfig.pipeline
+        @test collect(tokenize(v.textconfig, "Los Gatos y el perro")) ==
+              collect(tokenize(voc.textconfig, "Los Gatos y el perro"))
+        @test token2id(v, only(tokenize(v.textconfig, "gatos"))) == token2id(voc, "gato")
+
+        # A vocabulary without a pipeline stage writes no file for it and reads back `nothing`.
+        plain = Vocabulary(TextConfig(lc=true, nlist=[1]), docs)
+        VocabIO.save_vocabulary_zip(path, plain)
+        p = VocabIO.load_vocabulary_zip(path)
+        @test p.textconfig.pipeline.lemmas === nothing
+        @test p.textconfig.pipeline.stopwords === nothing
     end
 
     @testset "LazyBM25 round-trip (isolated, synthetic corpus)" begin

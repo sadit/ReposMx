@@ -25,9 +25,16 @@ what `TextSearch.load_profile` already does for `vocabulary.json`.
 
 Reuses `TextSearch`'s own (unexported) `_encode_policy`/`_decode_policy` to encode/decode the
 `TextConfig` faithfully (regex patterns, emoji set, normalization/tokenization flags) instead of
-hand-rolling that logic a second time — the same reason `Project.toml` pins `TextSearch` to an
-exact version (`=1.1.1`): this relies on `TextSearch`'s internal shape, not just its public API,
-so an upstream update could silently break it without that pin.
+hand-rolling that logic a second time. This relies on `TextSearch`'s internal shape, not only
+its public API, and `Project.toml` does not pin an exact version: the round-trip tests in
+`test/runtests.jl` are what detect a change in that shape. Checked against TextSearch 1.3.0.
+
+`_encode_policy` does not include the `TokenPipeline` of the `TextConfig` (its lemmas and
+stopwords). `TextSearch.save_profile` stores them as separate artifacts. This format stores them
+in `lemmas.json` and `stopwords.json`, which are present only when the pipeline has that stage.
+Without them, a vocabulary built from a profile refit with `apply_lemmas=true` is reloaded
+without its lemmas. The index then holds `"ministro"`, the query `"ministros"` is not mapped to
+it, and the query returns no results. This happened in the index built on 2026-10-24.
 """
 function save_vocabulary_zip(path::AbstractString, voc::TextSearch.Vocabulary)
     vocab_json = JSON3.write(Dict(
@@ -38,10 +45,15 @@ function save_vocabulary_zip(path::AbstractString, voc::TextSearch.Vocabulary)
         "numtokens" => voc.numtokens[],
     ))
     policy_json = JSON3.write(TextSearch._encode_policy(voc.textconfig))
+    pipeline = voc.textconfig.pipeline
 
     ZipArchives.ZipWriter(path) do w
         ZipArchives.zip_writefile(w, "vocabulary.json", Vector{UInt8}(vocab_json))
         ZipArchives.zip_writefile(w, "policy.json", Vector{UInt8}(policy_json))
+        pipeline.lemmas === nothing ||
+            ZipArchives.zip_writefile(w, "lemmas.json", Vector{UInt8}(JSON3.write(pipeline.lemmas)))
+        pipeline.stopwords === nothing ||
+            ZipArchives.zip_writefile(w, "stopwords.json", Vector{UInt8}(JSON3.write(sort!(collect(pipeline.stopwords)))))
     end
     return path
 end
@@ -50,7 +62,8 @@ end
     load_vocabulary_zip(path::AbstractString) -> TextSearch.Vocabulary
 
 Reads back a `Vocabulary` written by [`save_vocabulary_zip`](@ref). The `.zip` is read directly
-from memory (no extraction to disk).
+from memory (no extraction to disk). The lemmas and stopwords in `lemmas.json` and
+`stopwords.json`, when present, are put back in the `TokenPipeline` of the `TextConfig`.
 """
 function load_vocabulary_zip(path::AbstractString)
     buf = read(path)
@@ -58,7 +71,16 @@ function load_vocabulary_zip(path::AbstractString)
     vocd = JSON3.read(ZipArchives.zip_readentry(zr, "vocabulary.json"))
     pold = JSON3.read(ZipArchives.zip_readentry(zr, "policy.json"))
 
-    textconfig = TextSearch._decode_policy(pold)
+    policy = TextSearch._decode_policy(pold)
+    names = ZipArchives.zip_names(zr)
+    lemmas = "lemmas.json" in names ?
+        Dict{String,String}(String(k) => String(v) for (k, v) in pairs(JSON3.read(ZipArchives.zip_readentry(zr, "lemmas.json")))) :
+        nothing
+    stopwords = "stopwords.json" in names ?
+        Set{String}(String.(JSON3.read(ZipArchives.zip_readentry(zr, "stopwords.json")))) :
+        nothing
+    textconfig = TextSearch.TextConfig(policy.normalization, policy.tokenization,
+                                       TextSearch.TokenPipeline(; lemmas, stopwords), policy.language)
     tokens = String.(vocd[:tokens])
     tok2id = Dict{String, UInt32}(tok => UInt32(i) for (i, tok) in enumerate(tokens))
 

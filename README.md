@@ -201,7 +201,7 @@ ReposMx/
 │   ├── Downloader.jl      # Descarga de PDFs
 │   ├── Parser.jl          # Extracción de texto
 │   ├── Corpus.jl          # Construcción de sub-corpus (documentos, autores, citas)
-│   ├── TextModel.jl       # Modelo de texto bilingüe
+│   ├── TextModel.jl       # Perfil de texto: base en español, reajustado al corpus
 │   ├── Indexing.jl        # Construcción de índices BM25
 │   ├── DB.jl              # Persistencia embebida (RocksDB)
 │   ├── Search.jl          # Motor de búsqueda

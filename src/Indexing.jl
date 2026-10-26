@@ -5,9 +5,8 @@ import RocksDB
 using ..Config: DEFAULT_DATA_DIR, DEFAULT_INDEX_DIR
 using ..Types: ParagraphHit
 using ..Storage: get_repo_dir, load_corpus_records, list_repo_names
-using ..Corpus: build_repository_corpus, build_authors_index_data, split_into_paragraphs
-using ..TextModel: get_or_create_bilingual_base_profile, refit_bilingual_profile,
-                    create_bilingual_textconfig, save_profile, load_profile
+using ..Corpus: build_repository_corpus, build_authors_index_data, repair_author_names!, split_into_paragraphs
+using ..TextModel: base_profile, refit_corpus_profile, create_textconfig, save_profile, load_profile
 using ..DB: Database, open_database, close_database, put_document!, put_author_profile!, put_topics!,
             put_reference!, set_document_references!, link_author_document!, add_coauthor_link!,
             put_author_id_mapping!, normalize_author_name, rocksdb_handle, compact_all!, precompute_all_statistics!,
@@ -18,6 +17,7 @@ using ..LazyBM25: export_to_rocksdb!, assemble_bm25,
 using ..VocabIO: save_vocabulary_zip, load_vocabulary_zip
 using ..IndexShellIO: save_index_shell_zip, load_index_shell_zip
 using ..AuthorConsolidation: build_and_persist, load_all, AUTHOR_NAME_CONFIG, assign_raw_ids
+using ..AuthorGrouping: group_authors
 
 export build_search_index, rebuild_authors_index,
        load_docs_content_index, load_docs_refs_index,
@@ -103,7 +103,8 @@ end
 
 Shared by `build_search_index` and `rebuild_authors_index`: scans `corpus.jsonl` for the target
 repos and returns `(all_docs, docs_content_texts, docs_refs_texts, doc_keys)`. Not the expensive
-part of indexing (no tokenization happens here) — safe to redo standalone.
+part of indexing (no tokenization happens here) — safe to redo standalone. The author names of
+`all_docs` are repaired with `Corpus.repair_author_names!` before they are returned.
 """
 function _collect_documents(; data_dir=DEFAULT_DATA_DIR, repos::Union{Vector{String}, Nothing}=nothing,
                               max_docs::Union{Int, Nothing}=nothing)
@@ -164,6 +165,7 @@ function _collect_documents(; data_dir=DEFAULT_DATA_DIR, repos::Union{Vector{Str
     end
 
     println("Total documents ready for indexing: $(length(all_docs))")
+    println("  author names with a lost letter repaired: $(repair_author_names!(all_docs))")
     return all_docs, docs_content_texts, docs_refs_texts, doc_keys
 end
 
@@ -173,7 +175,7 @@ end
 Clusters `authors_data` into consolidated profiles, persists them (TOML corpus + RocksDB), and
 builds the `authors_name`/`authors_profile` BM25 indices from that consolidated corpus. Shared by
 `build_search_index` (full rebuild) and `rebuild_authors_index` (authors-only, no re-tokenizing of
-`docs_content`/`docs_refs`) — `name_textconfig` is the bilingual profile's `TextConfig`, needed for
+`docs_content`/`docs_refs`) — `name_textconfig` is the refitted profile's `TextConfig`, needed for
 `authors_profile`'s vocabulary but not otherwise available without a full docs_content refit, so
 callers pass it in (`build_search_index` has it fresh; `rebuild_authors_index` reads it back from
 the already-saved profile on disk). `raw_id_of` (raw name -> short id, from `assign_raw_ids`) lets
@@ -183,7 +185,8 @@ Returns the number of consolidated profiles written.
 function _build_authors_indices!(db::Database, rdb, authors_data::Vector{<:AbstractDict},
                                   index_dir::AbstractString, name_textconfig, raw_id_of::AbstractDict)
     println("Clustering raw author profiles into consolidated profiles..."); flush(stdout)
-    n_groups = build_and_persist(authors_data, index_dir, raw_id_of)
+    groups = group_authors(authors_data)
+    n_groups = build_and_persist(authors_data, groups, index_dir, raw_id_of)
     consolidated = load_all(index_dir)
     println("  $(length(authors_data)) raw profiles -> $(n_groups) consolidated profiles")
     for profile in consolidated
@@ -266,7 +269,7 @@ Re-runs author clustering and rebuilds only `authors_name`/`authors_profile` —
 `docs_content`/`docs_refs`, which is the expensive part of `build_search_index` (re-tokenizing the
 whole document corpus). Meant to be re-run cheaply after editing `author_overrides.toml`: overrides
 only change grouping, and grouping only affects these two indices. Requires that
-`build_search_index` has already run at least once (reuses its saved bilingual profile from
+`build_search_index` has already run at least once (reuses its saved refitted profile from
 `<index_dir>/profile` for `authors_profile`'s vocabulary — this command never refits it).
 """
 function rebuild_authors_index(;
@@ -397,9 +400,8 @@ function build_search_index(;
         # -------------------------------------------------------------
         # 1. Index 1: Documents by Content (docs_content_shell.zip)
         # -------------------------------------------------------------
-        println("Fitting bilingual TextProfile & refit for Document Content Index...")
-        base_profile = get_or_create_bilingual_base_profile(; verbose=true)
-        refitted_profile = refit_bilingual_profile(base_profile, docs_content_texts; verbose=true)
+        println("Refitting the Spanish TextProfile to the corpus for the Document Content Index...")
+        refitted_profile = refit_corpus_profile(base_profile("es"), docs_content_texts; verbose=true)
 
         docs_content_voc_full = refitted_profile.model.voc
         docs_content_voc = filter_tokens(t -> t.ndocs >= DOCS_CONTENT_MIN_NDOCS, docs_content_voc_full)
@@ -545,7 +547,7 @@ function search_document_in_depth(fulltext::AbstractString, query::AbstractStrin
     paragraphs = split_into_paragraphs(fulltext)
     isempty(paragraphs) && return ParagraphHit[]
     
-    config = create_bilingual_textconfig(nlist=[1, 2])
+    config = create_textconfig(nlist=[1, 2])
     voc = Vocabulary(config, paragraphs)
     invfile = BM25InvertedFile(voc)
     ctx = InvertedFileContext()

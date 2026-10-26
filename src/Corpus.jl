@@ -8,7 +8,7 @@ using ..Catalogs: resolve_cti_code
 export parse_xml_metadata, parse_author_names, parse_keywords, normalize_doc_type,
        extract_conclusions, extract_reference_section, parse_individual_references,
        extract_document_references, split_into_paragraphs,
-       build_repository_corpus, build_all_corpus, build_authors_index_data
+       build_repository_corpus, build_all_corpus, build_authors_index_data, repair_author_names!
 
 const DC_KEYS = ["title", "creator", "contributor", "date", "description", "subject", "language", "rights", "publisher", "type"]
 const DC_QUERIES = ["//$k" for k in DC_KEYS]
@@ -102,6 +102,146 @@ groups simply match nothing, leaving only the required `"#"` (and any separator 
 const _EMBEDDED_ID_RE = Regex("#[\\s/:]*(?:$(_ID_CODE_RE))?(=?\\s*asesor\\s*tesis)?", "i")
 
 """
+    _DIGIT_TOKEN_RE
+
+A token that contains a digit, with the separator that joins it to a name. A personal name has no
+digits, so every such token is removed. Shapes measured on the 93-repo corpus (2026-10-24):
+
+- life dates of library authority records: `"Burgos, Juan Manuel, 1961-"`, `"..., 1673-1743"`,
+  `"fl. 1725"` (about 600 names);
+- an id joined with `":"`, `":-"`, `"%"` or `"*"`: `"HERIBERTO ORTIZ BECERRIL:3176060"`,
+  `"HERRERA GARCÍA, FERNANDO:-HEGF870702HMNRRR03"`, `"Valencia Palomo %200705, Guillermo"`,
+  `"*CA1218347"` (about 400 names);
+- a bare id or number: `"201476"`, `"RN3191515"`, `"D 224701"` (about 2,600 names).
+
+Before this pattern, the tokenizer turned a date or an id into the token `"0"`, and that token took
+the place of a given name or a surname. The letter prefix of an id has at most 4 letters and must
+start a word, so a name word followed by a digit (`"Garcia2"`) is not removed.
+"""
+const _DIGIT_TOKEN_RE = r"(?:\b(?:fl|ca)\.\s*)?(?:[#%*:=\-]+\s*|\b)[a-z]{0,4}\d[\da-z\-]*\.?"i
+
+"""
+    _ET_AL_RE
+
+The marks of an author list that continues: `"Finck, Fernando... [y otros]"`, `"Marquet, Antonio
+... [et al.]"`, `"Ramírez, Jorge y otros"` (270 names on the 93-repo corpus, 2026-10-24).
+"""
+const _ET_AL_RE = r"(?:\.\.\.|…)?\s*\[?\s*\b(?:y otros|et al\b\.?)\s*\]?"i
+
+"""
+    _ROLE_SEGMENT_RE
+
+A comma segment that names the role of a person, not the person: `"Verdugo Córdoba, Joel,
+sinodal"`, `"Padilla Galicia, Sergio, compilador"`. On the 93-repo corpus (2026-10-24), 234 names
+end in `sinodal` and 203 in `sustentante`. The role is removed only when it is a whole segment,
+because some of these words are also surnames: `"Roberto García Jurado"`, `"Aritz Tutor Anton"`.
+The comma before the role is removed with it, and so are dashes before the role (`"--impresor"`).
+"""
+const _ROLE_SEGMENT_RE = r"(?:^|,)[\s\-]*(?:sinodal|sustentante|autora?|compiladora?|comp\.|traductora?|tr\.|editora?|ed\.|ilustradora?|impresor|estudiante|revisor|presidente)\.?\s*(?=,|$)"i
+
+"""
+    _ACADEMIC_TITLE_RE
+
+Academic and professional titles written inside the name: `"M. en C. HERNANDEZ GARCIA, JOSUE
+AARON"`, `"MORENO AVALOS, MVZ. CUAHUTEMOC"`, `"RUBÉN C.P.C. y E.I. LÓPEZ SÁNCHEZ"`. On the 93-repo
+corpus (2026-10-24), 857 names contain `"M. en X."` and about 400 contain one of the others. Before
+this pattern, the letters of a title became given-name initials (`"m"`, `"en"`, `"c"`).
+[`_ROLE_MARKER_RE`](@ref) already removes `Dr.`, `Lic.`, `Ing.` and `Mtro.`.
+
+`"M.C."` (204 names) and `"C.P."` (29 names) are not in the list. They are also the initials of
+real given names (`"García, M.C."`), and the text alone does not tell the two cases apart.
+"""
+const _ACADEMIC_TITLE_RE = r"\bM(?:\.\s?|\s)en\s[a-z]{1,2}\b\.?|\bC\.P\.C\.(?:\s*y\s*E\.I\.)?|\bM\.?V\.?Z\b\.?|\bQ\.?F\.?B\b\.?|\bQ\.B\.P\.|\bI\.Q\.(?:I\.)?|\bL\.A\.E\.T\.|\bIBQ\b\.?|\bPh\.?\s?D\b\.?|\bBi[oó]l\b\.?|\bArq\b\.?|\bEsp\."i
+
+"""
+    _INSTITUTION_RE
+
+Words that name an organization, not a person: `"Tecnológico de Monterrey, Universidad
+Virtual"`, `"Consejo Nacional para Prevenir la Discriminación (México)."`, `"Raynor & Co.,
+Samuel"`. A name with one of these words is dropped. `"Colegio"`, `"Centro"` and `"Unidad"` are
+not in the list, because they are also surnames (`"Jorge Yahir Colegio Chiu"`). `"Centro de"` is in
+the list.
+"""
+const _INSTITUTION_RE = r"\b(?:univer\p{L}{0,3}dad|universit(?:y|é|ät|à)|institut[oe]?|tecnol[oó]gico|polit[eé]cnico|facultad|faculty|escuela|school|departamento|department|secretar[ií]a|direcci[oó]n|divisi[oó]n|coordinaci[oó]n|programa|centro de|cent(?:er|re)|campus|consejo|comit[eé]|committee|laboratorio|laboratory|academia|editorial|imprenta|oficina|gobierno|government|ayuntamiento|biblioteca|library|museo|fundaci[oó]n|asociaci[oó]n|sociedad|society|maestr[ií]a|doctorado|licenciatura|compa[ñn][ií]a|itesm|unam|ipn|conah?cyt|scielo)\b|&\s*(?:co\b|cía|sons\b)|\bInc\b\.?|\bLtd\b\.?"i
+
+const _INVISIBLE_CHARS_RE = Regex("[\u200b-\u200f\u202a-\u202e\u00ad\ufeff]")
+
+const _ACUTE = Dict('a' => 'á', 'e' => 'é', 'i' => 'í', 'ı' => 'í', 'o' => 'ó', 'u' => 'ú',
+                    'A' => 'Á', 'E' => 'É', 'I' => 'Í', 'O' => 'Ó', 'U' => 'Ú')
+
+"""
+    _normalize_name_chars(s) -> String
+
+Character repairs applied to a name segment:
+
+- Unicode dashes (`‐ ‑ ‒ – —`) become `-`: `"Macias‐Velasquez"`.
+- Invisible characters are removed: zero-width spaces, bidirectional marks, the soft hyphen and
+  the byte order mark.
+- An acute accent written as its own character (`´` or `` ` ``) is joined to a vowel. The vowel
+  before it is used first (`"Caldero´n"` becomes `"Calderón"`), then the vowel after it
+  (`"Hern´andez"` becomes `"Hernández"`). A space after the accent is removed first:
+  `"RODR´ IGUEZ"` becomes `"RODRÍGUEZ"`. After a one-letter word and before an uppercase letter,
+  the accent is an apostrophe: `"O´Sullivan"` becomes `"O'Sullivan"`. Any other accent also
+  becomes `'`.
+- A tilde written as its own character next to an `n` is joined to it: `"NU˜NEZ"` becomes
+  `"NUÑEZ"`.
+- Text in parentheses is removed: `"Anaya, A. (Alejandro)"`, `"Víctor Santos (hijo)"`. Brackets
+  are removed and their content is kept: `"Alo[n]so"` becomes `"Alonso"`.
+- Quotes and the symbols `: © ° * + ¢ ± ˜ ¿ { }` become spaces.
+- The replacement character `�` becomes `?`. A `?` that is not next to a letter is removed. A `?`
+  next to a letter marks a lost letter, which [`repair_author_names!`](@ref) repairs.
+"""
+function _normalize_name_chars(s::AbstractString)
+    s = replace(s, r"[‐‑‒–—]" => "-", _INVISIBLE_CHARS_RE => "")
+    s = replace(s, r"(?<=\p{L})([´`])\s+(?=\p{L})" => s"\1")
+    s = replace(s, r"(?<=\b\p{L})[´`](?=\p{Lu})" => "'")
+    s = replace(s, r"[aeiouıAEIOU][´`]" => m -> string(_ACUTE[first(m)]))
+    s = replace(s, r"[´`][aeiouAEIOU]" => m -> string(_ACUTE[last(m)]))
+    s = replace(s, r"˜n|n˜" => "ñ", r"˜N|N˜" => "Ñ")
+    s = replace(s, r"[´`]" => "'", r"\([^)]*\)?" => " ", r"[\[\]()]" => "")
+    s = replace(s, r"[:\"“”«»©°*+¢±˜¿{}]" => " ", '�' => '?')
+    return replace(s, r"(?<!\p{L})\?(?!\p{L})" => " ")
+end
+
+"""
+    _MAX_NAME_WORDS
+
+A name with more words than this is dropped. Such a segment is a citation, a sentence or a list
+that [`_split_person_list`](@ref) does not split: `"González-Pérez, L.-I., Ramírez Montoya, M. S., &
+García-Peñalvo, F. J. Habilitadores tecnológicos para..."`. `AuthorConsolidation._is_garbage_name`
+uses the same limit of 10 tokens.
+"""
+const _MAX_NAME_WORDS = 10
+
+const _NAME_PARTICLES = Set(["de", "del", "la", "las", "los", "y", "e", "da", "das", "do", "dos",
+                             "di", "du", "le", "van", "von", "der"])
+
+"""
+    _split_person_list(name) -> Vector
+
+Splits a segment that lists several people separated by commas: `"María Soledad Ramírez Montoya,
+Anna Vater, José Vladimir Burgos Aguilar"`. The segment is split only when it has two or more
+commas and every piece has 2 to 6 words, each word capitalized or a name particle (`de`, `la`,
+`y`, ...). A piece cannot start or end with a particle, so `"Doña Benavides, Maria de Viuda de
+Ribera, Juan de"` is not split. `"Rivas-Treviño, Brenda, J."` is one person and is not split. `"Herrera y Tordesillas,
+Antonio de, m. Descripción de las Indias"` is not split either, because `m.` is not capitalized.
+One comma is never a split point, because `"Ramírez Montoya, María Soledad"` is the most common
+form of one name. On the 93-repo corpus (2026-10-25), this rule splits about 30 segments.
+"""
+function _split_person_list(name::AbstractString)
+    pieces = split(name, ',')
+    length(pieces) >= 3 || return [name]
+    function is_name(x)
+        words = filter(w -> occursin(r"\p{L}", w), split(x))
+        2 <= length(words) <= 6 || return false
+        isuppercase(first(first(words))) && !(lowercase(last(words)) in _NAME_PARTICLES) || return false
+        return all(w -> isuppercase(first(w)) || lowercase(w) in _NAME_PARTICLES, words)
+    end
+    all(is_name, pieces) || return [name]
+    return strip.(pieces)
+end
+
+"""
     parse_author_names(author_str::AbstractString)
 
 Splits and cleans authors or contributors separated by ';' or commas, extracting original and
@@ -120,6 +260,18 @@ instead of relying on downstream consumers to filter them back out one at a time
   glued, leading-underscore token otherwise); [`_ROLE_MARKER_RE`](@ref) is stripped wherever it
   appears (not just as a prefix); whitespace/stray leading-or-trailing commas left behind are
   squeezed/trimmed.
+- A segment that is a URL (`https://orcid.org/...`, `https://ror.org/...`) or starts with
+  `info:eu-repo` is dropped. On the 93-repo corpus (2026-10-24), these segments became 561
+  consolidated author profiles. A URL inside a segment is removed.
+- A segment also loses the marks of a continued list ([`_ET_AL_RE`](@ref)), academic titles
+  ([`_ACADEMIC_TITLE_RE`](@ref)), every token with a digit ([`_DIGIT_TOKEN_RE`](@ref)), the
+  characters that [`_normalize_name_chars`](@ref) repairs or removes, and a role written as its own
+  comma segment ([`_ROLE_SEGMENT_RE`](@ref)).
+- A segment that lists several people is split into one name per person
+  ([`_split_person_list`](@ref)).
+- A name with no run of two letters left is dropped. A name with a word of
+  [`_INSTITUTION_RE`](@ref) is dropped. A name with more than [`_MAX_NAME_WORDS`](@ref) words is
+  dropped.
 """
 function parse_author_names(author_str::AbstractString)
     isempty(strip(author_str)) && return String[]
@@ -132,18 +284,29 @@ function parse_author_names(author_str::AbstractString)
         occursin(_CURP_RE, clean) && continue
         occursin(_CVU_RE, clean) && continue
         occursin(_BARE_ORCID_RE, clean) && continue
-        clean = replace(clean, r"\([^)]*https?://[^)]*\)" => " ")
+        occursin(r"^(?:https?://|info:eu-repo)"i, clean) && continue
+        clean = replace(clean, r"https?://\S+"i => " ")
         clean = replace(clean, _EMBEDDED_ID_RE => " ")
         clean = replace(clean, '_' => ' ')
         clean = replace(clean, _ROLE_MARKER_RE => " ")
+        clean = replace(clean, _ET_AL_RE => " ")
+        clean = replace(clean, _ACADEMIC_TITLE_RE => " ")
+        clean = replace(clean, _DIGIT_TOKEN_RE => " ")
+        clean = _normalize_name_chars(clean)
+        clean = replace(clean, _ROLE_SEGMENT_RE => "")
+        clean = replace(clean, r"\s*,(\s*,)*" => ",")
         clean = replace(clean, r"\s+" => " ")
-        clean = strip(strip(clean), [',', ' '])
-        isempty(clean) && continue
-        length(clean) < 3 && continue
-        push!(names, clean)
-        norm = normalize_author_name(clean)
-        if norm != clean && !isempty(norm)
-            push!(names, norm)
+        for piece in _split_person_list(strip(strip(clean), [',', ' ', '-']))
+            piece = strip(piece, [',', ' ', '-'])
+            length(piece) < 3 && continue
+            occursin(r"\p{L}{2}", piece) || continue
+            occursin(_INSTITUTION_RE, piece) && continue
+            length(split(piece)) > _MAX_NAME_WORDS && continue
+            push!(names, piece)
+            norm = normalize_author_name(piece)
+            if norm != piece && !isempty(norm)
+                push!(names, norm)
+            end
         end
     end
     return unique(names)
@@ -507,6 +670,108 @@ function build_all_corpus(; data_dir=DEFAULT_DATA_DIR, repos=nothing, include_fu
             println(stderr, "[$r] Error building corpus: $e")
         end
     end
+end
+
+const _LOST_LETTER_WORD_RE = r"[\p{L}?]*\?[\p{L}?]*"
+
+"""
+    _lost_letter_repairs(names) -> Dict{String,String}
+
+Some repositories export names with each accented letter replaced by `?`: `"Garc?a L?pez,
+Mar?a"`. On the 93-repo corpus (2026-10-25), 3,818 names had a `?` next to a letter. This function
+repairs them with the other names of the corpus. A word with a `?` takes the most frequent word,
+among the names with no `?`, that has the same length and the same letters at every other
+position: `"Garc?a"` becomes `"García"`. A word with two or more `?` is repaired in the same way:
+`"N??ez"` becomes `"Núñez"`. The letter is uppercase when it is the first letter of the
+word or when the rest of the word is uppercase. A `?` that no word explains is removed.
+
+Returns a map from each name of `names` that has a `?` to its repaired form.
+"""
+function _lost_letter_repairs(names)
+    freq = Dict{String,Int}()
+    for n in names
+        occursin('?', n) && continue
+        for m in eachmatch(r"\p{L}+", n)
+            w = lowercase(m.match)
+            freq[w] = get(freq, w, 0) + 1
+        end
+    end
+    wanted = Set{String}()
+    multi = Set{String}()
+    for n in names, m in eachmatch(_LOST_LETTER_WORD_RE, n)
+        k = count(==('?'), m.match)
+        length(m.match) > k || continue
+        push!(k == 1 ? wanted : multi, lowercase(m.match))
+    end
+    best = Dict{String,Tuple{String,Int}}()
+    for (w, f) in freq
+        cs = collect(w)
+        for i in eachindex(cs)
+            c = cs[i]
+            cs[i] = '?'
+            key = String(cs)
+            cs[i] = c
+            key in wanted || continue
+            b = get(best, key, ("", 0))
+            (f > b[2] || (f == b[2] && w < b[1])) && (best[key] = (w, f))
+        end
+    end
+    by_length = Dict{Int,Vector{String}}()
+    isempty(multi) || for w in keys(freq)
+        push!(get!(by_length, length(w), String[]), w)
+    end
+    for key in multi
+        re = Regex("^" * replace(key, r"[^\p{L}?]" => "", '?' => "\\p{L}") * "\$")
+        for w in get(by_length, length(key), String[])
+            occursin(re, w) || continue
+            b = get(best, key, ("", 0))
+            f = freq[w]
+            (f > b[2] || (f == b[2] && w < b[1])) && (best[key] = (w, f))
+        end
+    end
+    function repair_word(word)
+        hit = get(best, lowercase(word), nothing)
+        hit === nothing && return word
+        cs = collect(word)
+        others = filter(isletter, cs)
+        upper = !isempty(others) && all(isuppercase, others)
+        for i in findall(==('?'), cs)
+            letter = collect(hit[1])[i]
+            cs[i] = (i == 1 || upper) ? uppercase(letter) : letter
+        end
+        return String(cs)
+    end
+    repairs = Dict{String,String}()
+    for n in names
+        occursin('?', n) || continue
+        fixed = replace(n, _LOST_LETTER_WORD_RE => repair_word)
+        repairs[n] = strip(replace(fixed, '?' => "", r"\s+" => " "), [',', ' ', '-'])
+    end
+    return repairs
+end
+
+"""
+    repair_author_names!(all_docs) -> Int
+
+Repairs the lost letters (`"Garc?a"`) in the `"creators"` and `"contributors"` of every document of
+`all_docs`, in place, with [`_lost_letter_repairs`](@ref) computed over the names of all the
+documents. It must run before [`build_authors_index_data`](@ref) and before anything else reads
+those lists, because `Indexing` looks up each name of a document among the author profiles.
+Returns the number of distinct names repaired.
+"""
+function repair_author_names!(all_docs::Vector{Dict{String, Any}})
+    all_names = Set{String}()
+    for doc in all_docs, key in ("creators", "contributors")
+        union!(all_names, get(doc, key, String[]))
+    end
+    repairs = _lost_letter_repairs(all_names)
+    isempty(repairs) && return 0
+    for doc in all_docs, key in ("creators", "contributors")
+        haskey(doc, key) || continue
+        doc[key] = unique!(filter!(c -> length(c) >= 3 && occursin(r"\p{L}{2}", c),
+                                   [String(get(repairs, c, c)) for c in doc[key]]))
+    end
+    return length(repairs)
 end
 
 """

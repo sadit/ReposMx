@@ -11,12 +11,13 @@ that `Indexing.jl` builds the `authors_name`/`authors_profile` BM25 indices over
 
 1. [`assign_raw_ids`](@ref) — one deterministic id per raw name, assigned in sorted order so it
    does not depend on corpus scan order.
-2. [`compute_name_clusters`](@ref) — the name-only clustering signal: a recall-oriented edge
-   proposal within cheap candidate buckets, then a precision-oriented oracle that splits a
-   component only when it finds a genuine counter-example inside it.
+2. Name clustering, outside this module: `AuthorGrouping.group_names` runs
+   `PrecisionClustering.compute_precision_clusters` and then `Imputation.impute_candidates`.
+   [`compute_name_clusters`](@ref), the earlier clustering in this module, is no longer used by
+   `index` (2026-10-24): on the 93-repo corpus its first phase joins 254,632 of 446,650 names into
+   one component, and its oracle does not finish on that component.
 3. [`compute_groups`](@ref) — connected components of those clusters plus the human/automatic
-   overrides (`merge`/`impute` force an edge, `split` removes one), applied AFTER clustering and
-   never re-checked by the oracle.
+   overrides (`merge`/`impute` force an edge, `split` removes one), applied AFTER clustering.
 4. [`rollup`](@ref)/[`resolve_leader`](@ref) — one consolidated profile per group: sums, unions,
    a canonical display name, and the id.
 5. [`build_and_persist`](@ref) — writes the result to disk; [`load_all`](@ref) reads it back.
@@ -55,7 +56,7 @@ cluster — a precision tool — not as a source of merge candidates. An earlier
 join lived in this module and was removed: it bucketed an adaptive, population-relative threshold,
 which is not safe the way [`_name_match_score`](@ref)'s absolute threshold is (see
 [`compute_name_clusters`](@ref)). Recall on names carrying a bare initial is `Imputation`'s job
-instead, and that pass is implemented but not yet wired into the production rebuild.
+instead.
 """
 module AuthorConsolidation
 
@@ -148,12 +149,12 @@ end
 
 Rewrites ONLY the `impute` section of the overrides file, read-modify-write: `merge`/`split` (and
 anything else already in the file) are read back verbatim and preserved untouched, since those are
-human-edited and this function must never silently clobber a hand-curated entry. Meant to be
-called once per rebuild by the imputation pass ([`Imputation.impute_candidates`](@ref) —
-implemented and validated on the 10-repo corpus, but NOT yet wired into the production rebuild, so
-nothing calls this function in production today), after [`compute_groups`](@ref) has run with the PREVIOUS `impute` contents, so
-each run's imputation proposals fully replace the last run's rather than accumulating stale ones.
-Creates the file (with empty `merge`/`split`) if it doesn't exist yet.
+human-edited and this function must never silently clobber a hand-curated entry.
+`AuthorGrouping.group_authors` calls it once per rebuild with the proposals of
+[`Imputation.impute_candidates`](@ref) from that same rebuild, so each run's proposals fully
+replace the last run's rather than accumulating stale ones. The file is a record for review: the
+rebuild uses the proposals it computed, not the ones it reads from the file. Creates the file (with
+empty `merge`/`split`) if it doesn't exist yet.
 """
 function save_imputes(imputes::AbstractVector, path::AbstractString=DEFAULT_AUTHOR_OVERRIDES_TOML)
     d = isfile(path) ? TOML.parsefile(path) : Dict{String,Any}()
@@ -783,6 +784,11 @@ end
 """
     compute_name_clusters(raw_names::Vector{String}) -> Vector{Vector{String}}
 
+Not used by `index` since 2026-10-24, which clusters with
+`PrecisionClustering.compute_precision_clusters` instead (see this module's docstring for the
+measurement that motivated the change). Kept for its tests and for comparison in
+`experiments/author_matching/`.
+
 Groups `raw_names` by a two-phase, name-only (no profile content) matching design, replacing an
 earlier `full_key`/`initials_key` exact-match clustering as [`compute_groups`](@ref)'s name-based
 signal: [`_name_cluster_edge`](@ref) (generous, recall-oriented, via q-gram similarity) proposes
@@ -897,22 +903,20 @@ function compute_name_clusters(raw_names::Vector{String})
 end
 
 """
-    compute_groups(raw_names::Vector{String}, overrides) -> Vector{Vector{String}}
+    compute_groups(clusters::Vector{Vector{String}}, overrides) -> Vector{Vector{String}}
 
-Connected components of the graph whose nodes are `raw_names` and whose edges are: same name
-cluster (see [`compute_name_clusters`](@ref) — replaces the earlier `full_key`/`initials_key`
-exact-match signal), or an explicit `merge`/`impute` pair — minus any explicit `split` pair.
-Overrides are applied AFTER clustering, unconditionally (never re-checked by the oracle): a human
+Connected components of the graph whose nodes are the raw names in `clusters` and whose edges are:
+same cluster, or an explicit `merge`/`impute` pair — minus any explicit `split` pair. `clusters`
+comes from a name clustering; `index` uses `PrecisionClustering.compute_precision_clusters` (see
+`AuthorGrouping.group_names`). Overrides are applied AFTER clustering, unconditionally: a human
 `merge` forces an edge the algorithm couldn't find on its own, and a human `split` removes one it
-shouldn't have made — neither should be second-guessed by [`_name_cluster_contradiction`](@ref).
-`impute` is mechanically IDENTICAL to `merge` (a forced edge, same as-is treatment) — the only
-difference is who writes that section of the overrides file: a person edits `merge`/`split` by
-hand, a separate recall-oriented pass ([`Imputation.impute_candidates`](@ref)) computes and
-rewrites `impute` on its own each run (see [`load_overrides`](@ref)/[`save_imputes`](@ref), which
-also records how far that wiring actually got). Plain
-BFS over an adjacency `Dict`, no graph library needed.
+shouldn't have made. `impute` is mechanically IDENTICAL to `merge` (a forced edge, same as-is
+treatment) — the only difference is who writes that section of the overrides file: a person edits
+`merge`/`split` by hand, and [`Imputation.impute_candidates`](@ref) computes `impute` again on each
+run (see [`save_imputes`](@ref)). Plain BFS over an adjacency `Dict`, no graph library needed.
 """
-function compute_groups(raw_names::Vector{String}, overrides)
+function compute_groups(clusters::Vector{Vector{String}}, overrides)
+    raw_names = reduce(vcat, clusters; init=String[])
     adj = Dict{String,Vector{String}}(n => String[] for n in raw_names)
 
     connect!(a, b) = begin
@@ -921,7 +925,7 @@ function compute_groups(raw_names::Vector{String}, overrides)
         push!(adj[b], a)
     end
 
-    for group in compute_name_clusters(raw_names)
+    for group in clusters
         for i in 1:length(group), j in (i+1):length(group)
             connect!(group[i], group[j])
         end
@@ -1115,10 +1119,11 @@ Combines the raw author profiles (`by_name[raw]` for each `raw` in the group, as
 `Corpus.build_authors_index_data`) into one consolidated profile — sums, unions, and a STABLE id.
 `consolidated_id` is always the group's LEADER's own raw id (from `raw_id_of`) — see
 [`resolve_leader`](@ref) for how the leader is chosen/carried over using `prev_leaders`
-([`previous_leader_info`](@ref)). Since every raw name has a globally unique raw id
-([`assign_raw_ids`](@ref)) and belongs to exactly one final group, two different groups can never
-end up choosing the same leader — no hash, no disambiguation digits, no `used_ids` bookkeeping
-needed for this id anymore.
+([`previous_leader_info`](@ref)). Every raw name belongs to exactly one final group, so two
+groups never choose the same leader. Their ids can still collide across rebuilds: a raw id depends
+on the order of all names ([`assign_raw_ids`](@ref)), so a fresh leader's raw id can be the id that
+another person's group had in the previous run. [`build_and_persist`](@ref) detects that case and
+assigns a new id.
 """
 function rollup(raw_names_in_group::Vector{String}, by_name::AbstractDict, raw_id_of::AbstractDict, prev_leaders::AbstractDict)
     entries = [by_name[n] for n in raw_names_in_group]
@@ -1152,10 +1157,11 @@ function rollup(raw_names_in_group::Vector{String}, by_name::AbstractDict, raw_i
 end
 
 """
-    build_and_persist(authors_data, index_dir, raw_id_of; overrides_path=DEFAULT_AUTHOR_OVERRIDES_TOML) -> Int
+    build_and_persist(authors_data, groups, index_dir, raw_id_of) -> Int
 
-Clusters `authors_data` (raw profiles, as returned by `Corpus.build_authors_index_data`) into
-consolidated profiles and writes one `.toml` file per group under
+Rolls `groups` (raw-name groups, as returned by `AuthorGrouping.group_authors`) up into
+consolidated profiles over `authors_data` (raw profiles, as returned by
+`Corpus.build_authors_index_data`) and writes one `.toml` file per group under
 `<index_dir>/authors_consolidated/<apellido_bucket>/<consolidated_id>.toml` — see this module's
 docs for why TOML, and why the bucket directory is purely organizational (2 levels: the
 consolidated-authors directory itself, then the bucket). `raw_id_of` (from
@@ -1168,43 +1174,53 @@ leader ([`previous_leader_info`](@ref)) — this is what lets [`rollup`](@ref)/[
 keep a group's `consolidated_id` stable across rebuilds (same leader survives unchanged; a split's
 non-leader piece and a genuinely new group both get a fresh id; a merge keeps the larger previous
 group's id) instead of the id silently changing whenever group membership shifts even slightly.
-Still wipes and rewrites every `.toml` file each call — only the id/leader CHOICE is carried over,
-not the files themselves.
+Still rewrites every `.toml` file each call — only the id/leader CHOICE is carried over, not the
+files themselves. The new files are written to a temporary directory, which replaces the previous
+one only after the last file is written. If the call fails, the previous profiles stay on disk and
+the next run still knows the previous leaders.
 
-Name-only: content-similarity evidence is NOT used here. A content-based signal is being designed
-(tracked in [issue #2](https://github.com/sadit/ReposMx/issues/2)) as evidence FOR the
-[`compute_name_clusters`](@ref) oracle to justify *splitting* a cluster (a precision tool), not as
-a source of *merge* candidates — clustering stays recall-oriented and name-only per that plan.
+A group with a fresh leader whose raw id was the id of a previous group gets a new id from
+[`assign_id`](@ref), unique among all raw ids and all previous ids. An id of the previous run
+therefore never moves to a different person. This happened on 2026-10-25: the name cleanup changed
+the raw ids, and `martinez_5457` was both a carried id and the raw id of a new leader.
 """
-function build_and_persist(authors_data::Vector{<:AbstractDict}, index_dir::AbstractString, raw_id_of::AbstractDict;
-                            overrides_path::AbstractString=DEFAULT_AUTHOR_OVERRIDES_TOML)
+function build_and_persist(authors_data::Vector{<:AbstractDict}, groups::Vector{Vector{String}},
+                           index_dir::AbstractString, raw_id_of::AbstractDict)
     by_name = Dict{String,Any}(a["name"] => a for a in authors_data)
-    raw_names = collect(keys(by_name))
-    overrides = load_overrides(overrides_path)
-
     prev_leaders = previous_leader_info(load_all(index_dir))
 
-    groups = compute_groups(raw_names, overrides)
-
     base_dir = joinpath(index_dir, CONSOLIDATED_SUBDIR)
-    isdir(base_dir) && rm(base_dir; recursive=true, force=true)
-    mkpath(base_dir)
+    tmp_dir = base_dir * ".tmp"
+    isdir(tmp_dir) && rm(tmp_dir; recursive=true, force=true)
+    mkpath(tmp_dir)
 
+    previous_ids = Set{String}(p.id for p in values(prev_leaders))
+    used_ids = union(Set{String}(values(raw_id_of)), previous_ids)
     seen_ids = Set{String}()
     n_new = 0
+    n_reassigned = 0
     for g in sort(groups; by=grp -> sort(grp)[1])
         profile = rollup(g, by_name, raw_id_of, prev_leaders)
+        leader = profile["leader_raw_name"]
+        if !haskey(prev_leaders, leader) && profile["consolidated_id"] in previous_ids
+            institutions = collect(String, get(by_name[leader], "institutions", String[]))
+            profile["consolidated_id"], _ = assign_id([leader], institutions, used_ids, 2)
+            n_reassigned += 1
+        end
         cid = profile["consolidated_id"]
-        @assert cid ∉ seen_ids "duplicate consolidated_id $cid across two different groups — should be impossible under the leader model"
+        @assert cid ∉ seen_ids "duplicate consolidated_id $cid across two different groups"
         push!(seen_ids, cid)
-        haskey(prev_leaders, profile["leader_raw_name"]) || (n_new += 1)
-        dir = joinpath(base_dir, _bucket_for(g))
+        haskey(prev_leaders, leader) || (n_new += 1)
+        dir = joinpath(tmp_dir, _bucket_for(g))
         mkpath(dir)
         open(joinpath(dir, "$(cid).toml"), "w") do io
             TOML.print(io, profile)
         end
     end
+    isdir(base_dir) && rm(base_dir; recursive=true, force=true)
+    mv(tmp_dir, base_dir)
     println("  consolidated groups with a freshly assigned leader/id: $n_new / $(length(groups))")
+    println("  fresh ids that were a previous group's id, reassigned: $n_reassigned")
     return length(groups)
 end
 

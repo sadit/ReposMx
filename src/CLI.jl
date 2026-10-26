@@ -85,7 +85,7 @@ end
 """
     prepare_index(; repos=nothing, data_dir=DEFAULT_DATA_DIR, index_dir=DEFAULT_INDEX_DIR)
 
-Orchestrated pipeline step 2: Build Corpus -> Fit Bilingual TextConfig -> Index BM25 & SimilaritySearch.
+Orchestrated pipeline step 2: Build Corpus -> Refit TextProfile -> Index BM25.
 """
 function prepare_index(; repos=nothing, data_dir=DEFAULT_DATA_DIR, index_dir=DEFAULT_INDEX_DIR)
     println("\n=======================================================")

@@ -19,11 +19,12 @@ end
 """
     list_repo_names(; data_dir=DEFAULT_DATA_DIR)
 
-Lists all repository names present in the data directory.
+Lists all repository names present in the data directory. The RocksDB database lives in the same
+directory, at `rocksdb` (`DB.DEFAULT_ROCKSDB_DIR`), and is not a repository.
 """
 function list_repo_names(; data_dir=DEFAULT_DATA_DIR)
     isdir(data_dir) || return String[]
-    return filter(d -> isdir(joinpath(data_dir, d)) && !startswith(d, "."), readdir(data_dir))
+    return filter(d -> isdir(joinpath(data_dir, d)) && !startswith(d, ".") && d != "rocksdb", readdir(data_dir))
 end
 
 """
