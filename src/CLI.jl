@@ -17,7 +17,7 @@ export main_cli
 
 function print_usage()
     println("""
-ReposMx - Repositorios Institucionales de México CLI (Julia 1.12)
+ReposMx - Repositorios Institucionales de México CLI (Julia $(VERSION))
 
 USO:
   reposmx [subcomando] [opciones] [repositorios...]

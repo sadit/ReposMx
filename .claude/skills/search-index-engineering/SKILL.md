@@ -43,7 +43,7 @@ dependencia sobre detalles internos (constructores posicionales, funciones no ex
 
 Proyectos que consumen esto y de dónde salen los hallazgos:
 
-- **ReposMx** (`~/Projects/Repositorios-Institucionales`): recuperación de información académica
+- **ReposMx** (`~/Projects/ReposMx`): recuperación de información académica
   sobre repositorios institucionales mexicanos — documentos, autores, referencias citadas. Dos
   documentos propios alimentan esta guía: `docs/rocksdb_inverted_index.md` (la arquitectura
   resumida en §10) y `experiments/author_matching/textsearch_similaritysearch_notes.md` (notas de
@@ -758,7 +758,7 @@ bloque. Alternativas medidas en ReposMx, con su desenlace:
 
 Esta sección es el caso completo, no una regla suelta: cómo se conectan las piezas de §1-§8 en un
 buscador real de literatura académica (repositorios institucionales: documentos, autores,
-referencias citadas). La fuente es `~/Projects/Repositorios-Institucionales/docs/rocksdb_inverted_index.md`.
+referencias citadas). La fuente es `~/Projects/ReposMx/docs/rocksdb_inverted_index.md`.
 Lo que sigue es transferible a cualquier dominio donde una entidad tenga varios *campos de
 naturaleza lingüística muy distinta*.
 
