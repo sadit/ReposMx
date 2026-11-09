@@ -1,5 +1,6 @@
 module TUI
 
+import Dates
 using REPL
 using REPL.LineEdit
 using Term
@@ -706,6 +707,29 @@ function append_history(cmd::AbstractString)
 end
 
 """
+    load_history!(hp::REPL.REPLHistoryProvider, lines)
+
+Load the saved shell commands into the in-memory history of the prompt, so that the Up arrow and
+Ctrl-R find them. The history provider changed in Julia 1.13: before it, `hp.history` is a
+`Vector{String}` with a parallel `hp.modes`; from 1.13, `hp.history` is a `REPL.History.HistoryFile`
+of `HistEntry` records and there is no `modes` field.
+"""
+function load_history!(hp, lines)
+    if hasfield(typeof(hp), :modes)
+        append!(hp.history, lines)
+        append!(hp.modes, fill(:reposmx, length(lines)))
+    else
+        date = Dates.now(Dates.UTC)
+        for line in lines
+            push!(hp.history, REPL.History.HistEntry(:reposmx, date, String(line), 0))
+        end
+    end
+    hp.start_idx = length(hp.history)
+    hp.cur_idx = length(hp.history) + 1
+    hp
+end
+
+"""
     process_shell_input(state::ShellState, raw_input::AbstractString)::Bool
 
 Dispatches one line of shell input to its handler. Every branch calls its handler through
@@ -874,33 +898,32 @@ function launch_interactive_shell(; data_dir=DEFAULT_DATA_DIR, index_dir=DEFAULT
             hp = REPL.REPLHistoryProvider(Dict{Symbol, Any}(:reposmx => main_prompt))
             @time "history load" if isfile(HISTORY_FILE)
                 try
-                    for line in eachline(HISTORY_FILE)
-                        s = strip(line)
-                        if !isempty(s)
-                            push!(hp.history, s)
-                            push!(hp.modes, :reposmx)
-                        end
-                    end
-                    hp.start_idx = length(hp.history)
-                    hp.cur_idx = length(hp.history) + 1
-                catch
+                    load_history!(hp, filter!(!isempty, strip.(readlines(HISTORY_FILE))))
+                catch e
+                    tprintln("{yellow}No se pudo cargar el historial: $(sprint(showerror, e)){/yellow}")
                 end
             end
             main_prompt.hist = hp
 
             @time "REPL/keymap setup" begin
-                search_prompt, skeymap = REPL.LineEdit.setup_search_keymap(hp)
+                modes = Any[main_prompt]
+                keymaps = Dict{Any,Any}[]
+                # Julia ≤ 1.12 has a separate reverse-search mode for Ctrl-R. Julia 1.13 removed
+                # `setup_search_keymap` and binds Ctrl-R inside `history_keymap` instead.
+                if isdefined(REPL.LineEdit, :setup_search_keymap)
+                    search_prompt, skeymap = REPL.LineEdit.setup_search_keymap(hp)
+                    push!(modes, search_prompt)
+                    push!(keymaps, skeymap)
+                end
                 prefix_prompt, pkeymap = REPL.LineEdit.setup_prefix_keymap(hp, main_prompt)
-
-                main_prompt.keymap_dict = REPL.LineEdit.keymap([
-                    skeymap,
-                    pkeymap,
-                    REPL.LineEdit.history_keymap,
-                    REPL.LineEdit.default_keymap,
-                    REPL.LineEdit.escape_defaults
-                ])
+                push!(modes, prefix_prompt)
+                append!(keymaps, [pkeymap, REPL.LineEdit.history_keymap,
+                                  REPL.LineEdit.default_keymap, REPL.LineEdit.escape_defaults])
+                main_prompt.keymap_dict = REPL.LineEdit.keymap(keymaps)
             end
-            
+
+            # Enter already added the line to `hp` (`commit_line` calls `add_history`), and
+            # `reset_state` moves the history cursor to the end; only the file needs writing here.
             main_prompt.on_done = (s, buf, ok) -> begin
                 if !ok
                     return REPL.LineEdit.transition(s, :abort)
@@ -909,9 +932,6 @@ function launch_interactive_shell(; data_dir=DEFAULT_DATA_DIR, index_dir=DEFAULT
                 REPL.LineEdit.reset_state(s)
                 if !isempty(line)
                     append_history(line)
-                    push!(hp.history, line)
-                    push!(hp.modes, :reposmx)
-                    hp.cur_idx = length(hp.history) + 1
                     keep_running = process_shell_input(state, line)
                     if !keep_running
                         return REPL.LineEdit.transition(s, :abort)
@@ -919,26 +939,29 @@ function launch_interactive_shell(; data_dir=DEFAULT_DATA_DIR, index_dir=DEFAULT
                 end
                 return REPL.LineEdit.transition(s, main_prompt)
             end
-            
-            interface = REPL.LineEdit.ModalInterface([main_prompt, search_prompt, prefix_prompt])
+
+            interface = REPL.LineEdit.ModalInterface(modes)
             REPL.LineEdit.run_interface(term, interface)
             close(engine)
             return
         catch e
-            # Fallback to standard readline loop if TTY initialization fails
+            # Do not hide the cause: a silent fallback made every command need a second Enter.
+            tprintln("{yellow}El editor de línea falló ($(sprint(showerror, e))); se usa lectura simple de líneas.{/yellow}")
         end
     end
-    
-    # Non-TTY / Fallback Loop
+
+    # Non-TTY / Fallback Loop.
+    # `eof(stdin)` blocks until the next input arrives, so it is checked before `readline`, while
+    # the user is about to type. Checking it after `readline` made each command wait for one more
+    # line before it ran.
     while true
         print(get_prompt_str())
         flush(stdout)
-        line = readline(stdin)
         if eof(stdin)
             println()
             break
         end
-        clean_line = strip(line)
+        clean_line = strip(readline(stdin))
         isempty(clean_line) && continue
         append_history(clean_line)
         keep_running = process_shell_input(state, clean_line)
