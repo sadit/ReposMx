@@ -17,7 +17,7 @@ export Database, open_database, close_database,
        DEFAULT_ROCKSDB_DIR, rocksdb_handle, compact_all!
 
 const DEFAULT_ROCKSDB_DIR = joinpath(DEFAULT_DATA_DIR, "rocksdb")
-const COLUMN_FAMILIES = ["default", "authors", "references", "topics", "stats", "postings", "docvecs", "dockeys", "authorkeys", "consolidated_authors"]
+const COLUMN_FAMILIES = ["default", "authors", "references", "topics", "stats", "postings", "docvecs", "dockeys", "authorkeys", "consolidated_authors", "repo_postings"]
 
 """
     Database
@@ -116,7 +116,11 @@ function open_database(path::AbstractString=DEFAULT_ROCKSDB_DIR; create_if_missi
         end
     end
     
-    open_cfs = union(existing_cfs, COLUMN_FAMILIES)
+    # A read-only open cannot create a missing column family, and RocksDB refuses to open one
+    # that does not exist. A database written before a column family was added (for example
+    # `repo_postings`) is then opened with the ones it has; the code that reads a missing one
+    # checks for it (`LazyBM25.load_repo_table`).
+    open_cfs = read_only ? existing_cfs : union(existing_cfs, COLUMN_FAMILIES)
     db_inst = opendb(path; column_families=open_cfs, read_only)
     cf_map = db_inst.column_families
     

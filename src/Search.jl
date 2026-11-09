@@ -8,9 +8,10 @@ using ..DB: Database, open_database, close_database, get_document, get_author_pr
             get_author_documents_for_group, get_coauthors_for_group,
             get_topic_docs, get_topic_authors,
             intersect_topic_repo_docs, intersect_topic_repo_authors, normalize_author_name,
-            get_documents_citing_author, get_stats, compute_detailed_statistics
+            get_documents_citing_author, get_stats, compute_detailed_statistics, rocksdb_handle
 using ..Indexing: load_docs_content_index, load_docs_refs_index, load_authors_name_index,
                     load_authors_profile_index, search_document_in_depth
+using ..LazyBM25: load_repo_table, assemble_repo_bm25, DOCS_CONTENT, AUTHORS_NAME
 using ..Wikipedia: explain_concept
 
 export query_index, search_authors, find_similar_authors_by_profile, find_similar_documents_by_references,
@@ -29,6 +30,9 @@ mutable struct SearchEngine
     index_dir::String
     data_dir::String
     stats_cache::Dict{Union{String, Nothing}, Dict{String, Any}}
+    # repository name -> index in the `repo_postings` keys; `nothing` when the database has no
+    # per-repository indices (built before them, and `reposmx split-index` not run yet)
+    repo_table::Union{Dict{String, UInt16}, Nothing}
 
     function SearchEngine(; index_dir=DEFAULT_INDEX_DIR, data_dir=DEFAULT_DATA_DIR)
         db_path = joinpath(data_dir, "rocksdb")
@@ -52,9 +56,27 @@ mutable struct SearchEngine
             a_keys,
             String(index_dir),
             String(data_dir),
-            Dict{Union{String, Nothing}, Dict{String, Any}}()
+            Dict{Union{String, Nothing}, Dict{String, Any}}(),
+            db === nothing ? nothing : load_repo_table(rocksdb_handle(db))
         )
     end
+end
+
+"""
+    scoped_index(engine, global_index, idx_id, repo) -> (index, scoped::Bool)
+
+The index to search for an optional repository filter. Without a filter: the global index,
+`scoped=false`. With a filter and a repository table: the index of that repository
+(`LazyBM25.assemble_repo_bm25`, which shares everything but the posting lists with the global
+one), `scoped=true`; `index === nothing` when the table does not have the repository, since then
+no document or author belongs to it. Without a table: the global index, `scoped=false`, and the
+caller filters its results by repository as before.
+"""
+function scoped_index(engine::SearchEngine, global_index, idx_id::UInt8, repo)
+    (repo === nothing || isempty(repo) || engine.repo_table === nothing) && return (global_index, false)
+    k = get(engine.repo_table, repo, nothing)
+    k === nothing && return (nothing, true)
+    return (assemble_repo_bm25(global_index, rocksdb_handle(engine.db), idx_id, k), true)
 end
 
 function Base.close(engine::SearchEngine)
@@ -110,7 +132,11 @@ function query_index(
     end
 
     t0 = time()
-    has_filters = (repo !== nothing || keyword !== nothing || doc_type !== nothing || year_min !== nothing || year_max !== nothing)
+    # With a repository filter, the repository's own index answers the query (see
+    # `scoped_index`): its candidates are all of that repository, so only the other filters
+    # remain to be applied after the search.
+    index, repo_scoped = scoped_index(engine, engine.docs_content_invfile, DOCS_CONTENT, repo)
+    has_filters = ((repo !== nothing && !repo_scoped) || keyword !== nothing || doc_type !== nothing || year_min !== nothing || year_max !== nothing)
     offset = max(offset, 0)
     needed = offset + top
     # Peek one extra match beyond the requested page so we know whether a next page exists.
@@ -120,10 +146,12 @@ function query_index(
     hits = Dict{String, Any}[]
 
     # Restrictive post-filters (repo/type/keyword/year) or a deep offset can starve the candidate
-    # window; widen it geometrically instead of silently returning fewer than `top` hits.
-    while true
+    # window; widen it geometrically instead of silently returning fewer than `top` hits. A search
+    # that returned fewer candidates than it asked for has none left, and widening stops there.
+    while index !== nothing
         ctx = InvertedFileContext()
-        res = search(engine.docs_content_invfile, ctx, q, knnqueue(ctx, knn_k))
+        res = search(index, ctx, q, knnqueue(ctx, knn_k))
+        exhausted = length(res) < knn_k
         empty!(hits)
 
         for item in res
@@ -199,7 +227,7 @@ function query_index(
             length(hits) >= target && break
         end
 
-        (length(hits) < target && knn_k < max_k) || break
+        (length(hits) < target && knn_k < max_k && !exhausted) || break
         knn_k = min(knn_k * 4, max_k)
     end
 
@@ -270,13 +298,17 @@ function search_authors(engine::SearchEngine, author_query::AbstractString; top:
     offset = max(offset, 0)
     needed = offset + top
     target = needed + 1
-    knn_k = target * (repo !== nothing ? 5 : 1)
+    # As in `query_index`: with a repository index, every candidate is an author of that
+    # repository, and the post-filter below never drops one.
+    index, repo_scoped = scoped_index(engine, engine.authors_name_invfile, AUTHORS_NAME, repo)
+    knn_k = target * (repo !== nothing && !repo_scoped ? 5 : 1)
     max_k = length(engine.author_keys)
     results = Dict{String, Any}[]
 
-    while true
+    while index !== nothing
         ctx = InvertedFileContext()
-        res = search(engine.authors_name_invfile, ctx, author_query, knnqueue(ctx, knn_k))
+        res = search(index, ctx, author_query, knnqueue(ctx, knn_k))
+        exhausted = length(res) < knn_k
         empty!(results)
 
         for item in res
@@ -307,7 +339,7 @@ function search_authors(engine::SearchEngine, author_query::AbstractString; top:
             length(results) >= target && break
         end
 
-        (length(results) < target && knn_k < max_k) || break
+        (length(results) < target && knn_k < max_k && !exhausted) || break
         knn_k = min(knn_k * 4, max_k)
     end
 

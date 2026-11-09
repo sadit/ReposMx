@@ -7,7 +7,7 @@ using ..Downloader: download_all_files
 using ..Catalogs: fetch_cti_catalogs
 using ..Parser: parse_all_documents
 using ..Corpus: build_all_corpus
-using ..Indexing: build_search_index, rebuild_authors_index
+using ..Indexing: build_search_index, rebuild_authors_index, build_repo_indices
 using ..DB: open_database, close_database, ingest_all_to_db!
 using ..Search: SearchEngine, query_index, get_detailed_statistics
 using ..Server: start_server
@@ -44,6 +44,8 @@ SUBCOMANDOS INDIVIDUALES:
   index [repos...]           Construye el índice de búsqueda léxico y semántico
   consolidate-authors [repos...]  Re-agrupa perfiles de autor (tras editar author_overrides.toml),
                              sin re-tokenizar docs_content/docs_refs
+  split-index                Genera los índices por repositorio (--repo) a partir del índice
+                             global, sin leer el corpus ni re-tokenizar
   search "<query>"           Busca directamente en la terminal (BM25 + Wikipedia)
   info [repo]                Estadísticas detalladas de publicaciones, disciplinas y autores
   status                     Muestra estadísticas de cobertura y estado de los repositorios
@@ -332,6 +334,8 @@ function main_cli(args=ARGS)
         Base.invokelatest(build_search_index; repos=target_repos)
     elseif cmd == "consolidate-authors"
         Base.invokelatest(rebuild_authors_index; repos=target_repos)
+    elseif cmd == "split-index"
+        Base.invokelatest(build_repo_indices)
     elseif cmd == "search"
         q = isempty(repos) ? (isempty(subargs) ? "" : subargs[1]) : join(repos, " ")
         if isempty(q)

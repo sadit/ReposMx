@@ -10,16 +10,17 @@ using ..TextModel: base_profile, refit_corpus_profile, create_textconfig, save_p
 using ..DB: Database, open_database, close_database, put_document!, put_author_profile!, put_topics!,
             put_reference!, set_document_references!, link_author_document!, add_coauthor_link!,
             put_author_id_mapping!, normalize_author_name, rocksdb_handle, compact_all!, precompute_all_statistics!,
-            put_consolidated_profile!
+            put_consolidated_profile!, get_consolidated_profile
 using ..LazyBM25: export_to_rocksdb!, assemble_bm25,
                   LazyDocKeys, LazyAuthorKeys, export_dockeys_to_rocksdb!, export_authorkeys_to_rocksdb!,
-                  DOCS_CONTENT, DOCS_REFS, AUTHORS_NAME, AUTHORS_PROFILE
+                  DOCS_CONTENT, DOCS_REFS, AUTHORS_NAME, AUTHORS_PROFILE,
+                  save_repo_table!, load_repo_table, export_repo_postings!
 using ..VocabIO: save_vocabulary_zip, load_vocabulary_zip
 using ..IndexShellIO: save_index_shell_zip, load_index_shell_zip
 using ..AuthorConsolidation: build_and_persist, load_all, AUTHOR_NAME_CONFIG, assign_raw_ids
 using ..AuthorGrouping: group_authors
 
-export build_search_index, rebuild_authors_index,
+export build_search_index, rebuild_authors_index, build_repo_indices,
        load_docs_content_index, load_docs_refs_index,
        load_authors_name_index, load_authors_profile_index,
        search_document_in_depth, extract_index_text
@@ -170,6 +171,49 @@ function _collect_documents(; data_dir=DEFAULT_DATA_DIR, repos::Union{Vector{Str
 end
 
 """
+    _save_repo_table_from_doc_keys!(rdb, doc_keys) -> Vector{UInt16}
+
+Writes the repository table (the repositories of `doc_keys`, sorted by name) and returns the
+repository index of every document id, for [`LazyBM25.export_repo_postings!`](@ref).
+"""
+function _save_repo_table_from_doc_keys!(rdb, doc_keys)
+    repos = sort!(unique(first.(doc_keys)))
+    save_repo_table!(rdb, repos)
+    index_of = Dict{String,UInt16}(r => UInt16(i) for (i, r) in enumerate(repos))
+    return UInt16[index_of[r] for (r, _) in doc_keys]
+end
+
+"""
+    _export_author_repo_postings!(rdb, adj, repos_of_author) -> Int
+
+Writes the per-repository posting lists of `authors_name`: an author enters the list of every
+repository where it has documents (`repos_of_author(i)`, names). Uses the repository table that
+the document index wrote. Without one (a database written before per-repository indices
+existed), it writes nothing and says to run `reposmx split-index`. A repository that the table
+does not have is skipped and counted. Returns the number of ids written.
+"""
+function _export_author_repo_postings!(rdb, adj, repos_of_author)
+    table = load_repo_table(rdb)
+    if table === nothing
+        println("  authors_name: no repository table; run 'reposmx split-index' to build the repository indices")
+        return 0
+    end
+    unknown = Set{String}()
+    function repos_of(i)
+        out = UInt16[]
+        for r in repos_of_author(i)
+            k = get(table, r, nothing)
+            k === nothing ? push!(unknown, String(r)) : push!(out, k)
+        end
+        out
+    end
+    n_ids = export_repo_postings!(rdb, AUTHORS_NAME, adj, repos_of)
+    println("  authors_name split into repository indices ($n_ids ids)")
+    isempty(unknown) || println("  authors_name: $(length(unknown)) repositories not in the table were skipped: $(join(sort!(collect(unknown)), ", "))")
+    return n_ids
+end
+
+"""
     _build_authors_indices!(db, rdb, authors_data, index_dir, name_textconfig, raw_id_of) -> Int
 
 Clusters `authors_data` into consolidated profiles, persists them (TOML corpus + RocksDB), and
@@ -207,6 +251,7 @@ function _build_authors_indices!(db::Database, rdb, authors_data::Vector{<:Abstr
     append_items!(authors_name_invfile, ctx3, authors_names)
 
     export_to_rocksdb!(rdb, AUTHORS_NAME, authors_name_invfile)
+    _export_author_repo_postings!(rdb, authors_name_invfile.adj, i -> get(consolidated[i], "repos", String[]))
     save_vocabulary_zip(joinpath(index_dir, "authors_name_vocab.zip"), authors_name_invfile.voc)
     save_index_shell_zip(joinpath(index_dir, "authors_name_shell.zip");
             bm25=authors_name_invfile.bm25,
@@ -344,6 +389,7 @@ function build_search_index(;
         # same order, in the collection loop above), so it is exported once here rather than
         # once per index.
         export_dockeys_to_rocksdb!(rdb, doc_keys)
+        repo_of_doc = _save_repo_table_from_doc_keys!(rdb, doc_keys)
 
         # Ingest documents and topics into RocksDB. One WriteBatch per document (reused via
         # empty! to avoid allocating ~length(all_docs) of them): `add_coauthor_link!` does a
@@ -413,6 +459,8 @@ function build_search_index(;
         append_items!(docs_content_invfile, ctx1, docs_content_texts)
 
         export_to_rocksdb!(rdb, DOCS_CONTENT, docs_content_invfile)
+        n_ids = export_repo_postings!(rdb, DOCS_CONTENT, docs_content_invfile.adj, id -> (repo_of_doc[id],))
+        println("  docs_content split into $(length(unique(repo_of_doc))) repository indices ($n_ids ids)")
         save_vocabulary_zip(joinpath(index_dir, "docs_content_vocab.zip"), docs_content_invfile.voc)
         save_index_shell_zip(joinpath(index_dir, "docs_content_shell.zip");
                 bm25=docs_content_invfile.bm25,
@@ -471,6 +519,46 @@ function build_search_index(;
     finally
         close_database(db)
     end
+end
+
+"""
+    build_repo_indices(; data_dir=DEFAULT_DATA_DIR, index_dir=DEFAULT_INDEX_DIR)
+
+Builds the per-repository indices of `docs_content` and `authors_name` from the global indices
+already stored in RocksDB, without reading the corpus or tokenizing anything. It reads each
+global posting list once and writes it split by repository (see
+[`LazyBM25.export_repo_postings!`](@ref)). `build_search_index` and `rebuild_authors_index` write
+these lists too; this function is for a database built before they did.
+"""
+function build_repo_indices(; data_dir=DEFAULT_DATA_DIR, index_dir=DEFAULT_INDEX_DIR)
+    db = open_database(joinpath(data_dir, "rocksdb"); create_if_missing=false)
+    rdb = rocksdb_handle(db)
+    try
+        docs_inv, doc_keys = load_docs_content_index(db; index_dir)
+        docs_inv === nothing && error("No hay índice docs_content en '$index_dir'. Corre 'reposmx prepare-index' primero.")
+        t = time()
+        repo_of_doc = _save_repo_table_from_doc_keys!(rdb, collect(doc_keys))
+        n_ids = export_repo_postings!(rdb, DOCS_CONTENT, docs_inv.adj, id -> (repo_of_doc[id],))
+        println("docs_content: $(length(unique(repo_of_doc))) repositorios, $n_ids ids, $(round(time() - t; digits=1)) s")
+
+        auth_inv, author_keys = load_authors_name_index(db; index_dir)
+        if auth_inv === nothing
+            println("authors_name: no hay índice; se omite")
+        else
+            t = time()
+            repos = Vector{Vector{String}}(undef, length(author_keys))
+            for i in eachindex(repos)
+                p = get_consolidated_profile(db, author_keys[i])
+                repos[i] = p === nothing ? String[] : String.(get(p, "repos", String[]))
+            end
+            _export_author_repo_postings!(rdb, auth_inv.adj, i -> repos[i])
+            println("authors_name: $(length(author_keys)) autores, $(round(time() - t; digits=1)) s")
+        end
+        compact_all!(db)
+    finally
+        close_database(db)
+    end
+    return nothing
 end
 
 """

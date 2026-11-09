@@ -63,9 +63,10 @@ deliberada, no incidental:
 
 `Database` (`src/DB.jl`) envuelve una instancia RocksDB con column families fijas
 (`COLUMN_FAMILIES` en `DB.jl`): `default`, `authors`, `references`, `topics`, `fulltext`,
-`stats`, `postings`, `docvecs`, `dockeys`, `authorkeys`, `consolidated_authors`. Las 4 CFs que le
-importan a `LazyBM25.jl` son `postings`/`docvecs` (compartidas por los 4 índices, particionadas
-por `idx_id`) y `dockeys`/`authorkeys` (compartidas por pares de índices que numeran igual).
+`stats`, `postings`, `docvecs`, `dockeys`, `authorkeys`, `consolidated_authors`, `repo_postings`.
+Las CFs que le importan a `LazyBM25.jl` son `postings`/`docvecs` (compartidas por los 4 índices,
+particionadas por `idx_id`), `dockeys`/`authorkeys` (compartidas por pares de índices que numeran
+igual) y `repo_postings` (las listas por repositorio, ver la sección siguiente).
 
 **Claves de ancho fijo, binarias, sin round-trip por String** (`LazyBM25.jl`):
 
@@ -85,6 +86,57 @@ reinterpretado a bytes crudos (`encode_u32vec`/`decode_u32vec`); un vector dispe
 documento (`SparseVecView`) se serializa a mano como `(n::Int32, nnz::Int32, nzind::Vector{Int32},
 nzval::Vector{UInt32})` sobre un `IOBuffer`. Nada de JSON ni de un formato genérico para estas
 dos CFs — son el volumen alto, el camino caliente de lectura en cada búsqueda.
+
+## Índices por repositorio
+
+`docs_content` y `authors_name` tienen, además del índice global, un índice por repositorio. Un
+índice de repositorio usa los mismos campos que el global, sin copiarlos: vocabulario, parámetros
+BM25 (`trainsize`, longitud media), vectores de documento (`docvecs`), `doclens`, tabla de claves
+y política de consulta. Solo cambian las listas de postings. La lista del repositorio `r` para un
+token tiene los ids globales de los documentos (o autores) de `r` que contienen el token, en el
+mismo orden que la lista global.
+
+El puntaje BM25 de un documento depende del idf, de la longitud media y del vector del documento.
+Los tres son los globales, así que un documento recibe el mismo puntaje en el índice de su
+repositorio que en el global. Buscar en el índice de `r` da el mismo orden que filtrar por `r` los
+resultados globales, y solo evalúa documentos de `r`.
+
+**Claves de `repo_postings`**: `[idx_id][repo u16][token u32]`, en big-endian, así que las listas
+de un índice y un repositorio quedan contiguas. La clave `[0x00]` guarda la tabla de repositorios:
+los nombres, ordenados, separados por `\n`; el nombre `i` tiene el índice `i`. Una sola tabla sirve
+para los dos índices. Un autor entra en la lista de cada repositorio donde tiene documentos (el
+campo `repos` de su perfil consolidado).
+
+**Escritura.** `export_repo_postings!` recorre cada lista global una vez y la escribe dividida por
+repositorio. Antes borra el rango `[idx_id, idx_id + 1)`, así que una tabla nueva no deja listas
+de una anterior. `index` y `consolidate-authors` lo hacen al construir. `reposmx split-index` lo
+hace desde las listas globales que ya están en RocksDB, sin leer el corpus: sobre 446,857
+documentos en 91 repositorios (35.7 M ids) y 228,272 autores (1.45 M ids) tardó 33.5 s, y la base
+pasó de 4.1 GB a 4.2 GB.
+
+**Lectura.** `Search.scoped_index` arma el índice del repositorio por consulta
+(`assemble_repo_bm25`, sin leer disco). Si la tabla no tiene el repositorio, la respuesta es
+vacía sin buscar. Si la base no tiene tabla (construida antes de esto y sin `split-index`), se
+usa el índice global y se filtra por repositorio como antes. `open_database` en modo de solo
+lectura abre solo las CFs que existen, porque RocksDB no abre en ese modo una CF que no existe.
+
+**Medición (2026-11-09, Julia 1.13.3, 64 hilos).** 390 consultas con `--repo`: 330 de documentos
+(11 consultas × 10 repositorios × página 1, página 2 y `--type Tesis`) y 60 de autores. Los
+resultados del índice por repositorio son iguales a los del filtro sobre el índice global en las
+390: mismos ids, mismo orden, diferencia de puntaje 0.0 y el mismo `has_more`.
+
+| | filtro sobre el índice global | índice por repositorio |
+|---|---|---|
+| `query_index` con `repo`, media (máximo) | 1,801 ms (7,921 ms) | 7.7 ms (204 ms) |
+| `search_authors` con `repo`, media (máximo) | 1,998 ms (4,112 ms) | 4.0 ms (32 ms) |
+| `unicach` (8 documentos) | 2,515 ms | 0.7 ms |
+| `unam-filos` (15,222 documentos) | 1,456 ms | 17 ms |
+| `itesm` (139,605 documentos) | 572 ms | 25 ms |
+
+El filtro global era lento porque, cuando quedaban menos de `top` resultados, volvía a buscar con
+una ventana 4 veces mayor, hasta llenar la página o llegar a todo el acervo. Ese ciclo se queda
+para `--type`, `--tag` y años, ahora dentro del repositorio, y termina cuando la búsqueda devuelve
+menos candidatos de los que pidió.
 
 ## El truco de abstracción: `AbstractAdjList`/`AbstractDatabase` lazy
 

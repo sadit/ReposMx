@@ -96,6 +96,21 @@ tiene unas 200 consultas para `query_index` (con y sin filtros, páginas 1 y 2),
 Se guardan las claves `(repo, doc_id)` o `cid` y los puntajes. Este conjunto es la referencia de
 las fases 2 y 3.
 
+## Nota del 2026-11-09: índices por repositorio
+
+El filtro por repositorio ya no se resuelve con filtro posterior. `docs_content` y `authors_name`
+tienen un índice por repositorio que comparte todo con el global excepto las listas de postings
+(`docs/rocksdb_inverted_index.md`, sección "Índices por repositorio"). `--repo` bajó de 1.8 s a
+7.7 ms de media en `query_index` y de 2.0 s a 4.0 ms en `search_authors`, con los mismos
+resultados.
+
+Esto cambia las fases 1 y 2. El filtro de la fase 1 sigue siendo necesario para tipo, palabra
+clave y años, pero no para el repositorio. La fase 2 tiene que conservar los índices por
+repositorio. Hay dos formas, por decidir: un proyecto del Engine por repositorio (91 proyectos,
+cada uno con su vocabulario y sus estadísticas, y entonces los puntajes ya no son los globales), o
+listas de postings por partición dentro de un proyecto, que es lo que hace ReposMx ahora y que el
+Engine no tiene.
+
 ## Fase 1: filtro y paginación en `ftsearch` (repositorio del Engine)
 
 Hoy `ftsearch(h, text, k; minrecall, policy, stats)` no acepta `filter` ni desplazamiento.

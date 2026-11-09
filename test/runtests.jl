@@ -974,6 +974,77 @@ using TOML
         end
     end
 
+    @testset "LazyBM25 per-repository indices (isolated, synthetic corpus)" begin
+        # A repository index shares the vocabulary, BM25 statistics and document vectors of the
+        # global index and has its own posting lists. Its results must be the global results
+        # filtered by repository: same ids, same order, same scores.
+        docs = [
+            "el gato negro corre en el jardin", "el perro blanco duerme en la casa",
+            "un gato y un perro juegan juntos", "la casa tiene un jardin grande",
+            "grandes jardines con gatos y perros", "el sol brilla sobre el jardin",
+            "un dia soleado en el parque", "el gato duerme al sol",
+            "perros y gatos en el parque", "la casa del perro negro",
+            "jardin botanico de la ciudad", "el parque tiene un lago",
+        ]
+        repo_of = UInt16[1, 1, 1, 1, 2, 2, 2, 2, 2, 3, 3, 3]
+        config = TextConfig(del_diac=true, del_punc=true, lc=true, nlist=[1])
+        voc = Vocabulary(config, docs)
+        invfile = BM25InvertedFile(voc)
+        ctx = InvertedFileContext()
+        append_items!(invfile, ctx, docs)
+
+        tmpdir = mktempdir()
+        db_path = joinpath(tmpdir, "rocksdb")
+        init_db = opendb(db_path; create_if_missing=true)
+        for cf in ["postings", "docvecs", LazyBM25.REPO_POSTINGS_CF]
+            create_column_family(init_db, cf)
+        end
+        close(init_db)
+
+        db = opendb(db_path; column_families=["default", "postings", "docvecs", LazyBM25.REPO_POSTINGS_CF])
+        try
+            @test LazyBM25.load_repo_table(db) === nothing
+            LazyBM25.export_to_rocksdb!(db, LazyBM25.DOCS_CONTENT, invfile)
+            LazyBM25.save_repo_table!(db, ["a", "b", "c"])
+            @test LazyBM25.load_repo_table(db) == Dict("a" => 0x0001, "b" => 0x0002, "c" => 0x0003)
+            n_ids = LazyBM25.export_repo_postings!(db, LazyBM25.DOCS_CONTENT, invfile.adj, id -> (repo_of[id],))
+            @test n_ids == sum(length(neighbors(invfile.adj, t)) for t in eachindex(invfile.adj))
+
+            g = LazyBM25.assemble_bm25(db, LazyBM25.DOCS_CONTENT, invfile.voc, invfile.bm25,
+                                       invfile.doclens, invfile.len[], invfile.query)
+            for r in UInt16(1):UInt16(3), q in ["gato jardin", "perro casa", "parque sol", "inexistente xyz123"]
+                ctx_g = InvertedFileContext()
+                all_res = collect(search(g, ctx_g, q, knnqueue(ctx_g, length(docs))))
+                expected = [it for it in all_res if repo_of[it.id] == r]
+                ri = LazyBM25.assemble_repo_bm25(g, db, LazyBM25.DOCS_CONTENT, r)
+                ctx_r = InvertedFileContext()
+                got = collect(search(ri, ctx_r, q, knnqueue(ctx_r, length(docs))))
+                @test [it.id for it in got] == [it.id for it in expected]
+                @test Float32[it.dist for it in got] ≈ Float32[it.dist for it in expected]
+            end
+
+            # An id in several repositories (an author) enters the list of each one.
+            LazyBM25.export_repo_postings!(db, LazyBM25.AUTHORS_NAME, invfile.adj,
+                                           id -> id == 1 ? UInt16[1, 3] : (repo_of[id],))
+            gato = invfile.voc.token2id["gato"]
+            in_c = neighbors(LazyBM25.RepoPostingsAdjList(db, LazyBM25.AUTHORS_NAME, 0x0003, length(invfile.adj)), gato)
+            @test UInt32(1) in in_c
+            @test issorted(in_c)
+
+            # Exporting again deletes the lists written before: with every id in repository 1,
+            # repositories 2 and 3 have no lists left.
+            LazyBM25.export_repo_postings!(db, LazyBM25.DOCS_CONTENT, invfile.adj, id -> (UInt16(1),))
+            for r in (0x0002, 0x0003)
+                adj = LazyBM25.RepoPostingsAdjList(db, LazyBM25.DOCS_CONTENT, r, length(invfile.adj))
+                @test all(isempty(neighbors(adj, t)) for t in eachindex(adj))
+            end
+            # ... and the other index (AUTHORS_NAME) is untouched.
+            @test UInt32(1) in neighbors(LazyBM25.RepoPostingsAdjList(db, LazyBM25.AUTHORS_NAME, 0x0003, length(invfile.adj)), gato)
+        finally
+            close(db)
+        end
+    end
+
     @testset "Database and Column Families" begin
         db = open_database(ReposMx.DEFAULT_ROCKSDB_DIR; read_only=true)
         @test db !== nothing
