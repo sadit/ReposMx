@@ -11,9 +11,7 @@ include("Corpus.jl")
 include("TextModel.jl")
 include("Wikipedia.jl")
 include("DB.jl")
-include("VocabIO.jl")
-include("IndexShellIO.jl")
-include("LazyBM25.jl")
+include("EngineIndex.jl")
 include("AuthorConsolidation.jl")
 include("NameVocabulary.jl")
 include("PrecisionClustering.jl")
@@ -36,9 +34,7 @@ using .Corpus
 using .TextModel
 using .Wikipedia
 using .DB
-using .VocabIO
-using .IndexShellIO
-using .LazyBM25
+using .EngineIndex
 using .AuthorConsolidation
 using .NameVocabulary
 using .PrecisionClustering
@@ -61,12 +57,11 @@ export ParagraphHit,
        build_repository_corpus, build_all_corpus,
        TextProfile, base_profile, refit_corpus_profile, create_textconfig,
        get_wikipedia_summary, explain_concept,
-       build_search_index, rebuild_authors_index, load_docs_content_index, load_docs_refs_index, load_authors_name_index, load_authors_profile_index,
-       Database, open_database, close_database, put_document!, get_document,
+       build_search_index, rebuild_authors_index,
+       Database, open_database, close_database, get_document,
        put_author_profile!, get_author_profile, get_author_documents, get_coauthors, normalize_author_name,
        put_reference!, get_reference, get_document_references, get_documents_citing_author,
        put_topics!, get_topic_docs, get_topic_authors, intersect_topic_repo_docs, intersect_topic_repo_authors,
-       ingest_repository_to_db!, ingest_all_to_db!,
        SearchEngine, query_index, search_authors, find_similar_authors_by_profile, find_similar_documents_by_references,
        search_references, search_document_paragraphs, get_detailed_statistics, get_topic_elements, get_author_network,
        start_server, launch_interactive_shell, main_cli

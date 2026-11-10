@@ -3,21 +3,22 @@ module DB
 using RocksDB, JSON, JSON3, Dates, SHA
 import ..Types: get_document_references
 using ..Config: DEFAULT_DATA_DIR
-using ..Storage: load_corpus_records, list_repo_names, get_repo_dir
 
 export Database, open_database, close_database,
-       put_document!, get_document, scan_documents,
        put_author_profile!, get_author_profile, get_author_documents, get_coauthors, normalize_author_name,
        put_consolidated_profile!, get_consolidated_profile, get_consolidated_id_for_raw,
        get_author_documents_for_group, get_coauthors_for_group,
        put_reference!, get_reference, get_document_references, get_documents_citing_author,
        put_topics!, get_topic_docs, get_topic_authors, intersect_topic_repo_docs, intersect_topic_repo_authors,
        put_stats!, get_stats, compute_detailed_statistics, precompute_all_statistics!,
-       ingest_repository_to_db!, ingest_all_to_db!,
        DEFAULT_ROCKSDB_DIR, rocksdb_handle, compact_all!
 
 const DEFAULT_ROCKSDB_DIR = joinpath(DEFAULT_DATA_DIR, "rocksdb")
-const COLUMN_FAMILIES = ["default", "authors", "references", "topics", "stats", "postings", "docvecs", "dockeys", "authorkeys", "consolidated_authors", "repo_postings"]
+# The documents and the four text indices are not here: they are SimilaritySearchEngine projects
+# (`EngineIndex`). A database written before that holds more column families (`postings`,
+# `docvecs`, `dockeys`, `authorkeys`, `repo_postings`, and the documents in `default`), and
+# `open_database` still opens it, with every column family it holds.
+const COLUMN_FAMILIES = ["default", "authors", "references", "topics", "stats", "consolidated_authors"]
 
 """
     Database
@@ -38,7 +39,7 @@ end
 """
     rocksdb_handle(d::Database) -> RocksDB.DB
 
-Returns the raw `RocksDB.DB` handle wrapped by `d`, for modules (e.g. `LazyBM25`) that need
+Returns the raw `RocksDB.DB` handle wrapped by `d`, for modules (e.g. `Indexing`) that need
 direct column-family access beyond the `Database` convenience API.
 """
 rocksdb_handle(d::Database) = d.db
@@ -117,9 +118,8 @@ function open_database(path::AbstractString=DEFAULT_ROCKSDB_DIR; create_if_missi
     end
     
     # A read-only open cannot create a missing column family, and RocksDB refuses to open one
-    # that does not exist. A database written before a column family was added (for example
-    # `repo_postings`) is then opened with the ones it has; the code that reads a missing one
-    # checks for it (`LazyBM25.load_repo_table`).
+    # that does not exist. A database written before a column family was added is then opened
+    # with the ones it has.
     open_cfs = read_only ? existing_cfs : union(existing_cfs, COLUMN_FAMILIES)
     db_inst = opendb(path; column_families=open_cfs, read_only)
     cf_map = db_inst.column_families
@@ -142,74 +142,11 @@ end
 Base.close(d::Database) = close_database(d)
 
 # ====================================================================
-# 1. Document & Metadata Operations (CF: default)
+# 1. Identifiers
 # ====================================================================
 
 function normalize_id(id::AbstractString)
     return strip(id)
-end
-
-function doc_key(repo::AbstractString, doc_id::AbstractString)
-    return "doc:$(strip(repo)):$(normalize_id(doc_id))"
-end
-
-"""
-    put_document!(db::Database, repo, doc_id, doc_dict; batch=nothing)
-
-Saves a structured document into the `default` column family.
-"""
-function put_document!(d::Database, repo::AbstractString, doc_id::AbstractString, doc::AbstractDict; batch=nothing)
-    k = doc_key(repo, doc_id)
-    v = JSON.json(doc)
-    if batch !== nothing
-        put!(batch, k, v; cf=d.cfs["default"])
-    else
-        put!(d.db, k, v; cf="default")
-    end
-end
-
-"""
-    get_document(db::Database, repo, doc_id)
-
-Retrieves a structured document from the `default` column family.
-"""
-function get_document(d::Database, repo::AbstractString, doc_id::AbstractString)
-    k = doc_key(repo, doc_id)
-    val = get(d.db, k; cf="default")
-    val === nothing && return nothing
-    return try
-        # JSON3's lazy Object is ~2x faster to read than JSON.parse for these blobs (measured
-        # on real data) — safe here because every caller only reads fields (`get(doc, k, ...)`),
-        # never mutates the returned object in place.
-        JSON3.read(val)
-    catch
-        nothing
-    end
-end
-
-"""
-    scan_documents(f::Function, d::Database; repo::Union{AbstractString, Nothing}=nothing)
-
-Streams every document (optionally scoped to one `repo`) directly via a prefix scan over the
-`default` column family's `doc:` keys, calling `f(doc)` for each parsed document dict. Unlike
-looking documents up one-by-one via an external `(repo, doc_id)` index, this reads each document
-exactly once and needs no such index — the right tool for a full corpus scan (e.g. computing
-global statistics), as opposed to `get_document`, which is the right tool for point lookups of a
-handful of already-known documents.
-"""
-function scan_documents(f::Function, d::Database; repo::Union{AbstractString, Nothing}=nothing)
-    prefix = repo === nothing ? "doc:" : "doc:$(strip(repo)):"
-    iter = DBIterator(d.db; cf="default")
-    seek!(iter, prefix)
-
-    while valid(iter)
-        k = String(key(iter))
-        !startswith(k, prefix) && break
-        doc = try JSON3.read(value(iter)) catch; nothing end
-        doc !== nothing && f(doc)
-        advance!(iter)
-    end
-    return nothing
 end
 
 # ====================================================================
@@ -759,15 +696,15 @@ const GENERIC_TAGS = Set([
 ])
 
 """
-    compute_detailed_statistics(db::Database, n_authors::Int, clean_repo::Union{AbstractString,Nothing}, repo)
+    compute_detailed_statistics(docs, n_authors::Int, clean_repo::Union{AbstractString,Nothing}, repo)
 
-Full-corpus scan computing rich statistics globally or for a specific institutional repository —
-the logic behind both `get_detailed_statistics` (Search module, live/cached fallback) and
-`precompute_all_statistics!` (called once from `build_search_index`). Lives here rather than in
-the Search module because it only depends on `Database`/`scan_documents`, and `Indexing.jl`
-(which needs `precompute_all_statistics!`) is compiled before `Search.jl`.
+Statistics of the documents in `docs`, globally or for the repository `clean_repo`. `docs` holds
+every document of the corpus, as `build_search_index` collects them. Called by
+`precompute_all_statistics!` while the index is built, since that is when every document is in
+memory: the documents are stored in the `docs_content` project of the engine, which has no
+operation that reads all of its items.
 """
-function compute_detailed_statistics(db::Database, n_authors::Int, clean_repo::Union{AbstractString, Nothing}, repo)
+function compute_detailed_statistics(docs, n_authors::Int, clean_repo::Union{AbstractString, Nothing}, repo)
     total_docs = 0
     total_files = 0
     total_fulltext = 0
@@ -780,12 +717,9 @@ function compute_detailed_statistics(db::Database, n_authors::Int, clean_repo::U
     years_count = Dict{Int, Int}()
     authors_tally = Dict{String, Dict{String, Any}}()
 
-    # Streams document blobs directly from RocksDB (scoped to `clean_repo` when given, via a
-    # `doc:<repo>:` prefix scan) instead of going through the BM25 index's positional
-    # `doc_keys`/`get_document` pair — this is the only place in the codebase that needs every
-    # document exactly once, so it reads each one exactly once instead of twice.
-    scan_documents(db; repo=clean_repo) do doc
+    for doc in docs
         r = get(doc, "repo", "")
+        clean_repo === nothing || r == clean_repo || continue
         total_docs += 1
 
         if get(doc, "file", nothing) !== nothing
@@ -877,132 +811,30 @@ function compute_detailed_statistics(db::Database, n_authors::Int, clean_repo::U
 end
 
 """
-    precompute_all_statistics!(db::Database, n_authors::Int)
+    precompute_all_statistics!(db::Database, docs, n_authors::Int)
 
-Computes global and per-repo statistics once and persists them into RocksDB's `stats` column
-family (`put_stats!`), so `get_detailed_statistics` can serve them via a single point lookup
-instead of a full corpus scan. Requires a read-write `db` — called from `build_search_index`
-(which already holds one) at the end of an index rebuild, not from a live (read-only)
-`SearchEngine`.
+Computes global and per-repo statistics of `docs` once and persists them into RocksDB's `stats`
+column family (`put_stats!`), so `get_detailed_statistics` can serve them via a single point
+lookup. Requires a read-write `db` — called from `build_search_index` and
+`rebuild_authors_index` at the end of a rebuild, not from a live (read-only) `SearchEngine`.
+
+The documents are visited in the order of the keys `doc:<repo>:<id>` under which the database
+stored them until 2026-11-10. The statistics keep the first spelling of each author name they
+see, so this order keeps them equal to the ones computed before the documents moved into the
+engine.
 """
-function precompute_all_statistics!(db::Database, n_authors::Int)
-    global_stats = compute_detailed_statistics(db, n_authors, nothing, nothing)
+function precompute_all_statistics!(db::Database, docs, n_authors::Int)
+    docs = sort(docs; by=d -> "doc:$(strip(string(get(d, "repo", "")))):$(normalize_id(string(get(d, "id", ""))))")
+    global_stats = compute_detailed_statistics(docs, n_authors, nothing, nothing)
     haskey(global_stats, "error") && return nothing
     put_stats!(db, "global", global_stats)
 
     for r in global_stats["top_repositories"]
         repo_name = r["repo"]
-        repo_stats = compute_detailed_statistics(db, n_authors, repo_name, repo_name)
+        repo_stats = compute_detailed_statistics(docs, n_authors, repo_name, repo_name)
         !haskey(repo_stats, "error") && put_stats!(db, "repo:$repo_name", repo_stats)
     end
     return nothing
-end
-
-# ====================================================================
-# 6. Batch Ingestion & Database Population
-# ====================================================================
-
-"""
-    ingest_repository_to_db!(db::Database, repo; data_dir=DEFAULT_DATA_DIR, batch_size=1000)
-
-Populates RocksDB from `data/repos/<repo>/`: document metadata (`default` CF), topics (`topics`),
-authors with their document links and coauthorship edges (`authors`), and the references extracted
-from each document (`references`).
-"""
-function ingest_repository_to_db!(d::Database, repo::AbstractString; data_dir=DEFAULT_DATA_DIR, batch_size::Int=1000)
-    rdir = get_repo_dir(repo; data_dir)
-    records = load_corpus_records(repo; data_dir)
-    isempty(records) && return 0
-    
-    println("[$repo] Ingesting $(length(records)) documents into RocksDB...")
-    
-    # 1. Ingest documents and their topic/author/reference indexes in batches
-    count = 0
-    total = length(records)
-    
-    i = 1
-    while i <= total
-        chunk = records[i:min(i + batch_size - 1, total)]
-        
-        batch(d.db) do b
-            for doc in chunk
-                doc_id = get(doc, "id", "")
-                isempty(doc_id) && continue
-                
-                # Document metadata in default CF
-                put_document!(d, repo, doc_id, doc; batch=b)
-                
-                # Secondary indexes in topics CF
-                put_topics!(d, doc; batch=b)
-                
-                # Authors in authors CF
-                creators = get(doc, "creators", String[])
-                for auth in creators
-                    link_author_document!(d, auth, repo, doc_id; role="Autor", year=get(doc, "date", ""), batch=b)
-                end
-                
-                contributors = get(doc, "contributors", String[])
-                for contrib in contributors
-                    link_author_document!(d, contrib, repo, doc_id; role="Colaborador / Asesor", year=get(doc, "date", ""), batch=b)
-                end
-                
-                # Coauthorship links
-                all_authors = vcat(creators, contributors)
-                for x in 1:length(all_authors), y in (x+1):length(all_authors)
-                    add_coauthor_link!(d, all_authors[x], all_authors[y]; batch=b)
-                end
-                
-                # References in references CF
-                refs = get(doc, "references", Dict{String, Any}[])
-                if !isempty(refs)
-                    ref_ids = String[]
-                    for ref in refs
-                        ref_id = get(ref, "ref_id", "")
-                        if !isempty(ref_id)
-                            push!(ref_ids, ref_id)
-                            put_reference!(d, ref; batch=b)
-                        end
-                    end
-                    set_document_references!(d, repo, doc_id, ref_ids; batch=b)
-                end
-                
-                count += 1
-            end
-        end
-        
-        i += batch_size
-    end
-    
-    println("[$repo] Successfully ingested $count records into RocksDB.")
-    return count
-end
-
-"""
-    ingest_all_to_db!(db::Database; data_dir=DEFAULT_DATA_DIR, repos=nothing)
-
-Populates RocksDB across all or specified repositories.
-"""
-function ingest_all_to_db!(d::Database; data_dir=DEFAULT_DATA_DIR, repos=nothing)
-    target_repos = repos !== nothing ? repos : list_repo_names(; data_dir)
-    println("=======================================================")
-    println("  💾 Ingesting data into RocksDB for $(length(target_repos)) repositories")
-    println("=======================================================")
-    
-    total_ingested = 0
-    t0 = time()
-    
-    for r in target_repos
-        total_ingested += ingest_repository_to_db!(d, r; data_dir)
-    end
-    
-    println("Compacting RocksDB (reclaims write-ahead logs from this bulk-write session)...")
-    compact_all!(d)
-
-    t1 = time()
-    println("=======================================================")
-    println("✅ Ingestion complete: $total_ingested documents in $(round(t1 - t0, digits=2))s")
-    println("=======================================================")
-    return total_ingested
 end
 
 end # module DB

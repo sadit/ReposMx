@@ -7,8 +7,7 @@ using ..Downloader: download_all_files
 using ..Catalogs: fetch_cti_catalogs
 using ..Parser: parse_all_documents
 using ..Corpus: build_all_corpus
-using ..Indexing: build_search_index, rebuild_authors_index, build_repo_indices
-using ..DB: open_database, close_database, ingest_all_to_db!
+using ..Indexing: build_search_index, rebuild_authors_index
 using ..Search: SearchEngine, query_index, get_detailed_statistics
 using ..Server: start_server
 using ..TUI: launch_interactive_shell
@@ -29,8 +28,6 @@ MODO INTERACTIVO:
 SUBCOMANDOS PRINCIPALES DE FLUJO:
   update-db [repos...]       1. Cosecha OAI-PMH + 2. Descarga PDFs + 3. Extrae texto
   prepare-index [repos...]   Toma lo no indexado, construye corpus y genera índices bilingües
-  populate-db [repos...]     Puebla la base de datos embebida RocksDB (Documentos, Tópicos,
-                             Autores y coautorías, Citas)
   update-all [repos...]      Ejecuta 'update-db' seguido de 'prepare-index' (todo-en-uno)
   serve [--port N]           Lanza el servidor HTTP y la interfaz web interactiva
 
@@ -41,11 +38,12 @@ SUBCOMANDOS INDIVIDUALES:
   download [repos...]        Descarga documentos (PDFs/DOCs) enlazados
   parse [repos...]           Extrae texto estructurado desde los PDFs/documentos
   build-corpus [repos...]    Genera 'corpus.jsonl' fusionando metadatos y texto
-  index [repos...]           Construye el índice de búsqueda léxico y semántico
+  index [repos...] [--reuse-authors]
+                             Construye los índices de búsqueda y la base RocksDB desde cero.
+                             --reuse-authors usa los perfiles de autor consolidados que ya
+                             existen en lugar de agruparlos otra vez (unas 2 horas)
   consolidate-authors [repos...]  Re-agrupa perfiles de autor (tras editar author_overrides.toml),
                              sin re-tokenizar docs_content/docs_refs
-  split-index                Genera los índices por repositorio (--repo) a partir del índice
-                             global, sin leer el corpus ni re-tokenizar
   search "<query>"           Busca directamente en la terminal (BM25 + Wikipedia)
   info [repo]                Estadísticas detalladas de publicaciones, disciplinas y autores
   status                     Muestra estadísticas de cobertura y estado de los repositorios
@@ -280,6 +278,7 @@ function main_cli(args=ARGS)
     port = 8000
     host = "0.0.0.0"
     top = 10
+    reuse_authors = false
 
     i = 1
     while i <= length(subargs)
@@ -293,6 +292,9 @@ function main_cli(args=ARGS)
         elseif arg == "--top" && i < length(subargs)
             top = parse(Int, subargs[i+1])
             i += 2
+        elseif arg == "--reuse-authors"
+            reuse_authors = true
+            i += 1
         elseif !startswith(arg, "-")
             push!(repos, arg)
             i += 1
@@ -307,15 +309,11 @@ function main_cli(args=ARGS)
         Base.invokelatest(update_db; repos=target_repos)
     elseif cmd == "prepare-index"
         Base.invokelatest(prepare_index; repos=target_repos)
-    elseif cmd == "populate-db"
-        Base.invokelatest() do
-            db_inst = open_database()
-            try
-                ingest_all_to_db!(db_inst; repos=target_repos)
-            finally
-                close_database(db_inst)
-            end
-        end
+    elseif cmd in ("populate-db", "split-index")
+        # Removed on 2026-11-10, when the indices moved into SimilaritySearchEngine projects:
+        # `index` builds the database and the per-repository partitions.
+        println(stderr, "Error: '$cmd' ya no existe. 'reposmx index' construye la base de datos y los índices por repositorio.")
+        return 1
     elseif cmd == "update-all"
         Base.invokelatest(update_all; repos=target_repos)
     elseif cmd == "serve" || cmd == "server"
@@ -331,11 +329,9 @@ function main_cli(args=ARGS)
     elseif cmd == "build-corpus"
         Base.invokelatest(build_all_corpus; repos=target_repos)
     elseif cmd == "index"
-        Base.invokelatest(build_search_index; repos=target_repos)
+        Base.invokelatest(build_search_index; repos=target_repos, reuse_authors)
     elseif cmd == "consolidate-authors"
         Base.invokelatest(rebuild_authors_index; repos=target_repos)
-    elseif cmd == "split-index"
-        Base.invokelatest(build_repo_indices)
     elseif cmd == "search"
         q = isempty(repos) ? (isempty(subargs) ? "" : subargs[1]) : join(repos, " ")
         if isempty(q)

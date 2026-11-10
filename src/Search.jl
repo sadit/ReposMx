@@ -1,85 +1,58 @@
 module Search
 
-using TextSearch, SimilaritySearch, JSON, JSON3
+using TextSearch, JSON, JSON3
+import SimilaritySearchEngine
+const SSE = SimilaritySearchEngine
 using ..Config: DEFAULT_INDEX_DIR, DEFAULT_DATA_DIR
 import ..DB: get_author_documents, get_coauthors, get_document_references
-using ..DB: Database, open_database, close_database, get_document, get_author_profile,
+using ..DB: Database, open_database, close_database, get_author_profile,
             get_consolidated_profile, get_consolidated_id_for_raw,
             get_author_documents_for_group, get_coauthors_for_group,
             get_topic_docs, get_topic_authors,
             intersect_topic_repo_docs, intersect_topic_repo_authors, normalize_author_name,
-            get_documents_citing_author, get_stats, compute_detailed_statistics, rocksdb_handle
-using ..Indexing: load_docs_content_index, load_docs_refs_index, load_authors_name_index,
-                    load_authors_profile_index, search_document_in_depth
-using ..LazyBM25: load_repo_table, assemble_repo_bm25, DOCS_CONTENT, AUTHORS_NAME
+            get_documents_citing_author, get_stats
+using ..EngineIndex: DOCS_CONTENT, DOCS_REFS, AUTHORS_NAME, AUTHORS_PROFILE, QUERY_POLICY, TOKENS_POLICY,
+                     open_index, doc_key_of, split_doc_key
+using ..Indexing: search_document_in_depth
 using ..Wikipedia: explain_concept
 
 export query_index, search_authors, find_similar_authors_by_profile, find_similar_documents_by_references,
        search_references, get_document_references, get_author_documents, get_coauthors,
        get_topic_elements, search_document_paragraphs, get_detailed_statistics, get_author_network,
-       SearchEngine
+       get_document, informative_tokens, SearchEngine
 
+"""
+    SearchEngine(; index_dir=DEFAULT_INDEX_DIR, data_dir=DEFAULT_DATA_DIR)
+
+The four text indices (`EngineIndex`), opened read-only, and the RocksDB of ReposMx. A field is
+`nothing` when that part has not been built. `docs_content` is opened here; the other three are
+opened by the first query that needs them (`ensure_authors_loaded!`, `ensure_docs_refs_loaded!`).
+"""
 mutable struct SearchEngine
     db::Union{Database, Nothing}
-    docs_content_invfile::Union{BM25InvertedFile, Nothing}
-    doc_keys::AbstractVector{Tuple{String, String}}
-    docs_refs_invfile::Union{BM25InvertedFile, Nothing}
-    authors_name_invfile::Union{BM25InvertedFile, Nothing}
-    authors_profile_invfile::Union{BM25InvertedFile, Nothing}
-    author_keys::AbstractVector{String}
+    docs::Union{SSE.EmbeddedEngine, Nothing}
+    refs::Union{SSE.EmbeddedEngine, Nothing}
+    authors_name::Union{SSE.EmbeddedEngine, Nothing}
+    authors_profile::Union{SSE.EmbeddedEngine, Nothing}
     index_dir::String
     data_dir::String
     stats_cache::Dict{Union{String, Nothing}, Dict{String, Any}}
-    # repository name -> index in the `repo_postings` keys; `nothing` when the database has no
-    # per-repository indices (built before them, and `reposmx split-index` not run yet)
-    repo_table::Union{Dict{String, UInt16}, Nothing}
 
     function SearchEngine(; index_dir=DEFAULT_INDEX_DIR, data_dir=DEFAULT_DATA_DIR)
         db_path = joinpath(data_dir, "rocksdb")
         db = @time "open_database" (isdir(db_path) ? open_database(db_path; read_only=true) : nothing)
-
-        # Posting lists / per-document term vectors live in `db` (RocksDB `postings`/`docvecs`
-        # column families) and are read lazily on demand — only the small vocab/BM25-params/
-        # doclens "shell" is deserialized here.
-        content_inv, d_keys = @time "load_docs_content_index" load_docs_content_index(db; index_dir)
-        refs_inv, _ = @time "load_docs_refs_index" load_docs_refs_index(db; index_dir)
-        auth_name_inv, a_keys = @time "load_authors_name_index" load_authors_name_index(db; index_dir)
-        auth_prof_inv, _ = @time "load_authors_profile_index" load_authors_profile_index(db; index_dir)
-
-        new(
-            db,
-            content_inv,
-            d_keys,
-            refs_inv,
-            auth_name_inv,
-            auth_prof_inv,
-            a_keys,
-            String(index_dir),
-            String(data_dir),
-            Dict{Union{String, Nothing}, Dict{String, Any}}(),
-            db === nothing ? nothing : load_repo_table(rocksdb_handle(db))
-        )
+        docs = @time "open docs_content" open_index(index_dir, DOCS_CONTENT)
+        new(db, docs, nothing, nothing, nothing, String(index_dir), String(data_dir),
+            Dict{Union{String, Nothing}, Dict{String, Any}}())
     end
 end
 
-"""
-    scoped_index(engine, global_index, idx_id, repo) -> (index, scoped::Bool)
-
-The index to search for an optional repository filter. Without a filter: the global index,
-`scoped=false`. With a filter and a repository table: the index of that repository
-(`LazyBM25.assemble_repo_bm25`, which shares everything but the posting lists with the global
-one), `scoped=true`; `index === nothing` when the table does not have the repository, since then
-no document or author belongs to it. Without a table: the global index, `scoped=false`, and the
-caller filters its results by repository as before.
-"""
-function scoped_index(engine::SearchEngine, global_index, idx_id::UInt8, repo)
-    (repo === nothing || isempty(repo) || engine.repo_table === nothing) && return (global_index, false)
-    k = get(engine.repo_table, repo, nothing)
-    k === nothing && return (nothing, true)
-    return (assemble_repo_bm25(global_index, rocksdb_handle(engine.db), idx_id, k), true)
-end
-
 function Base.close(engine::SearchEngine)
+    for f in (:docs, :refs, :authors_name, :authors_profile)
+        h = getfield(engine, f)
+        h === nothing || SSE.close_project!(h)
+        setfield!(engine, f, nothing)
+    end
     if engine.db !== nothing
         close_database(engine.db)
         engine.db = nothing
@@ -87,27 +60,103 @@ function Base.close(engine::SearchEngine)
 end
 
 function ensure_authors_loaded!(engine::SearchEngine)
-    if engine.authors_name_invfile === nothing || engine.authors_profile_invfile === nothing
-        auth_name_inv, a_keys = load_authors_name_index(engine.db; index_dir=engine.index_dir)
-        auth_prof_inv, _ = load_authors_profile_index(engine.db; index_dir=engine.index_dir)
-        engine.authors_name_invfile = auth_name_inv
-        engine.authors_profile_invfile = auth_prof_inv
-        engine.author_keys = a_keys
-    end
+    engine.authors_name === nothing && (engine.authors_name = open_index(engine.index_dir, AUTHORS_NAME))
+    engine.authors_profile === nothing && (engine.authors_profile = open_index(engine.index_dir, AUTHORS_PROFILE))
+    return nothing
 end
 
 function ensure_docs_refs_loaded!(engine::SearchEngine)
-    if engine.docs_refs_invfile === nothing
-        refs_inv, _ = load_docs_refs_index(engine.db; index_dir=engine.index_dir)
-        engine.docs_refs_invfile = refs_inv
+    engine.refs === nothing && (engine.refs = open_index(engine.index_dir, DOCS_REFS))
+    return nothing
+end
+
+"""
+    get_document(engine::SearchEngine, repo, doc_id) -> Union{Dict{String,Any},Nothing}
+
+The metadata of a document, read from the `meta` of `docs_content`. `nothing` when the index is
+not built or holds no such document.
+"""
+function get_document(engine::SearchEngine, repo::AbstractString, doc_id::AbstractString)
+    engine.docs === nothing && return nothing
+    items = SSE.fetch_items(engine.docs, [doc_key_of(repo, doc_id)])
+    return isempty(items) ? nothing : first(items).meta
+end
+
+"""
+    _hit_meta(h, hit) -> Union{Dict{String,Any},Nothing}
+
+The `meta` of a search result of the project `h`, read by its internal id.
+"""
+_hit_meta(h::SSE.EmbeddedEngine, hit::SSE.SearchResult) = SSE.get_meta(h.project, hit._id; lazy=false)
+
+"""
+    _partition(repo) -> Union{String,Nothing}
+
+The partition a repository filter names, or `nothing` for no filter.
+"""
+_partition(repo) = (repo === nothing || isempty(repo)) ? nothing : String(repo)
+
+"""
+    _ftsearch(h, query, k; partition, policy, filter) -> Vector{SearchResult}
+
+`ftsearch` with the two rules ReposMx needs on top of it:
+
+- A repository the partition table does not hold has no documents or authors, so it answers
+  no results, as before the engine. `UnknownPartition` is caught only for that reason.
+- With a `filter`, the candidate budget starts at `8k` and grows 4 times while the page is short
+  and the engine reports that the budget stopped the search (`SearchStats.candidates`). The
+  results are then those of the unbounded filtered search.
+"""
+function _ftsearch(h::SSE.EmbeddedEngine, query, k::Int; partition::Union{Nothing,String},
+                   policy::QueryPolicy, filter)
+    try
+        filter === nothing && return SSE.ftsearch(h, query, k; partition, policy)
+        stats = SSE.SearchStats()
+        budget = 8k
+        while true
+            hits = SSE.ftsearch(h, query, k; partition, policy, filter, candidates=budget, stats)
+            (length(hits) >= k || stats.candidates < budget) && return hits
+            budget *= 4
+        end
+    catch e
+        e isa SSE.UnknownPartition || rethrow()
+        return SSE.SearchResult[]
+    end
+end
+
+"""
+    _document_filter(; keyword, doc_type, year_min, year_max) -> Union{Function,Nothing}
+
+The predicate over the `meta` of a document for the filters of `query_index`, or `nothing`
+when no filter is given. The type and the keyword match as substrings without regard to case.
+A year range keeps only documents whose `meta["year"]` is known and inside the range.
+"""
+function _document_filter(; keyword, doc_type, year_min, year_max)
+    kw = (keyword === nothing || isempty(keyword)) ? nothing : lowercase(keyword)
+    dt = (doc_type === nothing || isempty(doc_type)) ? nothing : lowercase(doc_type)
+    (kw === nothing && dt === nothing && year_min === nothing && year_max === nothing) && return nothing
+    return function (record, meta)
+        meta === nothing && return false
+        dt === nothing || occursin(dt, lowercase(string(get(meta, "type", "")))) || return false
+        if kw !== nothing
+            any(k -> occursin(kw, lowercase(string(k))), get(meta, "keywords", String[])) || return false
+        end
+        if year_min !== nothing || year_max !== nothing
+            y = get(meta, "year", nothing)
+            y === nothing && return false
+            year_min !== nothing && y < year_min && return false
+            year_max !== nothing && y > year_max && return false
+        end
+        return true
     end
 end
 
 """
     query_index(engine::SearchEngine, q::AbstractString; top::Int=10, offset::Int=0, repo=nothing, keyword=nothing, doc_type=nothing, year_min=nothing, year_max=nothing, include_wiki=false)
 
-Executes a primary BM25 search over titles, abstracts, keywords and conclusions, with post-filtering
-and offset-based pagination.
+Executes a primary BM25 search over titles, abstracts, keywords and conclusions, with filters
+and offset-based pagination. A repository filter searches that repository's partition; the
+other filters are a predicate over each candidate's metadata (`_document_filter`).
 """
 function query_index(
     engine::SearchEngine,
@@ -121,7 +170,7 @@ function query_index(
     year_max::Union{Int, Nothing}=nothing,
     include_wiki::Bool=false
 )
-    if engine.docs_content_invfile === nothing || isempty(engine.doc_keys)
+    if engine.docs === nothing
         return Dict(
             "query" => q,
             "total_hits" => 0,
@@ -132,103 +181,42 @@ function query_index(
     end
 
     t0 = time()
-    # With a repository filter, the repository's own index answers the query (see
-    # `scoped_index`): its candidates are all of that repository, so only the other filters
-    # remain to be applied after the search.
-    index, repo_scoped = scoped_index(engine, engine.docs_content_invfile, DOCS_CONTENT, repo)
-    has_filters = ((repo !== nothing && !repo_scoped) || keyword !== nothing || doc_type !== nothing || year_min !== nothing || year_max !== nothing)
     offset = max(offset, 0)
     needed = offset + top
     # Peek one extra match beyond the requested page so we know whether a next page exists.
     target = needed + 1
-    knn_k = target * (has_filters ? 8 : 1)
-    max_k = length(engine.doc_keys)
+    filter = _document_filter(; keyword, doc_type, year_min, year_max)
+    res = _ftsearch(engine.docs, q, target; partition=_partition(repo), policy=QUERY_POLICY, filter)
+
     hits = Dict{String, Any}[]
-
-    # Restrictive post-filters (repo/type/keyword/year) or a deep offset can starve the candidate
-    # window; widen it geometrically instead of silently returning fewer than `top` hits. A search
-    # that returned fewer candidates than it asked for has none left, and widening stops there.
-    while index !== nothing
-        ctx = InvertedFileContext()
-        res = search(index, ctx, q, knnqueue(ctx, knn_k))
-        exhausted = length(res) < knn_k
-        empty!(hits)
-
-        for item in res
-            doc_idx = item.id
-            (doc_idx < 1 || doc_idx > length(engine.doc_keys)) && continue
-            doc_repo, doc_id = engine.doc_keys[doc_idx]
-
-            # 1. Post-filter by repo
-            if repo !== nothing && !isempty(repo) && doc_repo != repo
-                continue
-            end
-
-            # Fetch document metadata directly from RocksDB
-            doc = engine.db !== nothing ? get_document(engine.db, doc_repo, doc_id) : nothing
-            doc === nothing && continue
-
-            # 2. Post-filter by document type
-            dtype = get(doc, "type", "")
-            if doc_type !== nothing && !isempty(doc_type) && !occursin(lowercase(doc_type), lowercase(dtype))
-                continue
-            end
-
-            # 3. Post-filter by keyword/discipline
-            kws = get(doc, "keywords", String[])
-            if keyword !== nothing && !isempty(keyword)
-                kw_match = any(k -> occursin(lowercase(keyword), lowercase(k)), kws)
-                !kw_match && continue
-            end
-
-            date = get(doc, "date", "")
-
-            # 4. Post-filter by year range
-            if year_min !== nothing || year_max !== nothing
-                ym = match(r"\b(19\d\d|20\d\d)\b", date)
-                ym === nothing && continue
-                doc_year = parse(Int, ym.match)
-                year_min !== nothing && doc_year < year_min && continue
-                year_max !== nothing && doc_year > year_max && continue
-            end
-
-            title = get(doc, "title", "")
-            creator = get(doc, "creator", "")
-            contributor = get(doc, "contributor", "")
-            desc = get(doc, "description", "")
-            file = get(doc, "file", nothing)
-            has_fulltext = get(doc, "has_fulltext", false)
-            ref_count = get(doc, "reference_count", 0)
-
-            snippet = if !isempty(desc)
-                first(desc, min(300, length(desc))) * (length(desc) > 300 ? "..." : "")
-            else
-                title
-            end
-
-            push!(hits, Dict(
-                "doc_idx" => doc_idx,
-                "id" => doc_id,
-                "repo" => doc_repo,
-                "title" => title,
-                "creator" => creator,
-                "contributor" => contributor,
-                "date" => date,
-                "description" => desc,
-                "keywords" => kws,
-                "type" => dtype,
-                "file" => file,
-                "has_fulltext" => has_fulltext,
-                "reference_count" => ref_count,
-                "score" => -item.dist,
-                "snippet" => snippet
-            ))
-
-            length(hits) >= target && break
+    for item in res
+        doc = _hit_meta(engine.docs, item)
+        doc === nothing && continue
+        title = get(doc, "title", "")
+        desc = get(doc, "description", "")
+        snippet = if !isempty(desc)
+            first(desc, min(300, length(desc))) * (length(desc) > 300 ? "..." : "")
+        else
+            title
         end
 
-        (length(hits) < target && knn_k < max_k && !exhausted) || break
-        knn_k = min(knn_k * 4, max_k)
+        push!(hits, Dict(
+            "doc_idx" => Int(item._id),
+            "id" => doc["id"],
+            "repo" => doc["repo"],
+            "title" => title,
+            "creator" => get(doc, "creator", ""),
+            "contributor" => get(doc, "contributor", ""),
+            "date" => get(doc, "date", ""),
+            "description" => desc,
+            "keywords" => get(doc, "keywords", String[]),
+            "type" => get(doc, "type", ""),
+            "file" => get(doc, "file", nothing),
+            "has_fulltext" => get(doc, "has_fulltext", false),
+            "reference_count" => get(doc, "reference_count", 0),
+            "score" => -item.distance,
+            "snippet" => snippet
+        ))
     end
 
     has_more = length(hits) > needed
@@ -260,7 +248,7 @@ Resolves `author_ref` — a short id (`AuthorConsolidation.assign_id`), a raw au
 anything close to one — to its consolidated profile. Tries `author_ref` directly as an id first
 (cheap: a non-id string just misses, no format detection needed since ids and names never
 collide in shape); then falls back to an exact raw-name lookup (`get_consolidated_id_for_raw`);
-and only if both miss falls back to the top hit of the `authors_name` BM25 index itself (which is
+and only if both miss falls back to the top hit of the `authors_name` index itself (which is
 exactly what it exists for: resolving an imprecise or partial name to the right author).
 """
 function resolve_consolidated_profile(engine::SearchEngine, author_ref::AbstractString)
@@ -274,23 +262,21 @@ function resolve_consolidated_profile(engine::SearchEngine, author_ref::Abstract
     profile !== nothing && return profile
 
     ensure_authors_loaded!(engine)
-    (engine.authors_name_invfile === nothing || isempty(engine.author_keys)) && return nothing
-    ctx = InvertedFileContext()
-    res = search(engine.authors_name_invfile, ctx, author_ref, knnqueue(ctx, 1))
+    engine.authors_name === nothing && return nothing
+    res = SSE.ftsearch(engine.authors_name, author_ref, 1; policy=QUERY_POLICY)
     isempty(res) && return nothing
-    idx = first(res).id
-    (idx < 1 || idx > length(engine.author_keys)) && return nothing
-    return get_consolidated_profile(engine.db, engine.author_keys[idx])
+    return get_consolidated_profile(engine.db, first(res).doc_id)
 end
 
 """
-    search_authors(engine::SearchEngine, author_query::AbstractString; top::Int=10, repo::Union{String, Nothing}=nothing)
+    search_authors(engine::SearchEngine, author_query::AbstractString; top::Int=10, offset::Int=0, repo::Union{String, Nothing}=nothing)
 
-Searches researcher and advisor profiles by name using the `authors_name_bm25` index.
+Searches researcher and advisor profiles by name using the `authors_name` index. A repository
+filter searches that repository's partition: the authors with documents in it.
 """
 function search_authors(engine::SearchEngine, author_query::AbstractString; top::Int=10, offset::Int=0, repo::Union{String, Nothing}=nothing)
     ensure_authors_loaded!(engine)
-    if engine.authors_name_invfile === nothing || isempty(engine.author_keys)
+    if engine.authors_name === nothing
         return Dict("query" => author_query, "total_hits" => 0, "authors" => [], "time_ms" => 0.0)
     end
 
@@ -298,49 +284,23 @@ function search_authors(engine::SearchEngine, author_query::AbstractString; top:
     offset = max(offset, 0)
     needed = offset + top
     target = needed + 1
-    # As in `query_index`: with a repository index, every candidate is an author of that
-    # repository, and the post-filter below never drops one.
-    index, repo_scoped = scoped_index(engine, engine.authors_name_invfile, AUTHORS_NAME, repo)
-    knn_k = target * (repo !== nothing && !repo_scoped ? 5 : 1)
-    max_k = length(engine.author_keys)
+    res = _ftsearch(engine.authors_name, author_query, target; partition=_partition(repo),
+                    policy=QUERY_POLICY, filter=nothing)
     results = Dict{String, Any}[]
-
-    while index !== nothing
-        ctx = InvertedFileContext()
-        res = search(index, ctx, author_query, knnqueue(ctx, knn_k))
-        exhausted = length(res) < knn_k
-        empty!(results)
-
-        for item in res
-            idx = item.id
-            (idx < 1 || idx > length(engine.author_keys)) && continue
-            cid = engine.author_keys[idx]
-
-            auth = engine.db !== nothing ? get_consolidated_profile(engine.db, cid) : nothing
-            auth === nothing && continue
-
-            # Post-filter by repo
-            auth_repos = get(auth, "repos", String[])
-            if repo !== nothing && !isempty(repo) && !(repo in auth_repos)
-                continue
-            end
-
-            push!(results, Dict(
-                "name" => auth["name"],
-                "consolidated_id" => cid,
-                "role" => get(auth, "role", "Autor"),
-                "doc_count" => get(auth, "doc_count", 1),
-                "repos" => auth_repos,
-                "coauthors" => get(auth, "coauthors", String[]),
-                "keywords" => get(auth, "keywords", String[]),
-                "score" => -item.dist
-            ))
-
-            length(results) >= target && break
-        end
-
-        (length(results) < target && knn_k < max_k && !exhausted) || break
-        knn_k = min(knn_k * 4, max_k)
+    for item in res
+        cid = item.doc_id
+        auth = engine.db !== nothing ? get_consolidated_profile(engine.db, cid) : nothing
+        auth === nothing && continue
+        push!(results, Dict(
+            "name" => auth["name"],
+            "consolidated_id" => cid,
+            "role" => get(auth, "role", "Autor"),
+            "doc_count" => get(auth, "doc_count", 1),
+            "repos" => get(auth, "repos", String[]),
+            "coauthors" => get(auth, "coauthors", String[]),
+            "keywords" => get(auth, "keywords", String[]),
+            "score" => -item.distance
+        ))
     end
 
     has_more = length(results) > needed
@@ -358,11 +318,11 @@ function search_authors(engine::SearchEngine, author_query::AbstractString; top:
 end
 
 """
-    top_informative_bow(idx, text::AbstractString; top_k_tokens::Int) -> BOW
+    informative_tokens(h, text::AbstractString; top_k_tokens::Int) -> Vector{String}
 
-Tokenizes `text` against `idx`'s own vocabulary/query pipeline and keeps only the
-`top_k_tokens` *rarest* tokens (lowest document frequency in `idx.voc`, i.e. highest IDF) —
-the rest are dropped before the query ever reaches `search`.
+Tokenizes `text` against the vocabulary of the project `h` and keeps only the `top_k_tokens`
+*rarest* tokens (lowest document frequency, i.e. highest IDF) — the rest are dropped before the
+query ever reaches `ftsearch`, which searches the list as it is (`TOKENS_POLICY`).
 
 This exists for the "turn a whole profile/reference-list into a query" pattern
 (`find_similar_authors_by_profile`, `find_similar_documents_by_references`): those queries are
@@ -371,16 +331,18 @@ barely move a BM25 score but still cost a full posting-list evaluation each. IDF
 own measure of "how much does this token matter" (`log(N/ndocs)`, monotonic in `ndocs`), so
 keeping the lowest-`ndocs` tokens keeps the ones that actually drive the ranking.
 
-Returns a `TextSearch.BOW` (`Dict{UInt32,Int32}`, vocabulary ids -> presence), which `search` accepts
-directly — no re-tokenization round trip.
+The text is resolved with a `QueryPipeline()` without a variant map, as the indices of ReposMx
+did before the engine. The result is a list of tokens rather than a string because tokenizing a
+token again can change it (`A2` becomes `A0`).
 """
-function top_informative_bow(idx, text::AbstractString; top_k_tokens::Int)
-    resolved = query_tokens(idx.voc, text, idx.query)
-    bow = querybow(idx.voc, resolved)
-    length(bow) <= top_k_tokens && return bow
-    ids = sort(collect(keys(bow)); by=id -> idx.voc.ndocs[id])
-    keep = Set(@view ids[1:top_k_tokens])
-    BOW(id => cnt for (id, cnt) in bow if id in keep)
+function informative_tokens(h::SSE.EmbeddedEngine, text::AbstractString; top_k_tokens::Int)
+    voc = SSE.text_profile(h).model.voc
+    bow = querybow(voc, query_tokens(voc, text, QueryPipeline()))
+    ids = collect(keys(bow))
+    if length(ids) > top_k_tokens
+        ids = sort(ids; by=id -> voc.ndocs[id])[1:top_k_tokens]
+    end
+    return String[voc.token[id] for id in ids]
 end
 
 """
@@ -389,12 +351,13 @@ end
 Finds researchers with similar thematic lines, topics, and bibliography starting from a context
 author. The query is the target's own profile (name + keywords + topic summaries + cited
 references) trimmed to its `top_k_tokens` most informative tokens (see
-[`top_informative_bow`](@ref)) — a full untrimmed profile can run into the hundreds of distinct
-tokens, most contributing nothing to the ranking.
+[`informative_tokens`](@ref)) — a full untrimmed profile can run into the hundreds of distinct
+tokens, most contributing nothing to the ranking. A repository filter searches that
+repository's partition.
 """
 function find_similar_authors_by_profile(engine::SearchEngine, author_name_or_norm::AbstractString; top::Int=10, repo::Union{String, Nothing}=nothing, top_k_tokens::Int=16)
     ensure_authors_loaded!(engine)
-    if engine.authors_profile_invfile === nothing || isempty(engine.author_keys)
+    if engine.authors_profile === nothing
         return Dict("author" => author_name_or_norm, "total_hits" => 0, "similar_authors" => [], "time_ms" => 0.0)
     end
 
@@ -412,40 +375,31 @@ function find_similar_authors_by_profile(engine::SearchEngine, author_name_or_no
     refs = get(target_author, "cited_references", String[])
 
     profile_text = "$target_name . $(join(kws, " , ")) . $(join(topics, " \n ")) . $(join(refs, " \n "))"
-    profile_query = top_informative_bow(engine.authors_profile_invfile, profile_text; top_k_tokens)
+    tokens = informative_tokens(engine.authors_profile, profile_text; top_k_tokens)
+    res = _ftsearch(engine.authors_profile, tokens, top + 1; partition=_partition(repo),
+                    policy=TOKENS_POLICY, filter=nothing)
 
-    knn_k = (top + 1) * (repo !== nothing ? 5 : 1)
-    ctx = InvertedFileContext()
-    res = search(engine.authors_profile_invfile, ctx, profile_query, knnqueue(ctx, knn_k))
-    
     results = Dict{String, Any}[]
     for item in res
-        idx = item.id
-        (idx < 1 || idx > length(engine.author_keys)) && continue
-        cand_cid = engine.author_keys[idx]
+        cand_cid = item.doc_id
         cand_cid == target_cid && continue
 
         cand_auth = engine.db !== nothing ? get_consolidated_profile(engine.db, cand_cid) : nothing
         cand_auth === nothing && continue
-
-        cand_repos = get(cand_auth, "repos", String[])
-        if repo !== nothing && !isempty(repo) && !(repo in cand_repos)
-            continue
-        end
 
         push!(results, Dict(
             "name" => get(cand_auth, "name", cand_cid),
             "consolidated_id" => cand_cid,
             "role" => get(cand_auth, "role", "Autor"),
             "doc_count" => get(cand_auth, "doc_count", 1),
-            "repos" => cand_repos,
+            "repos" => get(cand_auth, "repos", String[]),
             "keywords" => get(cand_auth, "keywords", String[]),
-            "score" => -item.dist
+            "score" => -item.distance
         ))
 
         length(results) >= top && break
     end
-    
+
     t1 = time()
     return Dict(
         "target_author" => target_name,
@@ -460,15 +414,15 @@ end
 
 Finds documents sharing bibliographic coupling with a selected context document. The query is the
 document's own reference list trimmed to its `top_k_tokens` most informative tokens (see
-[`top_informative_bow`](@ref)) — a document with dozens of references can otherwise touch hundreds
+[`informative_tokens`](@ref)) — a document with dozens of references can otherwise touch hundreds
 of distinct tokens (proper nouns, journal names, DOIs), most of them irrelevant to the ranking.
 """
 function find_similar_documents_by_references(engine::SearchEngine, repo::AbstractString, doc_id::AbstractString; top::Int=10, top_k_tokens::Int=16)
     ensure_docs_refs_loaded!(engine)
-    if engine.docs_refs_invfile === nothing || isempty(engine.doc_keys) || engine.db === nothing
+    if engine.refs === nothing || engine.docs === nothing || engine.db === nothing
         return Dict("doc_id" => doc_id, "total_hits" => 0, "similar_documents" => [], "time_ms" => 0.0)
     end
-    
+
     t0 = time()
     doc_refs = get_document_references(engine.db, repo, doc_id)
     ref_texts = String[]
@@ -479,45 +433,41 @@ function find_similar_documents_by_references(engine::SearchEngine, repo::Abstra
             push!(ref_texts, r)
         end
     end
-    
+
     if isempty(ref_texts)
         # Fallback to document abstract/description
-        doc = get_document(engine.db, repo, doc_id)
+        doc = get_document(engine, repo, doc_id)
         if doc !== nothing
             push!(ref_texts, get(doc, "description", ""))
         end
     end
-    
+
     query_str = join(ref_texts, " \n ")
-    query_bow = top_informative_bow(engine.docs_refs_invfile, query_str; top_k_tokens)
-    ctx = InvertedFileContext()
-    res = search(engine.docs_refs_invfile, ctx, query_bow, knnqueue(ctx, top + 1))
-    
-    target_key = (String(repo), String(doc_id))
+    tokens = informative_tokens(engine.refs, query_str; top_k_tokens)
+    res = SSE.ftsearch(engine.refs, tokens, top + 1; policy=TOKENS_POLICY)
+
+    target_key = doc_key_of(repo, doc_id)
     results = Dict{String, Any}[]
     for item in res
-        idx = item.id
-        (idx < 1 || idx > length(engine.doc_keys)) && continue
-        cand_key = engine.doc_keys[idx]
-        cand_key == target_key && continue
-        
-        cand_doc = get_document(engine.db, cand_key[1], cand_key[2])
+        item.doc_id == target_key && continue
+        cand_repo, cand_id = split_doc_key(item.doc_id)
+        cand_doc = get_document(engine, cand_repo, cand_id)
         cand_doc === nothing && continue
-        
+
         push!(results, Dict(
-            "id" => cand_key[2],
-            "repo" => cand_key[1],
+            "id" => cand_id,
+            "repo" => cand_repo,
             "title" => get(cand_doc, "title", ""),
             "creator" => get(cand_doc, "creator", ""),
             "date" => get(cand_doc, "date", ""),
             "type" => get(cand_doc, "type", "Documento"),
             "reference_count" => get(cand_doc, "reference_count", 0),
-            "score" => -item.dist
+            "score" => -item.distance
         ))
-        
+
         length(results) >= top && break
     end
-    
+
     t1 = time()
     return Dict(
         "context_doc" => "$repo:$doc_id",
@@ -528,13 +478,14 @@ function find_similar_documents_by_references(engine::SearchEngine, repo::Abstra
 end
 
 """
-    search_references(engine::SearchEngine, query::AbstractString; top::Int=10, repo::Union{String, Nothing}=nothing)
+    search_references(engine::SearchEngine, query::AbstractString; top::Int=10, offset::Int=0, repo::Union{String, Nothing}=nothing)
 
-Searches across the citations corpus to discover who cites a specific author, book, paper or theory.
+Searches across the citations corpus to discover who cites a specific author, book, paper or
+theory. A repository filter searches that repository's partition.
 """
 function search_references(engine::SearchEngine, query::AbstractString; top::Int=10, offset::Int=0, repo::Union{String, Nothing}=nothing)
     ensure_docs_refs_loaded!(engine)
-    if engine.docs_refs_invfile === nothing || isempty(engine.doc_keys) || engine.db === nothing
+    if engine.refs === nothing || engine.docs === nothing
         return Dict("query" => query, "total_hits" => 0, "references" => [], "time_ms" => 0.0)
     end
 
@@ -542,44 +493,25 @@ function search_references(engine::SearchEngine, query::AbstractString; top::Int
     offset = max(offset, 0)
     needed = offset + top
     target = needed + 1
-    knn_k = target * (repo !== nothing ? 5 : 1)
-    max_k = length(engine.doc_keys)
+    res = _ftsearch(engine.refs, query, target; partition=_partition(repo), policy=QUERY_POLICY, filter=nothing)
+
     results = Dict{String, Any}[]
+    for item in res
+        doc_repo, doc_id = split_doc_key(item.doc_id)
+        doc = get_document(engine, doc_repo, doc_id)
+        doc === nothing && continue
 
-    while true
-        ctx = InvertedFileContext()
-        res = search(engine.docs_refs_invfile, ctx, query, knnqueue(ctx, knn_k))
-        empty!(results)
+        doc_refs = get(doc, "references", Dict{String, Any}[])
 
-        for item in res
-            idx = item.id
-            (idx < 1 || idx > length(engine.doc_keys)) && continue
-            doc_repo, doc_id = engine.doc_keys[idx]
-
-            if repo !== nothing && !isempty(repo) && doc_repo != repo
-                continue
-            end
-
-            doc = get_document(engine.db, doc_repo, doc_id)
-            doc === nothing && continue
-
-            doc_refs = get(doc, "references", Dict{String, Any}[])
-
-            push!(results, Dict(
-                "doc_id" => doc_id,
-                "doc_title" => get(doc, "title", ""),
-                "repo" => doc_repo,
-                "creator" => get(doc, "creator", ""),
-                "total_references" => length(doc_refs),
-                "sample_references" => first(doc_refs, 3),
-                "score" => -item.dist
-            ))
-
-            length(results) >= target && break
-        end
-
-        (length(results) < target && knn_k < max_k) || break
-        knn_k = min(knn_k * 4, max_k)
+        push!(results, Dict(
+            "doc_id" => doc_id,
+            "doc_title" => get(doc, "title", ""),
+            "repo" => doc_repo,
+            "creator" => get(doc, "creator", ""),
+            "total_references" => length(doc_refs),
+            "sample_references" => first(doc_refs, 3),
+            "score" => -item.distance
+        ))
     end
 
     has_more = length(results) > needed
@@ -603,7 +535,7 @@ Retrieves all bibliographic references cited by a specific document from RocksDB
 """
 function get_document_references(engine::SearchEngine, repo::AbstractString, doc_id::AbstractString)
     engine.db === nothing && return Dict("error" => "Base de datos no disponible", "references" => [])
-    doc = get_document(engine.db, repo, doc_id)
+    doc = get_document(engine, repo, doc_id)
     doc === nothing && return Dict("error" => "Documento no encontrado", "references" => [])
     
     refs = get_document_references(engine.db, repo, doc_id)
@@ -638,7 +570,7 @@ function get_author_documents(engine::SearchEngine, author_name_or_norm::Abstrac
         doc_id = get(de, "doc_id", "")
         (isempty(repo) || isempty(doc_id)) && continue
 
-        doc = get_document(engine.db, repo, doc_id)
+        doc = get_document(engine, repo, doc_id)
         if doc !== nothing
             # get_document returns a read-only JSON3.Object; copy into a mutable Dict before
             # adding the extra field (also required to push! into `docs::Vector{Dict{String,Any}}`).
@@ -716,7 +648,7 @@ function get_author_network(engine::SearchEngine, author_name_or_norm::AbstractS
             citing_repo, citing_doc_id = parts[1], parts[2]
             (isempty(citing_repo) || isempty(citing_doc_id)) && continue
 
-            doc = get_document(engine.db, citing_repo, citing_doc_id)
+            doc = get_document(engine, citing_repo, citing_doc_id)
             doc === nothing && continue
 
             for creator in get(doc, "creators", String[])
@@ -767,7 +699,7 @@ function get_topic_elements(engine::SearchEngine, topic::AbstractString; repo::U
     
     docs = Dict{String, Any}[]
     for (r, did) in doc_pairs
-        doc = get_document(engine.db, r, did)
+        doc = get_document(engine, r, did)
         # get_document returns a read-only JSON3.Object; copy into a mutable Dict to match
         # `docs::Vector{Dict{String,Any}}`'s concrete element type.
         doc !== nothing && push!(docs, Dict{String, Any}(string(k) => v for (k, v) in pairs(doc)))
@@ -792,7 +724,7 @@ Searches inside the full text or abstract of a specific document in context.
 """
 function search_document_paragraphs(engine::SearchEngine, repo::AbstractString, doc_id::AbstractString, query::AbstractString; top::Int=5)
     engine.db === nothing && return Dict("error" => "Base de datos no disponible", "hits" => [])
-    doc = get_document(engine.db, repo, doc_id)
+    doc = get_document(engine, repo, doc_id)
     doc === nothing && return Dict("error" => "Documento no encontrado", "hits" => [])
     
     fulltext_path = get(doc, "fulltext_file", nothing)
@@ -832,31 +764,26 @@ end
 """
     get_detailed_statistics(engine::SearchEngine; repo::Union{AbstractString, Nothing}=nothing)
 
-Computes rich statistics globally or for a specific institutional repository.
+The statistics of the whole corpus or of one institutional repository, as the last build
+computed them.
 """
 function get_detailed_statistics(engine::SearchEngine; repo::Union{AbstractString, Nothing}=nothing)
-    if isempty(engine.doc_keys) || engine.db === nothing
-        return Dict("error" => "No hay índice cargado")
-    end
+    engine.db === nothing && return Dict("error" => "No hay índice cargado")
 
     clean_repo = (repo !== nothing && !isempty(strip(repo)) && strip(repo) != "all") ? strip(repo) : nothing
 
-    # Computing this requires a full RocksDB scan over every document (up to ~450k
-    # random-access reads), so cache the result per repo filter for the engine's lifetime.
     cached = get(engine.stats_cache, clean_repo, nothing)
     cached !== nothing && return cached
 
-    # Precomputed at index-build time (`precompute_all_statistics!`, run once from
-    # `build_search_index`) when available — a single RocksDB get instead of a full corpus scan.
+    # Computed once while the index is built (`precompute_all_statistics!`), which is when every
+    # document is in memory. The documents live in the engine, which has no operation that
+    # reads all of its items, so there is no fallback that computes them here.
     persisted = get_stats(engine.db, clean_repo === nothing ? "global" : "repo:$clean_repo")
-    if persisted !== nothing
-        engine.stats_cache[clean_repo] = persisted
-        return persisted
-    end
-
-    stats = compute_detailed_statistics(engine.db, length(engine.author_keys), clean_repo, repo)
-    !haskey(stats, "error") && (engine.stats_cache[clean_repo] = stats)
-    return stats
+    persisted === nothing && return Dict("error" => clean_repo === nothing ?
+        "No hay estadísticas precalculadas. Corre 'reposmx index'." :
+        "No se encontraron documentos para el repositorio '$repo'")
+    engine.stats_cache[clean_repo] = persisted
+    return persisted
 end
 
 end # module Search

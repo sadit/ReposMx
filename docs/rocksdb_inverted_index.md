@@ -1,190 +1,124 @@
-# Índice invertido BM25 sobre RocksDB
+# Índices de texto y base de datos
 
-Notas de arquitectura sobre cómo `build_search_index` (`src/Indexing.jl`) construye y persiste
-los 4 índices BM25 del buscador, y cómo `LazyBM25.jl` los hace consultables sin cargarlos
-completos a RAM. No es un tutorial de RocksDB ni de `TextSearch.BM25InvertedFile` — es
-específicamente CÓMO y POR QUÉ se conectaron ambas piezas en este proyecto.
+Notas de arquitectura sobre dónde guarda ReposMx sus índices de búsqueda, sus documentos y sus
+relaciones entre autores, citas y tópicos. Desde el 2026-11-10 los cuatro índices de texto son
+proyectos de [`SimilaritySearchEngine.jl`](https://github.com/sadit/SimilaritySearchEngine.jl)
+(el motor). Antes eran índices BM25 escritos a mano sobre el RocksDB de ReposMx (`LazyBM25.jl`,
+`VocabIO.jl`, `IndexShellIO.jl`). El plan de la migración está en `docs/plan-motor.md`.
 
-## El problema que resuelve
+## Disposición en disco
 
-Un `BM25InvertedFile` de `TextSearch.jl` normalmente vive completo en memoria: listas de
-postings (qué documentos contienen cada token) y vectores de término por documento. A escala
-completa (93 repos, cientos de miles de documentos/perfiles de autor) eso es una cantidad de
-RAM que no vale la pena mantener residente todo el tiempo, sobre todo cuando el proceso que
-SIRVE búsquedas (TUI/CLI) no necesariamente hace muchas búsquedas por segundo. La solución
-adoptada: construir el índice en memoria UNA VEZ (como siempre se ha hecho, código de indexado
-sin tocar), después volcar sus dos estructuras pesadas (postings, vectores por documento) a
-RocksDB, y en tiempo de consulta reconstruir un `BM25InvertedFile` cuyos campos `adj`/`db` leen
-de RocksDB bajo demanda en vez de vivir en un `Vector` en RAM.
-
-## Los 4 índices segregados
-
-`build_search_index` construye 4 `BM25InvertedFile` HOMOGÉNEOS e independientes, cada uno con
-su propio vocabulario — nunca se mezclan en un solo índice, para no diluir el vocabulario de uno
-con el ruido léxico del otro:
-
-| índice | `idx_id` | contenido | poda de vocabulario |
-|---|---|---|---|
-| `docs_content` | `DOCS_CONTENT=1` | título/keywords/resumen/conclusiones (ver `extract_index_text`) | `min_ndocs=3` (279,021→108,709 tokens, 61%, 0 docs sin contenido) |
-| `docs_refs` | `DOCS_REFS=2` | texto de referencias citadas | `min_ndocs=5` (849,793→148,225, ~83% — cola larga: nombres propios, revistas, DOIs, ruido OCR) |
-| `authors_name` | `AUTHORS_NAME=3` | nombre de autor + su forma de iniciales | **sin poda** — es un string normalizado, no texto libre; no hay cola larga que recortar |
-| `authors_profile` | `AUTHORS_PROFILE=4` | perfil bilingüe del autor (keywords/tópicos) | `min_ndocs=3` (400,698→165,733, 59%) |
-
-Los umbrales de poda vienen de mediciones reales sobre el subconjunto de 10 repos (documentado
-en las constantes `DOCS_REFS_MIN_NDOCS`/`DOCS_CONTENT_MIN_NDOCS`/`AUTHORS_PROFILE_MIN_NDOCS` en
-`Indexing.jl`), validados construyendo el `BM25InvertedFile` real y contando cuántos documentos
-quedan con `doclens==0` (contenido buscable cero) — no una regla general, una decisión medida
-por índice.
-
-`docs_content`/`docs_refs` comparten la MISMA numeración de documento (`doc_keys`, construida en
-una sola pasada de recolección); `authors_name`/`authors_profile` comparten la numeración de
-autor. Por eso `doc_keys`/`author_keys` se exportan a RocksDB UNA vez cada uno
-(`export_dockeys_to_rocksdb!`/`export_authorkeys_to_rocksdb!`), no una vez por índice que los usa.
-
-## Capas de persistencia: 3 piezas separadas, cada una por su costo real
-
-Cada índice se parte en tres piezas con vidas y costos de carga MUY distintos — la separación es
-deliberada, no incidental:
-
-1. **Vocabulario** (`VocabIO.save_vocabulary_zip`/`load_vocabulary_zip`) — un `.zip` propio.
-2. **"Shell"** (`IndexShellIO.save_index_shell_zip`/`load_index_shell_zip`) — otro `.zip`, con el
-   resto de campos pequeños de un `BM25InvertedFile` (parámetros BM25, `doclens::Vector{Int32}`,
-   `len`, el `query::QueryPipeline`) serializados como `shell.json` vía `JSON3`, NO vía `JLD2`.
-   **Por qué NO JLD2, encontrado en vivo**: aunque el shell es minúsculo (unos cuantos
-   escalares + un vector), `JLD2.load` era la PRIMERA llamada en toda la construcción de
-   `SearchEngine()` que tocaba maquinaria de deserialización genérica/paramétrica — pagaba
-   ~8 segundos de compilación JIT de una sola vez por proceso fresco (medido: 8.44s, 98.66% de
-   eso siendo compilación). Cambiar a `JSON3`/`ZipArchives` comparte el costo de compilación con
-   el que YA paga `VocabIO` unas líneas antes en la misma función de carga, en vez de sumar una
-   ruta de deserialización genérica completamente aparte.
-3. **Postings + vectores por documento** — en RocksDB, nunca en un archivo (ver abajo).
-
-## RocksDB: layout de column families y claves
-
-`Database` (`src/DB.jl`) envuelve una instancia RocksDB con column families fijas
-(`COLUMN_FAMILIES` en `DB.jl`): `default`, `authors`, `references`, `topics`, `fulltext`,
-`stats`, `postings`, `docvecs`, `dockeys`, `authorkeys`, `consolidated_authors`, `repo_postings`.
-Las CFs que le importan a `LazyBM25.jl` son `postings`/`docvecs` (compartidas por los 4 índices,
-particionadas por `idx_id`), `dockeys`/`authorkeys` (compartidas por pares de índices que numeran
-igual) y `repo_postings` (las listas por repositorio, ver la sección siguiente).
-
-**Claves de ancho fijo, binarias, sin round-trip por String** (`LazyBM25.jl`):
-
-```julia
-postings_key(idx_id::UInt8, tokenID) = vcat(UInt8[idx_id], reinterpret(UInt8, UInt32[tokenID]))
-docvec_key(idx_id::UInt8, docID)     = vcat(UInt8[idx_id], reinterpret(UInt8, UInt32[docID]))
+```
+data/index/engine/docs_content/      proyecto del motor: documentos por contenido
+data/index/engine/docs_refs/         proyecto del motor: documentos por sus referencias
+data/index/engine/authors_name/      proyecto del motor: autores por nombre
+data/index/engine/authors_profile/   proyecto del motor: autores por perfil
+data/index/profile/                  perfil de texto reajustado al corpus
+data/index/authors_consolidated/     perfiles de autor consolidados (TOML)
+data/repos/rocksdb/                  RocksDB de ReposMx
 ```
 
-Solo se hacen lookups puntuales (`get`) contra estas CFs, nunca *prefix scans* — así que el
-orden de bytes dentro de la clave no es semánticamente importante, y se usa el orden nativo
-(little-endian en esta plataforma) sin más ceremonia. Si algún día se necesitara escanear por
-`idx_id` (todas las postings de UN índice, en orden), esta decisión habría que revisitarla —
-hoy no hace falta.
+Cada proyecto del motor tiene su propio RocksDB. El RocksDB de ReposMx guarda lo que el motor no
+cubre: perfiles de autor crudos y consolidados (CF `authors`, `consolidated_authors`), enlaces
+de autor a documento y de coautoría, referencias (`references`), tópicos (`topics`) y
+estadísticas precalculadas (`stats`).
 
-Los valores también son binarios compactos: una posting list es un `Vector{UInt32}`
-reinterpretado a bytes crudos (`encode_u32vec`/`decode_u32vec`); un vector disperso de
-documento (`SparseVecView`) se serializa a mano como `(n::Int32, nnz::Int32, nzind::Vector{Int32},
-nzval::Vector{UInt32})` sobre un `IOBuffer`. Nada de JSON ni de un formato genérico para estas
-dos CFs — son el volumen alto, el camino caliente de lectura en cada búsqueda.
+## Los cuatro proyectos
 
-## Índices por repositorio
+| proyecto | texto de cada elemento | `doc_id` | `meta` | partición |
+|---|---|---|---|---|
+| `docs_content` | `extract_index_text`: título ×3, autores ×2, colaboradores, palabras clave ×2, resumen, conclusiones | `"<repo>:<id>"` | el documento completo, más `year` | `repo` |
+| `docs_refs` | los textos de las referencias del documento | `"<repo>:<id>"` | `repo` | `repo` |
+| `authors_name` | `"<nombre> . <forma con iniciales>"` | id consolidado | `repos` | `repos` |
+| `authors_profile` | nombre, palabras clave, tópicos y referencias citadas | id consolidado | `repos` | `repos` |
 
-`docs_content` y `authors_name` tienen, además del índice global, un índice por repositorio. Un
-índice de repositorio usa los mismos campos que el global, sin copiarlos: vocabulario, parámetros
-BM25 (`trainsize`, longitud media), vectores de documento (`docvecs`), `doclens`, tabla de claves
-y política de consulta. Solo cambian las listas de postings. La lista del repositorio `r` para un
-token tiene los ids globales de los documentos (o autores) de `r` que contienen el token, en el
-mismo orden que la lista global.
+- Los cuatro son `FullTextEngine` con `BM25InvertedFile`.
+- Los elementos de `docs_content` y `docs_refs` siguen el orden del corpus. Los de los dos
+  proyectos de autores siguen el orden de `authors_consolidated`.
+- Un documento sin referencias tiene un texto vacío en `docs_refs`. Nunca aparece en una
+  búsqueda, y conserva el orden de los elementos.
+- `doc_id` es único en cada proyecto. El nombre de un repositorio no contiene `:`, y
+  `EngineIndex.split_doc_key` separa las dos partes aunque el id del documento contenga `:`.
+- `docs_content` es el único lugar donde se guardan los documentos. `Search.get_document` los lee
+  con `fetch_items`. Antes estaban en la CF `default` del RocksDB de ReposMx, bajo
+  `doc:<repo>:<id>`.
 
-El puntaje BM25 de un documento depende del idf, de la longitud media y del vector del documento.
-Los tres son los globales, así que un documento recibe el mismo puntaje en el índice de su
-repositorio que en el global. Buscar en el índice de `r` da el mismo orden que filtrar por `r` los
-resultados globales, y solo evalúa documentos de `r`.
+## Vocabularios
 
-**Claves de `repo_postings`**: `[idx_id][repo u16][token u32]`, en big-endian, así que las listas
-de un índice y un repositorio quedan contiguas. La clave `[0x00]` guarda la tabla de repositorios:
-los nombres, ordenados, separados por `\n`; el nombre `i` tiene el índice `i`. Una sola tabla sirve
-para los dos índices. Un autor entra en la lista de cada repositorio donde tiene documentos (el
-campo `repos` de su perfil consolidado).
+Cada proyecto recibe su vocabulario como perfil (`BaseProfile`), construido en
+`EngineIndex.index_profile`:
 
-**Escritura.** `export_repo_postings!` recorre cada lista global una vez y la escribe dividida por
-repositorio. Antes borra el rango `[idx_id, idx_id + 1)`, así que una tabla nueva no deja listas
-de una anterior. `index` y `consolidate-authors` lo hacen al construir. `reposmx split-index` lo
-hace desde las listas globales que ya están en RocksDB, sin leer el corpus: sobre 446,857
-documentos en 91 repositorios (35.7 M ids) y 228,272 autores (1.45 M ids) tardó 33.5 s, y la base
-pasó de 4.1 GB a 4.2 GB.
-
-**Lectura.** `Search.scoped_index` arma el índice del repositorio por consulta
-(`assemble_repo_bm25`, sin leer disco). Si la tabla no tiene el repositorio, la respuesta es
-vacía sin buscar. Si la base no tiene tabla (construida antes de esto y sin `split-index`), se
-usa el índice global y se filtra por repositorio como antes. `open_database` en modo de solo
-lectura abre solo las CFs que existen, porque RocksDB no abre en ese modo una CF que no existe.
-
-**Medición (2026-11-09, Julia 1.13.3, 64 hilos).** 390 consultas con `--repo`: 330 de documentos
-(11 consultas × 10 repositorios × página 1, página 2 y `--type Tesis`) y 60 de autores. Los
-resultados del índice por repositorio son iguales a los del filtro sobre el índice global en las
-390: mismos ids, mismo orden, diferencia de puntaje 0.0 y el mismo `has_more`.
-
-| | filtro sobre el índice global | índice por repositorio |
+| proyecto | vocabulario | poda |
 |---|---|---|
-| `query_index` con `repo`, media (máximo) | 1,801 ms (7,921 ms) | 7.7 ms (204 ms) |
-| `search_authors` con `repo`, media (máximo) | 1,998 ms (4,112 ms) | 4.0 ms (32 ms) |
-| `unicach` (8 documentos) | 2,515 ms | 0.7 ms |
-| `unam-filos` (15,222 documentos) | 1,456 ms | 17 ms |
-| `itesm` (139,605 documentos) | 572 ms | 25 ms |
+| `docs_content` | el perfil `es` reajustado al corpus (`refit_corpus_profile`) | `ndocs >= 3` |
+| `docs_refs` | `Vocabulary` con el `TextConfig` del perfil reajustado | `ndocs >= 5` |
+| `authors_name` | `Vocabulary(AUTHOR_NAME_CONFIG, nombres)` | sin poda |
+| `authors_profile` | `Vocabulary` con el `TextConfig` del perfil reajustado | `ndocs >= 3` |
 
-El filtro global era lento porque, cuando quedaban menos de `top` resultados, volvía a buscar con
-una ventana 4 veces mayor, hasta llenar la página o llegar a todo el acervo. Ese ciclo se queda
-para `--type`, `--tag` y años, ahora dentro del repositorio, y termina cuando la búsqueda devuelve
-menos candidatos de los que pidió.
+Un `TextProfile` construye su tokenizador con sus propias stopwords y sus propios lemas. Un
+perfil hecho solo con el vocabulario tokenizaría sin los lemas con los que se contó ese
+vocabulario. Por eso `index_profile` copia las stopwords y los lemas del perfil reajustado, y
+verifica que el tokenizador resultante sea igual al del vocabulario. El perfil no lleva red de
+expansión.
 
-## El truco de abstracción: `AbstractAdjList`/`AbstractDatabase` lazy
+Los umbrales de poda vienen de mediciones sobre un subconjunto de 10 repositorios, documentadas
+en las constantes `DOCS_REFS_MIN_NDOCS`, `DOCS_CONTENT_MIN_NDOCS` y `AUTHORS_PROFILE_MIN_NDOCS`
+de `Indexing.jl`.
 
-`RocksDBAdjList <: SimilaritySearch.AbstractAdjList{UInt32}` y
-`RocksDBDatabase <: SimilaritySearch.AbstractDatabase` implementan solo lo mínimo que
-`BM25InvertedFile`'s código de búsqueda necesita (`neighbors`/`neighbors_length` para el primero,
-`getindex`/`length` para el segundo) — cada llamada hace UN `RocksDB.get` bajo demanda, decodifica,
-y regresa. Son de solo lectura (`add!`/`push_item!` truenan explícitamente con un mensaje claro:
-"constrúyelo en memoria y expórtalo, no lo mutes en el lado lazy").
+## Consultas
 
-Esto significa que **el código de scoring/búsqueda de `BM25InvertedFile` no sabe ni le importa**
-si `adj`/`db` son `Vector`s en RAM o estas estructuras lazy — `assemble_bm25` simplemente
-construye un `BM25InvertedFile` normal pasándole estos objetos en el orden posicional que la
-librería espera (`voc, bm25, adj, doclens, db, len, query` — no hay constructor con keywords
-para inyectar `adj`/`db` custom, así que se depende del orden posicional exacto).
+- Una consulta escrita por una persona usa `QueryPolicy(correction=:auto, expansion=false)`
+  (`EngineIndex.QUERY_POLICY`).
+- Antes del motor, ReposMx corregía solo las formas que difieren en mayúsculas y acentos y que se
+  calculan desde el token escrito. El motor también usa el mapa de variantes que deriva del
+  vocabulario. Por eso algunas consultas en mayúsculas y sin acentos encuentran ahora la forma
+  acentuada: `REMOCION` se busca como `remoción`.
+- `find_similar_authors_by_profile` y `find_similar_documents_by_references` convierten un texto
+  largo en una consulta con sus 16 tokens de idf más alto (`Search.informative_tokens`). El motor
+  recibe la lista de tokens y la busca sin tokenizarla otra vez, con
+  `QueryPolicy(correction=:off, expansion=false)`. Unir los tokens en una cadena cambiaría algunos:
+  un tokenizador que reemplaza dígitos convierte `A2` en `A0`.
 
-## Camino de escritura: construir en memoria, exportar una vez
+## Filtros
 
-`export_to_rocksdb!(db, idx_id, invfile)` NO reemplaza el proceso de indexado — el
-`BM25InvertedFile` se construye exactamente como siempre (`BM25InvertedFile(voc)` +
-`append_items!(invfile, ctx, texts)`, en memoria, con el mismo algoritmo de indexado de
-`TextSearch.jl` sin ningún cambio) y SOLO DESPUÉS, ya completo, se recorre una vez para volcar
-`invfile.adj`/`invfile.db` a las CFs `postings`/`docvecs` vía `RocksDB.batch` (una escritura por
-lote, no una transacción por entrada). Esto separa completamente "cómo se calcula el índice" de
-"dónde vive después" — cualquier mejora futura al algoritmo de indexado de `TextSearch.jl` sigue
-funcionando sin tocar `LazyBM25.jl`.
+- Un filtro de repositorio busca en la partición de ese repositorio. La partición tiene sus
+  propias listas de postings y comparte el vocabulario, las estadísticas de BM25 y los vectores
+  de documento con el índice global. Por eso un documento recibe el mismo puntaje en la
+  partición y en el índice global.
+- Un repositorio que el proyecto no tiene da cero resultados. `Search._ftsearch` atrapa
+  `UnknownPartition` solo para eso.
+- Los filtros de tipo, palabra clave y años son un predicado sobre el `meta` de cada candidato
+  (`Search._document_filter`). El motor examina los mejores `candidates` resultados en orden de
+  puntaje y devuelve los primeros que cumplen el predicado. `_ftsearch` empieza con un
+  presupuesto de `8k` candidatos y lo multiplica por 4 mientras la página no se llena y el motor
+  informa que el presupuesto detuvo la búsqueda (`SearchStats.candidates`).
 
-## Gotchas prácticos de RocksDB encontrados en este proyecto
+## Construcción
 
-- **`open_database` migra column families sobre una base de datos EXISTENTE** sin necesidad de
-  recrearla: lista las CFs actuales (`list_existing_column_families`, vía el API C de RocksDB
-  `rocksdb_list_column_families`), calcula la diferencia contra `COLUMN_FAMILIES`, y si faltan
-  CFs nuevas (p. ej. tras agregar una feature que necesita una CF que no existía cuando la base
-  de datos se creó por primera vez), las crea en una apertura temporal antes de la apertura real
-  — evolución de esquema sin migración manual ni borrar y reconstruir todo.
-- **El orden de escritura importa cuando hay lectura-antes-de-escritura.** `add_coauthor_link!`
-  lee el contador actual antes de incrementarlo — por eso la ingesta de documentos hace UN
-  `RocksDB.write!` POR DOCUMENTO (reusando el mismo `WriteBatch` vía `empty!` para no asignar
-  miles de batches), en vez de acumular muchos documentos en un solo batch: si dos documentos
-  con el mismo par de coautores cayeran en la MISMA ventana sin confirmar, el conteo se
-  subestimaría silenciosamente. Los perfiles de autor (sin este patrón de lectura-antes-de-
-  escritura) sí se agrupan en lotes de `AUTHOR_BATCH_SIZE=2000` sin este riesgo.
-- **Compactar después de una sesión de escritura masiva, no en cada apertura.** `compact_all!`
-  se llama una vez al final de `build_search_index` — sin esto, RocksDB acumula archivos de
-  write-ahead-log que una apertura posterior tendría que escanear/re-reproducir, convirtiendo lo
-  que debería ser una apertura casi instantánea en una de varios segundos.
-- **Las claves posicionales (`dockeys`/`authorkeys`) permiten reemplazar un `Vector` eager por
-  un `AbstractVector` lazy sin tocar el código que lo consume** (`LazyDocKeys`/`LazyAuthorKeys`
-  implementan solo `size`/`getindex`; `length`/`iterate`/etc. salen gratis de la maquinaria
-  genérica de `AbstractArray` de Julia) — el mismo patrón de abstracción que `RocksDBAdjList`/
-  `RocksDBDatabase`, aplicado a un tipo de dato distinto.
+- `reposmx index` (`Indexing.build_search_index`) construye los cuatro proyectos en
+  `data/index/engine.building` y el RocksDB en `data/repos/rocksdb.building`. Al terminar, cada
+  uno reemplaza al anterior. Una falla deja el índice y la base anteriores.
+- Construir desde cero corrige dos defectos de la construcción anterior. Los conteos de
+  coautoría ya no se suman a los de la construcción previa. Un documento que sale del corpus ya no
+  deja claves.
+- `reposmx index --reuse-authors` lee los perfiles consolidados que ya existen en
+  `data/index/authors_consolidated` en lugar de agrupar otra vez los perfiles crudos. La
+  agrupación tardó 2.2 horas el 2026-10-26. Esto es válido mientras el corpus no cambie, porque
+  los perfiles nombran a los autores crudos por sus ids, y los ids dependen de todos los nombres.
+- `reposmx consolidate-authors` (`Indexing.rebuild_authors_index`) agrupa otra vez los autores y
+  reconstruye solo `authors_name` y `authors_profile`, en `data/index/engine.authors`.
+- Las estadísticas (`stat:global`, `stat:repo:<repo>`) se calculan durante la construcción, con
+  todos los documentos en memoria. El motor no tiene una operación que lea todos sus elementos.
+- `populate-db` y `split-index` se eliminaron. `index` hace el trabajo de los dos.
+
+## Notas de RocksDB que siguen vigentes
+
+- `open_database` agrega a una base existente las column families que le faltan, en una apertura
+  temporal antes de la apertura real. En modo de solo lectura abre solo las que existen, porque
+  RocksDB no abre en ese modo una column family que no existe.
+- `add_coauthor_link!` lee el contador actual antes de incrementarlo. Por eso la ingesta escribe
+  un `WriteBatch` por documento (`Indexing._ingest_relations!`). Un lote con varios documentos
+  contaría de menos un par de coautores que aparece dos veces en él. Los perfiles de autor no
+  leen antes de escribir, y se escriben en lotes de `AUTHOR_BATCH_SIZE = 2000`.
+- `compact_all!` se llama una vez al final de una construcción. Sin la compactación, la siguiente
+  apertura tiene que reproducir el registro de escritura anticipada de toda la sesión.

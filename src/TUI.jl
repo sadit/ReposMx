@@ -10,8 +10,7 @@ using ..Storage: get_repo_stats, list_repo_names
 using ..Search: SearchEngine, query_index, search_authors, find_similar_authors_by_profile,
                find_similar_documents_by_references,
                get_document_references, get_author_documents, get_coauthors,
-               get_topic_elements, search_document_paragraphs, get_detailed_statistics
-using ..DB: get_document
+               get_topic_elements, search_document_paragraphs, get_detailed_statistics, get_document
 
 export launch_interactive_shell
 
@@ -144,9 +143,10 @@ function print_separator()
 end
 
 function render_banner(state::ShellState)
-    n_docs = length(state.engine.doc_keys)
+    stats = get_detailed_statistics(state.engine)
+    n_docs = get(stats, "total_docs", 0)
     n_repos = length(list_repo_names(; data_dir=state.data_dir))
-    n_authors = length(state.engine.author_keys)
+    n_authors = get(stats, "total_authors", 0)
     
     content = """
 {bold bright_cyan}🔍 ReposMx - Buscador Interactivo de Repositorios de México{/bold bright_cyan}
@@ -482,11 +482,7 @@ function show_similar_authors(state::ShellState, author_ref::AbstractString; top
 end
 
 function show_document_detail(state::ShellState, repo::AbstractString, doc_id::AbstractString)
-    if state.engine.db === nothing
-        tprintln("{bold red}Base de datos no disponible.{/bold red}\n")
-        return
-    end
-    doc = get_document(state.engine.db, repo, doc_id)
+    doc = get_document(state.engine, repo, doc_id)
     if doc === nothing
         tprintln("{bold red}No se encontró el documento '$(format_doc_ref(repo, doc_id))'.{/bold red}\n")
         return
@@ -872,7 +868,7 @@ function launch_interactive_shell(; data_dir=DEFAULT_DATA_DIR, index_dir=DEFAULT
     tprintln("{bold cyan}Cargando índices y conectando a RocksDB...{/bold cyan}")
     engine = @time "SearchEngine (total)" SearchEngine(; index_dir, data_dir)
 
-    if engine.docs_content_invfile === nothing
+    if engine.docs === nothing
         tprintln("{bold red}No se encontró el índice de búsqueda en '$index_dir'.{/bold red}")
         tprintln("{yellow}Ejecuta primero 'reposmx prepare-index' para generar los índices.{/yellow}")
         return

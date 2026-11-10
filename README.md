@@ -11,9 +11,12 @@ de los documentos.
 
 Está escrito en [Julia](https://julialang.org/) sobre
 [`SimilaritySearch.jl`](https://github.com/sadit/SimilaritySearch.jl),
-[`TextSearch.jl`](https://github.com/sadit/TextSearch.jl) y
+[`TextSearch.jl`](https://github.com/sadit/TextSearch.jl),
+[`SimilaritySearchEngine.jl`](https://github.com/sadit/SimilaritySearchEngine.jl) y
 [`RocksDB.jl`](https://github.com/JuliaDB/RocksDB.jl.git), pensado para correr localmente sin
-depender de servicios externos.
+depender de servicios externos. Los cuatro índices de texto son proyectos de
+`SimilaritySearchEngine.jl`, que no está en el registro General: `Project.toml` lo toma de
+`../../Research/SimilaritySearchEngine.jl` (sección `[sources]`).
 
 > **Sobre los datos:** este repositorio contiene únicamente el código. El corpus cosechado y los
 > índices generados **no** se distribuyen aquí — se publicarán más adelante como artefactos
@@ -86,11 +89,9 @@ ejemplo `cimat`, `cicese`, `unam-iztacala`):
 # Cosecha metadatos + descarga PDFs + extrae texto
 reposmx update-db cimat cicese
 
-# Construye el corpus estructurado y los índices de búsqueda
+# Construye el corpus estructurado, los índices de búsqueda y la base de datos embebida
+# (RocksDB) con autores, citas y tópicos
 reposmx prepare-index cimat cicese
-
-# Puebla la base de datos embebida (RocksDB) con documentos, tópicos, autores y citas
-reposmx populate-db cimat cicese
 
 # Tubería equivalente a update-db + prepare-index en un solo paso
 reposmx update-all cimat cicese
@@ -202,7 +203,8 @@ ReposMx/
 │   ├── Parser.jl          # Extracción de texto
 │   ├── Corpus.jl          # Construcción de sub-corpus (documentos, autores, citas)
 │   ├── TextModel.jl       # Perfil de texto: base en español, reajustado al corpus
-│   ├── Indexing.jl        # Construcción de índices BM25
+│   ├── EngineIndex.jl     # Los 4 índices de texto como proyectos de SimilaritySearchEngine
+│   ├── Indexing.jl        # Construcción de los índices y de la base RocksDB
 │   ├── DB.jl              # Persistencia embebida (RocksDB)
 │   ├── Search.jl          # Motor de búsqueda
 │   ├── Wikipedia.jl       # Tarjetas de contexto (ES/EN)

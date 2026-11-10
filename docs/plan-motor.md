@@ -1,6 +1,7 @@
 # Plan: ReposMx sobre SimilaritySearchEngine
 
-Fecha: 2026-10-24. Estado: propuesta, sin implementar.
+Fecha: 2026-10-24. Estado: las fases 0, 1 y 2 están implementadas (2026-11-10). La fase 3 no
+empezó. La sección "Resultado de las fases 1 y 2" dice qué cambió respecto de este plan.
 
 ## Objetivo
 
@@ -297,3 +298,71 @@ Cada uno va en su propio commit, antes de la fase 2.
 4. Engine, si hace falta: consulta por tokens.
 5. ReposMx: fase 2, en un solo commit, con el conjunto de referencia pasando.
 6. ReposMx: fase 3.
+
+## Resultado de las fases 1 y 2 (2026-11-10)
+
+### Lo que se decidió al implementar
+
+- **Dependencia.** ReposMx depende del Engine por ruta: `[sources]` en `Project.toml` apunta a
+  `../../Research/SimilaritySearchEngine.jl`. `julia` pasa a `1.12`. `Manifest.toml` y
+  `Manifest-v1.13.toml` registran la misma ruta relativa.
+- **Repositorio.** El filtro por repositorio usa las particiones del Engine (PLAN.md §5.9 del
+  Engine): `docs_content` y `docs_refs` con `partition_by="repo"`, y los dos proyectos de autores
+  con `partition_by="repos"`. Los puntajes son los globales. Ya no hay que elegir entre 91
+  proyectos y listas por partición.
+- **Filtro (fase 1, punto 2).** Se eligió la pasada acotada por `candidates`. El Engine devuelve
+  en `SearchStats.candidates` cuántos resultados examinó. ReposMx empieza con `8k` candidatos y
+  multiplica por 4 mientras la página no se llena y el presupuesto detuvo la búsqueda
+  (`Search._ftsearch`).
+- **`offset` y `has_more`** se quedan en ReposMx: pide `offset + top + 1` resultados y corta.
+  El Engine no recibe `offset`.
+- **Consultas por tokens.** Unir los 16 tokens raros en una cadena cambió el conjunto de tokens
+  de 2 textos de 1,721, porque el tokenizador reemplaza dígitos (`A2` pasa a `A0`). El Engine
+  acepta ahora una lista de tokens y la busca sin tokenizarla otra vez.
+- **Política de consulta.** El plan decía `correction=:off`. Eso no reproduce el ranking: el
+  ReposMx anterior corregía mayúsculas y acentos con `correction=:auto` sin mapa de variantes. Se
+  usa `QueryPolicy(correction=:auto, expansion=false)`. El Engine además usa el mapa de variantes
+  del vocabulario, y esa es la única diferencia de ranking (ver "Verificación").
+- **Documentos.** Están en el `meta` de `docs_content`, con `year` como entero. La CF `default` y
+  `DB.get_document`, `put_document!` y `scan_documents` se eliminaron. `Search.get_document` lee
+  del Engine.
+- **Estadísticas.** Se calculan en la construcción, con los documentos en memoria, en el orden de
+  las claves `doc:<repo>:<id>` que usaba la base anterior. Sin estadísticas precalculadas,
+  `get_detailed_statistics` responde con un error.
+- **Comandos.** `populate-db` y `split-index` se eliminaron y responden con un error que remite a
+  `index`. `index --reuse-authors` reutiliza los perfiles consolidados que ya existen.
+- **Disposición en disco.** El RocksDB de ReposMx se quedó en `data/repos/rocksdb`.
+  `list_repo_names` ignora también `rocksdb.building` y `rocksdb.old`, que usa la construcción.
+- **`total_hits`** sigue siendo el tamaño de la página.
+
+### Verificación
+
+La construcción y las mediciones se hicieron el 2026-11-10 con 64 hilos y Julia 1.12.7, sobre
+una copia de los datos con su propio RocksDB y los perfiles consolidados del 2026-10-26
+(`--reuse-authors`).
+
+1. **Conjunto de referencia.** 297 de las 300 consultas dan las mismas claves. 295 de esas 297
+   dan también los mismos puntajes. Todas las diferencias vienen de dos consultas en mayúsculas,
+   que el mapa de variantes del Engine corrige: `C-133 CONTINÚA IPN …` (también busca
+   `continúa` y `Continúa`, en 4 formas con filtros) y `Chiavenato, I. (2002). ADMINISTRACION EN`
+   (también busca `administración`). Con los tokens que resuelve el pipeline anterior, el
+   índice nuevo devuelve las claves y los puntajes anteriores en las dos.
+2. **Tiempo de consulta**, media de la segunda pasada sobre las consultas del conjunto de
+   referencia:
+
+   | | antes | después |
+   |---|---|---|
+   | `query_index` (200 consultas), media (mediana) | 810 ms (136 ms) | 57 ms (6.2 ms) |
+   | `search_authors` (40) | 80 ms | 3.3 ms |
+   | `search_references` (30) | 694 ms | 52 ms |
+   | `find_similar_authors_by_profile` (15) | 144 ms | 20 ms |
+
+3. **Memoria.** El proceso de búsqueda llegó a 1.16 GiB antes y a 5.95 GiB después. El Engine
+   lee a memoria los vectores de documento de los cuatro proyectos. La apertura de
+   `SearchEngine` tardó 6.1 s antes y 7.0 s después.
+4. **Construcción.** `reposmx index --reuse-authors` tardó 25 min 40 s. En disco, los cuatro
+   proyectos ocupan 3.1 GB (`docs_content` 1.3 GB, `authors_profile` 963 MB, `docs_refs` 768 MB,
+   `authors_name` 28 MB) y el RocksDB de ReposMx 2.5 GB. Antes, el RocksDB ocupaba 4.2 GB y los
+   archivos del índice 33 MB.
+5. **Pruebas.** Una prueba nueva construye los cuatro proyectos desde un corpus de 20 documentos
+   escrito en un directorio temporal. La suite pasa (308 pruebas) contra los datos construidos.

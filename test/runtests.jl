@@ -1,11 +1,12 @@
 using Test
 using Random
 using ReposMx
-using ReposMx: LazyBM25, IndexShellIO, VocabIO, AuthorConsolidation, AuthorGrouping, Corpus, NameVocabulary,
+using ReposMx: AuthorConsolidation, AuthorGrouping, Corpus, NameVocabulary,
                PrecisionClustering, Imputation
 using RocksDB
 using SimilaritySearch, TextSearch
 using TOML
+using JSON3
 
 @testset "ReposMx Tests" begin
     @testset "Corpus keyword parsing (parse_keywords / CTI catalog resolution, isolated)" begin
@@ -826,222 +827,113 @@ using TOML
         @test forced_id in used_forced  # assign_id mutates used_ids with the id it returns
     end
 
-    @testset "IndexShellIO round-trip (bm25/doclens/len/query, isolated)" begin
-        # Guards the JSON3/zip replacement for what used to be a JLD2 jldsave/load round-trip
-        # (see IndexShellIO's docstring): BM25Scorer's Float32 fields, QueryPipeline's
-        # Union{Nothing,Dict} fields (variants/expansion/distances), and QueryPolicy's Symbol
-        # field must all survive the trip unchanged.
-        docs = [
-            "el gato negro corre en el jardin",
-            "el perro blanco duerme en la casa",
-            "un gato y un perro juegan juntos",
-            "the black cat runs fast",
+    @testset "Engine indices from a fixture corpus (isolated)" begin
+        # Builds the four engine projects and the RocksDB of ReposMx from a small corpus written
+        # to a temporary directory, and checks the search layer against what the corpus says.
+        root = mktempdir()
+        data_dir = joinpath(root, "repos")
+        index_dir = joinpath(root, "index")
+        subjects = [
+            ("aprendizaje automático", "redes neuronales profundas para clasificar imágenes satelitales"),
+            ("agua potable", "calidad del agua y remoción de arsénico en pozos rurales"),
+            ("historia regional", "archivos coloniales y la historia económica de la región"),
+            ("energía solar", "celdas fotovoltaicas de perovskita y su eficiencia"),
+            ("salud pública", "vigilancia epidemiológica del dengue en zonas urbanas"),
         ]
-        config = TextConfig(del_diac=true, del_punc=true, lc=true, nlist=[1])
-        voc = Vocabulary(config, docs)
-        invfile = BM25InvertedFile(voc)
-        ctx = InvertedFileContext()
-        append_items!(invfile, ctx, docs)
-
-        tmpdir = mktempdir()
-        shell_path = joinpath(tmpdir, "shell.zip")
-        IndexShellIO.save_index_shell_zip(shell_path;
-            bm25=invfile.bm25, doclens=invfile.doclens, len=invfile.len[], query=invfile.query)
-        d = IndexShellIO.load_index_shell_zip(shell_path)
-
-        @test d.bm25.k1_plus_1 ≈ invfile.bm25.k1_plus_1
-        @test d.bm25.k1_mult_1_min_b ≈ invfile.bm25.k1_mult_1_min_b
-        @test d.bm25.k1_mult_b_div_avg_doc_len ≈ invfile.bm25.k1_mult_b_div_avg_doc_len
-        @test d.bm25.δ ≈ invfile.bm25.δ
-        @test d.bm25.trainsize == invfile.bm25.trainsize
-        @test d.doclens == invfile.doclens
-        @test d.len == invfile.len[]
-        @test d.query.policy.correction == invfile.query.policy.correction
-        @test d.query.policy.expansion == invfile.query.policy.expansion
-        @test d.query.policy.expansion_k == invfile.query.policy.expansion_k
-        @test d.query.policy.negligible_ratio == invfile.query.policy.negligible_ratio
-        @test d.query.variants === invfile.query.variants  # both nothing here
-        @test d.query.expansion === invfile.query.expansion
-        @test d.query.distances === invfile.query.distances
-
-        # A round-tripped shell must assemble into a lazily-backed index whose search results
-        # are identical to the original in-memory one — the actual end-to-end gate.
-        db_path = joinpath(tmpdir, "rocksdb")
-        init_db = opendb(db_path; create_if_missing=true)
-        for cf in ["postings", "docvecs"]
-            create_column_family(init_db, cf)
+        people = ["María López García", "Juan Pérez Hernández", "Ana Martínez Ruiz",
+                  "Carlos Sánchez Díaz", "Laura Gómez Torres", "Pedro Ramírez Flores"]
+        repos = [("alfa", 10), ("beta", 8), ("gama", 2)]
+        n = 0
+        for (repo, count) in repos
+            mkpath(joinpath(data_dir, repo))
+            open(joinpath(data_dir, repo, "corpus.jsonl"), "w") do io
+                for j in 1:count
+                    n += 1
+                    kw, desc = subjects[mod1(n, length(subjects))]
+                    doc = Dict{String,Any}(
+                        "id" => "oai:$repo:$j", "repo" => repo,
+                        "title" => "Estudio $n sobre $kw",
+                        "creators" => [people[mod1(n, 6)], people[mod1(n + 1, 6)]],
+                        "contributors" => [people[mod1(n + 3, 6)]],
+                        "keywords" => [kw, "tema $(mod1(n, 3))"],
+                        "description" => "Este trabajo analiza $desc. Documento número $n.",
+                        "date" => string(2004 + n), "type" => isodd(n) ? "Tesis de maestría" : "Artículo",
+                        "references" => [Dict{String,Any}("text" => "Autor $(mod1(n, 4)). Obra citada sobre $kw. Editorial $(mod1(n, 2)).",
+                                                          "ref_id" => "ref$(mod1(n, 7))")])
+                    println(io, JSON3.write(doc))
+                end
+            end
         end
-        close(init_db)
-        db = opendb(db_path; column_families=["default", "postings", "docvecs"])
+        @test sort(ReposMx.list_repo_names(; data_dir)) == ["alfa", "beta", "gama"]
+
+        ReposMx.Indexing.build_search_index(; data_dir, index_dir)
+        workdir = ReposMx.EngineIndex.engine_workdir(index_dir)
+        @test sort(readdir(workdir)) == sort(collect(ReposMx.EngineIndex.PROJECT_NAMES))
+        @test !isdir(workdir * ".building") && !isdir(joinpath(data_dir, "rocksdb.building"))
+        # The database being built is never listed as a repository.
+        @test sort(ReposMx.list_repo_names(; data_dir)) == ["alfa", "beta", "gama"]
+
+        engine = SearchEngine(; index_dir, data_dir)
         try
-            LazyBM25.export_to_rocksdb!(db, LazyBM25.DOCS_CONTENT, invfile)
-            lazy_invfile = LazyBM25.assemble_bm25(
-                db, LazyBM25.DOCS_CONTENT, voc, d.bm25, d.doclens, d.len, d.query
-            )
-            for q in ["gato jardin", "perro casa", "cat dog"]
-                ctx_a = InvertedFileContext()
-                res_a = search(invfile, ctx_a, q, knnqueue(ctx_a, 10))
-                ctx_b = InvertedFileContext()
-                res_b = search(lazy_invfile, ctx_b, q, knnqueue(ctx_b, 10))
-                @test [item.id for item in res_a] == [item.id for item in res_b]
-                @test [item.dist for item in res_a] ≈ [item.dist for item in res_b]
+            q = "agua potable arsénico"
+            everything = query_index(engine, q; top=50)["hits"]
+            @test !isempty(everything)
+            @test all(h -> occursin("agua", h["title"]) || occursin("agua", h["description"]), everything[1:2])
+            @test issorted([h["score"] for h in everything]; rev=true)
+
+            # A repository filter is the global ranking restricted to that repository.
+            for repo in ("alfa", "beta", "gama")
+                got = query_index(engine, q; top=50, repo)["hits"]
+                @test [h["id"] for h in got] == [h["id"] for h in everything if h["repo"] == repo]
+                @test Float64[h["score"] for h in got] ≈ Float64[h["score"] for h in everything if h["repo"] == repo]
             end
+            @test isempty(query_index(engine, q; top=5, repo="no-existe")["hits"])
+
+            # Type, keyword and year filters keep the global order.
+            tesis = query_index(engine, q; top=50, doc_type="tesis")["hits"]
+            @test [h["id"] for h in tesis] == [h["id"] for h in everything if occursin("tesis", lowercase(h["type"]))]
+            years = query_index(engine, q; top=50, year_min=2010, year_max=2016)["hits"]
+            @test [h["id"] for h in years] == [h["id"] for h in everything if 2010 <= parse(Int, h["date"]) <= 2016]
+            kw = query_index(engine, q; top=50, keyword="TEMA 2")["hits"]
+            @test [h["id"] for h in kw] == [h["id"] for h in everything if "tema 2" in h["keywords"]]
+
+            # Pages do not overlap, and has_more is true exactly when another page exists.
+            p1 = query_index(engine, q; top=2)
+            p2 = query_index(engine, q; top=2, offset=2)
+            @test p1["has_more"] == (length(everything) > 2)
+            @test isempty(intersect(Set(h["id"] for h in p1["hits"]), Set(h["id"] for h in p2["hits"])))
+
+            # A document is read back from the engine, with its year.
+            doc = ReposMx.Search.get_document(engine, "beta", "oai:beta:3")
+            @test doc["title"] == "Estudio 13 sobre historia regional"
+            @test doc["year"] == 2017
+            @test ReposMx.Search.get_document(engine, "beta", "oai:beta:99") === nothing
+
+            # Authors: a repository filter returns only authors with documents in it.
+            authors = search_authors(engine, "López García"; top=5)["authors"]
+            @test !isempty(authors) && occursin("López", first(authors)["name"])
+            in_gama = search_authors(engine, "Pérez Hernández"; top=10, repo="gama")["authors"]
+            @test all(a -> "gama" in a["repos"], in_gama)
+            sim = find_similar_authors_by_profile(engine, first(authors)["consolidated_id"]; top=3)
+            @test all(a -> a["consolidated_id"] != first(authors)["consolidated_id"], sim["similar_authors"])
+
+            # References: the citing documents, and documents with similar references.
+            # docs_refs drops the tokens of fewer than 5 documents, so the query uses words that
+            # every reference of this corpus has.
+            refs = search_references(engine, "Obra citada Editorial"; top=50)["references"]
+            @test length(refs) == 20
+            in_beta = search_references(engine, "Obra citada Editorial"; top=50, repo="beta")["references"]
+            @test [r["doc_id"] for r in in_beta] == [r["doc_id"] for r in refs if r["repo"] == "beta"]
+            simdocs = find_similar_documents_by_references(engine, "alfa", "oai:alfa:4"; top=3)["similar_documents"]
+            @test all(d -> (d["repo"], d["id"]) != ("alfa", "oai:alfa:4"), simdocs)
+
+            # Statistics are precomputed from the corpus.
+            stats = get_detailed_statistics(engine)
+            @test stats["total_docs"] == 20
+            @test get_detailed_statistics(engine; repo="gama")["total_docs"] == 2
+            @test haskey(get_detailed_statistics(engine; repo="no-existe"), "error")
         finally
-            close(db)
-        end
-    end
-
-    @testset "VocabIO round-trip (policy + lemmas + stopwords, isolated)" begin
-        # The index built on 2026-10-24 lost its lemmas here: the vocabulary was reloaded without
-        # them, and the query "ministros" no longer reached the indexed lemma "ministro".
-        pipeline = TextSearch.TokenPipeline(lemmas=Dict("gatos" => "gato", "perros" => "perro"),
-                                            stopwords=Set(["el", "un"]))
-        config = TextConfig(del_diac=true, del_punc=true, lc=true, nlist=[1], pipeline=pipeline)
-        docs = ["el gato negro corre", "los perros duermen", "un gato y un perro"]
-        voc = Vocabulary(config, docs)
-        path = joinpath(mktempdir(), "vocab.zip")
-        VocabIO.save_vocabulary_zip(path, voc)
-        v = VocabIO.load_vocabulary_zip(path)
-
-        @test v.token == voc.token
-        @test v.ndocs == voc.ndocs
-        @test v.occs == voc.occs
-        @test v.textconfig.pipeline == voc.textconfig.pipeline
-        @test collect(tokenize(v.textconfig, "Los Gatos y el perro")) ==
-              collect(tokenize(voc.textconfig, "Los Gatos y el perro"))
-        @test token2id(v, only(tokenize(v.textconfig, "gatos"))) == token2id(voc, "gato")
-
-        # A vocabulary without a pipeline stage writes no file for it and reads back `nothing`.
-        plain = Vocabulary(TextConfig(lc=true, nlist=[1]), docs)
-        VocabIO.save_vocabulary_zip(path, plain)
-        p = VocabIO.load_vocabulary_zip(path)
-        @test p.textconfig.pipeline.lemmas === nothing
-        @test p.textconfig.pipeline.stopwords === nothing
-    end
-
-    @testset "LazyBM25 round-trip (isolated, synthetic corpus)" begin
-        # Builds a tiny in-memory BM25InvertedFile, exports it to a temp RocksDB via
-        # LazyBM25.export_to_rocksdb!, reassembles it as a lazily-backed index via
-        # LazyBM25.assemble_bm25, and checks that search() returns byte-identical
-        # results (doc ids, order, and scores) from both versions. This is the
-        # correctness gate for the whole lazy-index design: if TextSearch.jl ever
-        # reorders BM25InvertedFile's fields, this test fails loudly instead of
-        # silently corrupting production search results.
-        docs = [
-            "el gato negro corre en el jardin",
-            "el perro blanco duerme en la casa",
-            "un gato y un perro juegan juntos",
-            "the black cat runs fast",
-            "the white dog sleeps all day",
-            "cats and dogs play together in the garden",
-            "la casa tiene un jardin grande",
-            "grandes jardines con gatos y perros",
-            "el sol brilla sobre el jardin",
-            "un dia soleado en el parque",
-        ]
-        config = TextConfig(del_diac=true, del_punc=true, lc=true, nlist=[1])
-        voc = Vocabulary(config, docs)
-        invfile = BM25InvertedFile(voc)
-        ctx = InvertedFileContext()
-        append_items!(invfile, ctx, docs)
-
-        tmpdir = mktempdir()
-        db_path = joinpath(tmpdir, "rocksdb")
-        init_db = opendb(db_path; create_if_missing=true)
-        for cf in ["postings", "docvecs"]
-            create_column_family(init_db, cf)
-        end
-        close(init_db)
-
-        db = opendb(db_path; column_families=["default", "postings", "docvecs"])
-        try
-            LazyBM25.export_to_rocksdb!(db, LazyBM25.DOCS_CONTENT, invfile)
-            lazy_invfile = LazyBM25.assemble_bm25(
-                db, LazyBM25.DOCS_CONTENT, invfile.voc, invfile.bm25, invfile.doclens, invfile.len[], invfile.query
-            )
-
-            for q in ["gato jardin", "perro casa", "cat dog garden", "sol parque", "inexistente xyz123"]
-                ctx_a = InvertedFileContext()
-                res_a = search(invfile, ctx_a, q, knnqueue(ctx_a, 10))
-                ctx_b = InvertedFileContext()
-                res_b = search(lazy_invfile, ctx_b, q, knnqueue(ctx_b, 10))
-
-                @test [item.id for item in res_a] == [item.id for item in res_b]
-                @test [item.dist for item in res_a] ≈ [item.dist for item in res_b]
-            end
-        finally
-            close(db)
-        end
-    end
-
-    @testset "LazyBM25 per-repository indices (isolated, synthetic corpus)" begin
-        # A repository index shares the vocabulary, BM25 statistics and document vectors of the
-        # global index and has its own posting lists. Its results must be the global results
-        # filtered by repository: same ids, same order, same scores.
-        docs = [
-            "el gato negro corre en el jardin", "el perro blanco duerme en la casa",
-            "un gato y un perro juegan juntos", "la casa tiene un jardin grande",
-            "grandes jardines con gatos y perros", "el sol brilla sobre el jardin",
-            "un dia soleado en el parque", "el gato duerme al sol",
-            "perros y gatos en el parque", "la casa del perro negro",
-            "jardin botanico de la ciudad", "el parque tiene un lago",
-        ]
-        repo_of = UInt16[1, 1, 1, 1, 2, 2, 2, 2, 2, 3, 3, 3]
-        config = TextConfig(del_diac=true, del_punc=true, lc=true, nlist=[1])
-        voc = Vocabulary(config, docs)
-        invfile = BM25InvertedFile(voc)
-        ctx = InvertedFileContext()
-        append_items!(invfile, ctx, docs)
-
-        tmpdir = mktempdir()
-        db_path = joinpath(tmpdir, "rocksdb")
-        init_db = opendb(db_path; create_if_missing=true)
-        for cf in ["postings", "docvecs", LazyBM25.REPO_POSTINGS_CF]
-            create_column_family(init_db, cf)
-        end
-        close(init_db)
-
-        db = opendb(db_path; column_families=["default", "postings", "docvecs", LazyBM25.REPO_POSTINGS_CF])
-        try
-            @test LazyBM25.load_repo_table(db) === nothing
-            LazyBM25.export_to_rocksdb!(db, LazyBM25.DOCS_CONTENT, invfile)
-            LazyBM25.save_repo_table!(db, ["a", "b", "c"])
-            @test LazyBM25.load_repo_table(db) == Dict("a" => 0x0001, "b" => 0x0002, "c" => 0x0003)
-            n_ids = LazyBM25.export_repo_postings!(db, LazyBM25.DOCS_CONTENT, invfile.adj, id -> (repo_of[id],))
-            @test n_ids == sum(length(neighbors(invfile.adj, t)) for t in eachindex(invfile.adj))
-
-            g = LazyBM25.assemble_bm25(db, LazyBM25.DOCS_CONTENT, invfile.voc, invfile.bm25,
-                                       invfile.doclens, invfile.len[], invfile.query)
-            for r in UInt16(1):UInt16(3), q in ["gato jardin", "perro casa", "parque sol", "inexistente xyz123"]
-                ctx_g = InvertedFileContext()
-                all_res = collect(search(g, ctx_g, q, knnqueue(ctx_g, length(docs))))
-                expected = [it for it in all_res if repo_of[it.id] == r]
-                ri = LazyBM25.assemble_repo_bm25(g, db, LazyBM25.DOCS_CONTENT, r)
-                ctx_r = InvertedFileContext()
-                got = collect(search(ri, ctx_r, q, knnqueue(ctx_r, length(docs))))
-                @test [it.id for it in got] == [it.id for it in expected]
-                @test Float32[it.dist for it in got] ≈ Float32[it.dist for it in expected]
-            end
-
-            # An id in several repositories (an author) enters the list of each one.
-            LazyBM25.export_repo_postings!(db, LazyBM25.AUTHORS_NAME, invfile.adj,
-                                           id -> id == 1 ? UInt16[1, 3] : (repo_of[id],))
-            gato = invfile.voc.token2id["gato"]
-            in_c = neighbors(LazyBM25.RepoPostingsAdjList(db, LazyBM25.AUTHORS_NAME, 0x0003, length(invfile.adj)), gato)
-            @test UInt32(1) in in_c
-            @test issorted(in_c)
-
-            # Exporting again deletes the lists written before: with every id in repository 1,
-            # repositories 2 and 3 have no lists left.
-            LazyBM25.export_repo_postings!(db, LazyBM25.DOCS_CONTENT, invfile.adj, id -> (UInt16(1),))
-            for r in (0x0002, 0x0003)
-                adj = LazyBM25.RepoPostingsAdjList(db, LazyBM25.DOCS_CONTENT, r, length(invfile.adj))
-                @test all(isempty(neighbors(adj, t)) for t in eachindex(adj))
-            end
-            # ... and the other index (AUTHORS_NAME) is untouched.
-            @test UInt32(1) in neighbors(LazyBM25.RepoPostingsAdjList(db, LazyBM25.AUTHORS_NAME, 0x0003, length(invfile.adj)), gato)
-        finally
-            close(db)
+            close(engine)
         end
     end
 
@@ -1069,8 +961,7 @@ using TOML
     @testset "SearchEngine & 4 Segregated Indices" begin
         engine = SearchEngine()
         @test engine !== nothing
-        @test length(engine.doc_keys) > 0
-        @test length(engine.author_keys) > 0
+        @test engine.docs !== nothing
         
         # 1. Content query
         res_doc = query_index(engine, "inteligencia artificial"; top=5)

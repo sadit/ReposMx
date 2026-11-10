@@ -7,22 +7,16 @@ using ..Types: ParagraphHit
 using ..Storage: get_repo_dir, load_corpus_records, list_repo_names
 using ..Corpus: build_repository_corpus, build_authors_index_data, repair_author_names!, split_into_paragraphs
 using ..TextModel: base_profile, refit_corpus_profile, create_textconfig, save_profile, load_profile
-using ..DB: Database, open_database, close_database, put_document!, put_author_profile!, put_topics!,
+using ..DB: Database, open_database, close_database, put_author_profile!, put_topics!,
             put_reference!, set_document_references!, link_author_document!, add_coauthor_link!,
             put_author_id_mapping!, normalize_author_name, rocksdb_handle, compact_all!, precompute_all_statistics!,
-            put_consolidated_profile!, get_consolidated_profile
-using ..LazyBM25: export_to_rocksdb!, assemble_bm25,
-                  LazyDocKeys, LazyAuthorKeys, export_dockeys_to_rocksdb!, export_authorkeys_to_rocksdb!,
-                  DOCS_CONTENT, DOCS_REFS, AUTHORS_NAME, AUTHORS_PROFILE,
-                  save_repo_table!, load_repo_table, export_repo_postings!
-using ..VocabIO: save_vocabulary_zip, load_vocabulary_zip
-using ..IndexShellIO: save_index_shell_zip, load_index_shell_zip
+            put_consolidated_profile!
+using ..EngineIndex: DOCS_CONTENT, DOCS_REFS, AUTHORS_NAME, AUTHORS_PROFILE, engine_workdir, index_profile,
+                     build_text_project!, doc_key_of
 using ..AuthorConsolidation: build_and_persist, load_all, AUTHOR_NAME_CONFIG, assign_raw_ids
 using ..AuthorGrouping: group_authors
 
-export build_search_index, rebuild_authors_index, build_repo_indices,
-       load_docs_content_index, load_docs_refs_index,
-       load_authors_name_index, load_authors_profile_index,
+export build_search_index, rebuild_authors_index, doc_meta,
        search_document_in_depth, extract_index_text
 
 # Minimum document frequency for a token to survive in the docs_refs vocabulary. Measured on
@@ -171,116 +165,91 @@ function _collect_documents(; data_dir=DEFAULT_DATA_DIR, repos::Union{Vector{Str
 end
 
 """
-    _save_repo_table_from_doc_keys!(rdb, doc_keys) -> Vector{UInt16}
+    doc_meta(doc) -> Dict{String,Any}
 
-Writes the repository table (the repositories of `doc_keys`, sorted by name) and returns the
-repository index of every document id, for [`LazyBM25.export_repo_postings!`](@ref).
+The `meta` of a document in the `docs_content` project: the fields `_collect_documents` keeps,
+plus `year`, the first year between 1900 and 2099 found in `date` (an `Int`, or `nothing`). The
+year filter of `query_index` compares that integer.
 """
-function _save_repo_table_from_doc_keys!(rdb, doc_keys)
-    repos = sort!(unique(first.(doc_keys)))
-    save_repo_table!(rdb, repos)
-    index_of = Dict{String,UInt16}(r => UInt16(i) for (i, r) in enumerate(repos))
-    return UInt16[index_of[r] for (r, _) in doc_keys]
+function doc_meta(doc::AbstractDict)
+    meta = Dict{String,Any}(string(k) => v for (k, v) in doc)
+    m = match(r"\b(19\d\d|20\d\d)\b", string(get(doc, "date", "")))
+    meta["year"] = m === nothing ? nothing : parse(Int, m.match)
+    return meta
 end
 
 """
-    _export_author_repo_postings!(rdb, adj, repos_of_author) -> Int
+    _repos_meta(profile) -> Dict{String,Any}
 
-Writes the per-repository posting lists of `authors_name`: an author enters the list of every
-repository where it has documents (`repos_of_author(i)`, names). Uses the repository table that
-the document index wrote. Without one (a database written before per-repository indices
-existed), it writes nothing and says to run `reposmx split-index`. A repository that the table
-does not have is skipped and counted. Returns the number of ids written.
+The `meta` of an author in the two author projects: the repositories where the author has
+documents, which is their partition field. An author without repositories belongs to no
+partition.
 """
-function _export_author_repo_postings!(rdb, adj, repos_of_author)
-    table = load_repo_table(rdb)
-    if table === nothing
-        println("  authors_name: no repository table; run 'reposmx split-index' to build the repository indices")
-        return 0
-    end
-    unknown = Set{String}()
-    function repos_of(i)
-        out = UInt16[]
-        for r in repos_of_author(i)
-            k = get(table, r, nothing)
-            k === nothing ? push!(unknown, String(r)) : push!(out, k)
+function _repos_meta(profile::AbstractDict)
+    repos = String[string(r) for r in get(profile, "repos", String[]) if !isempty(string(r))]
+    return isempty(repos) ? Dict{String,Any}() : Dict{String,Any}("repos" => repos)
+end
+
+"""
+    _replace_dir!(target, built) -> Nothing
+
+Puts the directory `built` in place of `target`. The previous `target` is renamed first and
+removed last, so a failure leaves one of the two in place.
+"""
+function _replace_dir!(target::AbstractString, built::AbstractString)
+    old = target * ".old"
+    rm(old; recursive=true, force=true)
+    isdir(target) && mv(target, old)
+    mv(built, target)
+    rm(old; recursive=true, force=true)
+    return nothing
+end
+
+"""
+    _ingest_relations!(db, rdb, all_docs, raw_id_of) -> Nothing
+
+Writes the topics, the author-document links, the coauthor links and the references of every
+document. One `WriteBatch` per document: `add_coauthor_link!` reads the current count before it
+writes it, so the writes of a document must be committed before the next document reads them.
+A batch over several documents would undercount a pair of coauthors that appears twice in it.
+"""
+function _ingest_relations!(db::Database, rdb, all_docs, raw_id_of::AbstractDict)
+    wb = RocksDB.WriteBatch()
+    for doc in all_docs
+        repo = doc["repo"]
+        doc_id = doc["id"]
+        put_topics!(db, doc; batch=wb)
+
+        creators = get(doc, "creators", String[])
+        for a in creators
+            link_author_document!(db, raw_id_of[a], repo, doc_id; role="Autor", year=get(doc, "date", ""), batch=wb)
         end
-        out
+        contributors = get(doc, "contributors", String[])
+        for a in contributors
+            link_author_document!(db, raw_id_of[a], repo, doc_id; role="Colaborador / Asesor", year=get(doc, "date", ""), batch=wb)
+        end
+        all_auth_ids = [raw_id_of[a] for a in vcat(creators, contributors)]
+        for x in 1:length(all_auth_ids), y in (x+1):length(all_auth_ids)
+            add_coauthor_link!(db, all_auth_ids[x], all_auth_ids[y]; batch=wb)
+        end
+
+        doc_refs = get(doc, "references", Dict{String, Any}[])
+        if !isempty(doc_refs)
+            ref_ids = String[]
+            for ref in doc_refs
+                ref_id = get(ref, "ref_id", "")
+                if !isempty(ref_id)
+                    push!(ref_ids, ref_id)
+                    put_reference!(db, ref; batch=wb)
+                end
+            end
+            set_document_references!(db, repo, doc_id, ref_ids; batch=wb)
+        end
+
+        RocksDB.write!(rdb, wb)
+        empty!(wb)
     end
-    n_ids = export_repo_postings!(rdb, AUTHORS_NAME, adj, repos_of)
-    println("  authors_name split into repository indices ($n_ids ids)")
-    isempty(unknown) || println("  authors_name: $(length(unknown)) repositories not in the table were skipped: $(join(sort!(collect(unknown)), ", "))")
-    return n_ids
-end
-
-"""
-    _build_authors_indices!(db, rdb, authors_data, index_dir, name_textconfig, raw_id_of) -> Int
-
-Clusters `authors_data` into consolidated profiles, persists them (TOML corpus + RocksDB), and
-builds the `authors_name`/`authors_profile` BM25 indices from that consolidated corpus. Shared by
-`build_search_index` (full rebuild) and `rebuild_authors_index` (authors-only, no re-tokenizing of
-`docs_content`/`docs_refs`) — `name_textconfig` is the refitted profile's `TextConfig`, needed for
-`authors_profile`'s vocabulary but not otherwise available without a full docs_content refit, so
-callers pass it in (`build_search_index` has it fresh; `rebuild_authors_index` reads it back from
-the already-saved profile on disk). `raw_id_of` (raw name -> short id, from `assign_raw_ids`) lets
-singleton consolidated groups reuse their one raw profile's id verbatim (see `AuthorConsolidation.rollup`).
-Returns the number of consolidated profiles written.
-"""
-function _build_authors_indices!(db::Database, rdb, authors_data::Vector{<:AbstractDict},
-                                  index_dir::AbstractString, name_textconfig, raw_id_of::AbstractDict)
-    println("Clustering raw author profiles into consolidated profiles..."); flush(stdout)
-    groups = group_authors(authors_data)
-    n_groups = build_and_persist(authors_data, groups, index_dir, raw_id_of)
-    consolidated = load_all(index_dir)
-    println("  $(length(authors_data)) raw profiles -> $(n_groups) consolidated profiles")
-    for profile in consolidated
-        put_consolidated_profile!(db, profile)
-    end
-
-    println("Building BM25 for Authors by Name...")
-    authors_names = ["$(a["name"]) . $(a["name_initials_form"])" for a in consolidated]
-    author_keys = [a["consolidated_id"] for a in consolidated]
-
-    # author_keys is shared by authors_name_invfile and authors_profile_invfile (both
-    # built from `consolidated` in the same order), so it is exported once here.
-    export_authorkeys_to_rocksdb!(rdb, author_keys)
-
-    auth_name_voc = Vocabulary(AUTHOR_NAME_CONFIG, authors_names)
-    authors_name_invfile = BM25InvertedFile(auth_name_voc)
-    ctx3 = InvertedFileContext()
-    append_items!(authors_name_invfile, ctx3, authors_names)
-
-    export_to_rocksdb!(rdb, AUTHORS_NAME, authors_name_invfile)
-    _export_author_repo_postings!(rdb, authors_name_invfile.adj, i -> get(consolidated[i], "repos", String[]))
-    save_vocabulary_zip(joinpath(index_dir, "authors_name_vocab.zip"), authors_name_invfile.voc)
-    save_index_shell_zip(joinpath(index_dir, "authors_name_shell.zip");
-            bm25=authors_name_invfile.bm25,
-            doclens=authors_name_invfile.doclens, len=authors_name_invfile.len[],
-            query=authors_name_invfile.query)
-    println("Saved Index 3: authors_name_shell.zip + authors_name_vocab.zip (postings/docvecs in RocksDB)")
-
-    println("Building BM25 for Authors by Semantic Profile & References...")
-    authors_profile_texts = [
-        "$(a["name"]) . $(join(get(a, "keywords", []), " , ")) . $(join(get(a, "topic_texts", []), " \n ")) . $(join(get(a, "cited_references", []), " \n "))"
-        for a in consolidated
-    ]
-
-    authors_profile_voc_full = Vocabulary(name_textconfig, authors_profile_texts)
-    authors_profile_voc = filter_tokens(t -> t.ndocs >= AUTHORS_PROFILE_MIN_NDOCS, authors_profile_voc_full)
-    println("  authors_profile vocabulary pruned by min_ndocs=$AUTHORS_PROFILE_MIN_NDOCS: $(vocsize(authors_profile_voc_full)) -> $(vocsize(authors_profile_voc)) tokens")
-    authors_profile_invfile = BM25InvertedFile(authors_profile_voc)
-    ctx4 = InvertedFileContext()
-    append_items!(authors_profile_invfile, ctx4, authors_profile_texts)
-
-    export_to_rocksdb!(rdb, AUTHORS_PROFILE, authors_profile_invfile)
-    save_vocabulary_zip(joinpath(index_dir, "authors_profile_vocab.zip"), authors_profile_invfile.voc)
-    save_index_shell_zip(joinpath(index_dir, "authors_profile_shell.zip");
-            bm25=authors_profile_invfile.bm25,
-            doclens=authors_profile_invfile.doclens, len=authors_profile_invfile.len[],
-            query=authors_profile_invfile.query)
-    println("Saved Index 4: authors_profile_shell.zip + authors_profile_vocab.zip (postings/docvecs in RocksDB)")
-
-    return n_groups
+    return nothing
 end
 
 """
@@ -289,7 +258,7 @@ end
 Writes every raw author profile (`put_author_profile!`) and its `name2id` mapping
 (`put_author_id_mapping!`) via chunked `RocksDB.WriteBatch`es of `AUTHOR_BATCH_SIZE` authors
 instead of one native write per call — safe to batch across many authors at once (unlike the
-per-document ingestion loop in `build_search_index`) because neither write reads existing state
+per-document ingestion loop in `_ingest_relations!`) because neither write reads existing state
 first: each key is set exactly once, in any order, so nothing depends on flush timing.
 """
 function _persist_author_profiles_batched!(db::Database, rdb, authors_data, raw_id_of::AbstractDict)
@@ -308,14 +277,87 @@ function _persist_author_profiles_batched!(db::Database, rdb, authors_data, raw_
 end
 
 """
+    _consolidated_profiles!(db, rdb, authors_data, raw_id_of, index_dir; reuse_authors) -> Vector{Dict}
+
+The consolidated author profiles, written to `db`. With `reuse_authors=false`, the raw profiles
+are grouped again (`AuthorGrouping.group_authors`, about 2.2 hours on the full corpus measured
+on 2026-10-26) and the TOML corpus under `index_dir` is rewritten. With `reuse_authors=true`,
+the TOML corpus already under `index_dir` is read instead, and an empty corpus is an error. That
+is valid only while the corpus has not changed since the grouping: the profiles name raw authors
+by their ids, and the ids depend on every raw name.
+"""
+function _consolidated_profiles!(db::Database, rdb, authors_data, raw_id_of::AbstractDict,
+                                 index_dir::AbstractString; reuse_authors::Bool)
+    if reuse_authors
+        consolidated = load_all(index_dir)
+        isempty(consolidated) && error("no hay perfiles consolidados en '$index_dir' para reutilizar; " *
+                                       "corre 'reposmx index' sin --reuse-authors")
+        println("Reusing $(length(consolidated)) consolidated author profiles from $index_dir"); flush(stdout)
+    else
+        println("Clustering raw author profiles into consolidated profiles..."); flush(stdout)
+        groups = group_authors(authors_data)
+        n_groups = build_and_persist(authors_data, groups, index_dir, raw_id_of)
+        consolidated = load_all(index_dir)
+        println("  $(length(authors_data)) raw profiles -> $(n_groups) consolidated profiles")
+    end
+    wb = RocksDB.WriteBatch()
+    for (i, profile) in enumerate(consolidated)
+        put_consolidated_profile!(db, profile; batch=wb)
+        if i % AUTHOR_BATCH_SIZE == 0
+            RocksDB.write!(rdb, wb)
+            empty!(wb)
+        end
+    end
+    RocksDB.write!(rdb, wb)
+    return consolidated
+end
+
+"""
+    _build_author_projects!(workdir, consolidated, profile) -> Nothing
+
+Builds the `authors_name` and `authors_profile` projects under `workdir`, one item per
+consolidated profile, in the order of `consolidated`. `profile` is the refitted profile of the
+documents: `authors_profile` is tokenized with its `TextConfig`, lemmas included.
+"""
+function _build_author_projects!(workdir::AbstractString, consolidated::AbstractVector, profile::TextProfile)
+    cids = String[a["consolidated_id"] for a in consolidated]
+    metas = [_repos_meta(a) for a in consolidated]
+
+    println("Building BM25 for Authors by Name..."); flush(stdout)
+    names = String["$(a["name"]) . $(a["name_initials_form"])" for a in consolidated]
+    name_voc = Vocabulary(AUTHOR_NAME_CONFIG, names)
+    build_text_project!(workdir, AUTHORS_NAME, index_profile(name_voc, nothing), names, cids, metas;
+                        partition_by="repos")
+
+    println("Building BM25 for Authors by Semantic Profile & References..."); flush(stdout)
+    texts = String[
+        "$(a["name"]) . $(join(get(a, "keywords", []), " , ")) . $(join(get(a, "topic_texts", []), " \n ")) . $(join(get(a, "cited_references", []), " \n "))"
+        for a in consolidated
+    ]
+    voc_full = Vocabulary(profile.model.voc.textconfig, texts)
+    voc = filter_tokens(t -> t.ndocs >= AUTHORS_PROFILE_MIN_NDOCS, voc_full)
+    println("  authors_profile vocabulary pruned by min_ndocs=$AUTHORS_PROFILE_MIN_NDOCS: $(vocsize(voc_full)) -> $(vocsize(voc)) tokens")
+    build_text_project!(workdir, AUTHORS_PROFILE, index_profile(voc, profile), texts, cids, metas;
+                        partition_by="repos")
+    return nothing
+end
+
+# Files of the index before it moved into SimilaritySearchEngine projects (docs/plan-motor.md,
+# phase 2). A rebuild removes them.
+const LEGACY_INDEX_FILES = [
+    "$(n)_$(s).zip" for n in ("docs_content", "docs_refs", "authors_name", "authors_profile") for s in ("shell", "vocab")
+]
+
+"""
     rebuild_authors_index(; data_dir=DEFAULT_DATA_DIR, index_dir=DEFAULT_INDEX_DIR, repos=nothing, max_docs=nothing)
 
-Re-runs author clustering and rebuilds only `authors_name`/`authors_profile` — not
-`docs_content`/`docs_refs`, which is the expensive part of `build_search_index` (re-tokenizing the
-whole document corpus). Meant to be re-run cheaply after editing `author_overrides.toml`: overrides
+Re-runs author clustering and rebuilds only the `authors_name` and `authors_profile` projects —
+not `docs_content`/`docs_refs`, which is the expensive part of `build_search_index` (re-tokenizing
+the whole document corpus). Meant to be re-run after editing `author_overrides.toml`: overrides
 only change grouping, and grouping only affects these two indices. Requires that
-`build_search_index` has already run at least once (reuses its saved refitted profile from
-`<index_dir>/profile` for `authors_profile`'s vocabulary — this command never refits it).
+`build_search_index` has already run at least once: it reuses the refitted profile saved under
+`<index_dir>/profile`, and it writes into the existing RocksDB of ReposMx. The two projects are
+built in a separate directory and replace the previous ones at the end.
 """
 function rebuild_authors_index(;
     data_dir=DEFAULT_DATA_DIR,
@@ -337,292 +379,119 @@ function rebuild_authors_index(;
     raw_id_of, n_raw_collisions = assign_raw_ids(authors_data)
     println("  raw ids needing disambiguation: $n_raw_collisions / $(length(authors_data))"); flush(stdout)
 
-    db_path = joinpath(data_dir, "rocksdb")
-    db = open_database(db_path; create_if_missing=true)
+    workdir = engine_workdir(index_dir)
+    building = workdir * ".authors"
+    rm(building; recursive=true, force=true)
+    mkpath(building)
+    db = open_database(joinpath(data_dir, "rocksdb"); create_if_missing=true)
     rdb = rocksdb_handle(db)
+    n_groups = 0
     try
         _persist_author_profiles_batched!(db, rdb, authors_data, raw_id_of)
-        n_groups = _build_authors_indices!(db, rdb, authors_data, index_dir, profile.model.voc.textconfig, raw_id_of)
-        precompute_all_statistics!(db, n_groups)
+        consolidated = _consolidated_profiles!(db, rdb, authors_data, raw_id_of, index_dir; reuse_authors=false)
+        n_groups = length(consolidated)
+        _build_author_projects!(building, consolidated, profile)
+        precompute_all_statistics!(db, all_docs, n_groups)
         compact_all!(db)
-        println("Listo: $(length(authors_data)) perfiles raw -> $n_groups consolidados.")
     finally
         close_database(db)
     end
+    for name in (AUTHORS_NAME, AUTHORS_PROFILE)
+        _replace_dir!(joinpath(workdir, name), joinpath(building, name))
+    end
+    rm(building; recursive=true, force=true)
+    println("Listo: $(length(authors_data)) perfiles raw -> $n_groups consolidados.")
     return nothing
 end
 
 """
-    build_search_index(; data_dir=DEFAULT_DATA_DIR, index_dir=DEFAULT_INDEX_DIR, repos=nothing, max_docs=nothing)
+    build_search_index(; data_dir=DEFAULT_DATA_DIR, index_dir=DEFAULT_INDEX_DIR, repos=nothing,
+                         max_docs=nothing, reuse_authors=false)
 
-Builds the 4 segregated homogeneous BM25 search indices (vocabulary + shell as JSON/zip,
-postings/doc-vectors in RocksDB — see `VocabIO`, `IndexShellIO`, `LazyBM25`), and populates the
-RocksDB database with all metadata, author profiles, and references.
+Builds the four text indices as `SimilaritySearchEngine` projects under
+`<index_dir>/engine/` (see `EngineIndex`), and the RocksDB of ReposMx under
+`<data_dir>/rocksdb`: raw and consolidated author profiles, author-document and coauthor links,
+references, topics and statistics. The documents themselves are stored in the `meta` of
+`docs_content`.
+
+Both are built from scratch in new directories, which replace the previous ones at the end. A
+failure leaves the previous index and database in place. Building from scratch also means that
+nothing from a previous build survives: the coauthor counts are not added to the counts of the
+previous build, and a document removed from the corpus leaves no keys.
+
+`reuse_authors=true` reads the consolidated author profiles already under `index_dir` instead of
+grouping the raw profiles again (see `_consolidated_profiles!`).
 """
 function build_search_index(;
     data_dir=DEFAULT_DATA_DIR,
     index_dir=DEFAULT_INDEX_DIR,
     repos::Union{Vector{String}, Nothing}=nothing,
-    max_docs::Union{Int, Nothing}=nothing
+    max_docs::Union{Int, Nothing}=nothing,
+    reuse_authors::Bool=false
 )
     mkpath(index_dir)
     all_docs, docs_content_texts, docs_refs_texts, doc_keys = _collect_documents(; data_dir, repos, max_docs)
     isempty(all_docs) && return nothing
 
-    # -------------------------------------------------------------
-    # 0. Ingest Documents, Authors, and References to RocksDB
-    # -------------------------------------------------------------
-    println("Populating RocksDB database backend...")
-    db_path = joinpath(data_dir, "rocksdb")
-    db = open_database(db_path; create_if_missing=true)
-    rdb = rocksdb_handle(db)
-
     authors_data = build_authors_index_data(all_docs)
+    for a in authors_data
+        a["norm_name"] = normalize_author_name(a["name"])
+    end
     raw_id_of, n_raw_collisions = assign_raw_ids(authors_data)
     println("  raw ids needing disambiguation: $n_raw_collisions / $(length(authors_data))")
 
-    # `db`/`rdb` stay open through the RocksDB metadata ingestion below AND through the
-    # 4 BM25 posting-list/docvec exports further down (LazyBM25.export_to_rocksdb! writes
-    # into the same RocksDB instance), closing only once at the very end of this function.
+    workdir = engine_workdir(index_dir)
+    building = workdir * ".building"
+    db_path = joinpath(data_dir, "rocksdb")
+    db_building = db_path * ".building"
+    rm(building; recursive=true, force=true)
+    rm(db_building; recursive=true, force=true)
+    mkpath(building)
+
+    println("Populating RocksDB database backend...")
+    db = open_database(db_building; create_if_missing=true)
+    rdb = rocksdb_handle(db)
     try
-        # doc_keys is shared by docs_content_invfile and docs_refs_invfile (built together,
-        # same order, in the collection loop above), so it is exported once here rather than
-        # once per index.
-        export_dockeys_to_rocksdb!(rdb, doc_keys)
-        repo_of_doc = _save_repo_table_from_doc_keys!(rdb, doc_keys)
-
-        # Ingest documents and topics into RocksDB. One WriteBatch per document (reused via
-        # empty! to avoid allocating ~length(all_docs) of them): `add_coauthor_link!` does a
-        # read-before-write against the *live* db to accumulate counts, so each document's writes
-        # must be committed before the next document's reads can see them — batching writes
-        # across multiple documents would let a coauthor pair recurring within one unflushed
-        # window silently undercount. Flushing once per document still collapses what was
-        # dozens of individual native RocksDB puts per document into a single write!() call,
-        # with none of that correctness risk.
-        wb = RocksDB.WriteBatch()
-        for doc in all_docs
-            repo = doc["repo"]
-            doc_id = doc["id"]
-            put_document!(db, repo, doc_id, doc; batch=wb)
-            put_topics!(db, doc; batch=wb)
-
-            creators = get(doc, "creators", String[])
-            for a in creators
-                link_author_document!(db, raw_id_of[a], repo, doc_id; role="Autor", year=get(doc, "date", ""), batch=wb)
-            end
-            contributors = get(doc, "contributors", String[])
-            for a in contributors
-                link_author_document!(db, raw_id_of[a], repo, doc_id; role="Colaborador / Asesor", year=get(doc, "date", ""), batch=wb)
-            end
-            all_auth_ids = [raw_id_of[a] for a in vcat(creators, contributors)]
-            for x in 1:length(all_auth_ids), y in (x+1):length(all_auth_ids)
-                add_coauthor_link!(db, all_auth_ids[x], all_auth_ids[y]; batch=wb)
-            end
-
-            doc_refs = get(doc, "references", Dict{String, Any}[])
-            if !isempty(doc_refs)
-                ref_ids = String[]
-                for ref in doc_refs
-                    ref_id = get(ref, "ref_id", "")
-                    if !isempty(ref_id)
-                        push!(ref_ids, ref_id)
-                        put_reference!(db, ref; batch=wb)
-                    end
-                end
-                set_document_references!(db, repo, doc_id, ref_ids; batch=wb)
-            end
-
-            RocksDB.write!(rdb, wb)
-            empty!(wb)
-        end
-
-        # Ingest author profiles into RocksDB
-        for a in authors_data
-            a["norm_name"] = normalize_author_name(a["name"])
-        end
+        _ingest_relations!(db, rdb, all_docs, raw_id_of)
         _persist_author_profiles_batched!(db, rdb, authors_data, raw_id_of)
         println("RocksDB populated with $(length(all_docs)) docs and $(length(authors_data)) author profiles.")
 
-        # -------------------------------------------------------------
-        # 1. Index 1: Documents by Content (docs_content_shell.zip)
-        # -------------------------------------------------------------
         println("Refitting the Spanish TextProfile to the corpus for the Document Content Index...")
-        refitted_profile = refit_corpus_profile(base_profile("es"), docs_content_texts; verbose=true)
+        refitted = refit_corpus_profile(base_profile("es"), docs_content_texts; verbose=true)
+        keys = String[doc_key_of(r, id) for (r, id) in doc_keys]
 
-        docs_content_voc_full = refitted_profile.model.voc
-        docs_content_voc = filter_tokens(t -> t.ndocs >= DOCS_CONTENT_MIN_NDOCS, docs_content_voc_full)
-        println("  docs_content vocabulary pruned by min_ndocs=$DOCS_CONTENT_MIN_NDOCS: $(vocsize(docs_content_voc_full)) -> $(vocsize(docs_content_voc)) tokens")
+        content_voc = filter_tokens(t -> t.ndocs >= DOCS_CONTENT_MIN_NDOCS, refitted.model.voc)
+        println("  docs_content vocabulary pruned by min_ndocs=$DOCS_CONTENT_MIN_NDOCS: $(vocsize(refitted.model.voc)) -> $(vocsize(content_voc)) tokens")
+        println("Building BM25 for Documents by Content ($(vocsize(content_voc)) tokens)..."); flush(stdout)
+        build_text_project!(building, DOCS_CONTENT, index_profile(content_voc, refitted), docs_content_texts,
+                            keys, [doc_meta(d) for d in all_docs]; partition_by="repo")
 
-        println("Building BM25 for Documents by Content ($(vocsize(docs_content_voc)) tokens)...")
-        docs_content_invfile = BM25InvertedFile(docs_content_voc)
-        ctx1 = InvertedFileContext()
-        append_items!(docs_content_invfile, ctx1, docs_content_texts)
+        println("Building BM25 for Documents by References..."); flush(stdout)
+        refs_voc_full = Vocabulary(refitted.model.voc.textconfig, docs_refs_texts)
+        refs_voc = filter_tokens(t -> t.ndocs >= DOCS_REFS_MIN_NDOCS, refs_voc_full)
+        println("  docs_refs vocabulary pruned by min_ndocs=$DOCS_REFS_MIN_NDOCS: $(vocsize(refs_voc_full)) -> $(vocsize(refs_voc)) tokens")
+        build_text_project!(building, DOCS_REFS, index_profile(refs_voc, refitted), docs_refs_texts, keys,
+                            [Dict{String,Any}("repo" => r) for (r, _) in doc_keys]; partition_by="repo")
 
-        export_to_rocksdb!(rdb, DOCS_CONTENT, docs_content_invfile)
-        n_ids = export_repo_postings!(rdb, DOCS_CONTENT, docs_content_invfile.adj, id -> (repo_of_doc[id],))
-        println("  docs_content split into $(length(unique(repo_of_doc))) repository indices ($n_ids ids)")
-        save_vocabulary_zip(joinpath(index_dir, "docs_content_vocab.zip"), docs_content_invfile.voc)
-        save_index_shell_zip(joinpath(index_dir, "docs_content_shell.zip");
-                bm25=docs_content_invfile.bm25,
-                doclens=docs_content_invfile.doclens, len=docs_content_invfile.len[],
-                query=docs_content_invfile.query)
-        save_profile(joinpath(index_dir, "profile"), refitted_profile)
-        println("Saved Index 1: docs_content_shell.zip + docs_content_vocab.zip (postings/docvecs in RocksDB)")
-
-        # -------------------------------------------------------------
-        # 2. Index 2: Documents by References (docs_refs_shell.zip)
-        # -------------------------------------------------------------
-        println("Building BM25 for Documents by References...")
-        docs_refs_voc_full = Vocabulary(refitted_profile.model.voc.textconfig, docs_refs_texts)
-        # Bibliographic reference text is extremely long-tailed (proper nouns, journal names,
-        # DOIs/URLs, OCR noise): measured on real data, pruning tokens seen in fewer than
-        # DOCS_REFS_MIN_NDOCS documents cuts vocsize by ~83% while costing only ~4 extra documents
-        # their entire searchable content (out of thousands that had real reference text) — the
-        # rest of the "loss" is documents that had no reference text to begin with either way.
-        docs_refs_voc = filter_tokens(t -> t.ndocs >= DOCS_REFS_MIN_NDOCS, docs_refs_voc_full)
-        println("  docs_refs vocabulary pruned by min_ndocs=$DOCS_REFS_MIN_NDOCS: $(vocsize(docs_refs_voc_full)) -> $(vocsize(docs_refs_voc)) tokens")
-        docs_refs_invfile = BM25InvertedFile(docs_refs_voc)
-        ctx2 = InvertedFileContext()
-        append_items!(docs_refs_invfile, ctx2, docs_refs_texts)
-
-        export_to_rocksdb!(rdb, DOCS_REFS, docs_refs_invfile)
-        save_vocabulary_zip(joinpath(index_dir, "docs_refs_vocab.zip"), docs_refs_invfile.voc)
-        save_index_shell_zip(joinpath(index_dir, "docs_refs_shell.zip");
-                bm25=docs_refs_invfile.bm25,
-                doclens=docs_refs_invfile.doclens, len=docs_refs_invfile.len[],
-                query=docs_refs_invfile.query)
-        println("Saved Index 2: docs_refs_shell.zip + docs_refs_vocab.zip (postings/docvecs in RocksDB)")
-
-        # -------------------------------------------------------------
-        # 3+4. Authors by Name / Profile & Citations — clustering + BM25 build shared with
-        # rebuild_authors_index (see _build_authors_indices! docstring).
-        # -------------------------------------------------------------
-        n_groups = _build_authors_indices!(db, rdb, authors_data, index_dir, refitted_profile.model.voc.textconfig, raw_id_of)
-
-        # Clean up legacy .bin files if present
-        for bin_f in ["bm25.bin", "docs.bin", "authors.bin", "authors_bm25.bin", "authors_topics_bm25.bin", "references.bin", "references_bm25.bin"]
-            p = joinpath(index_dir, bin_f)
-            isfile(p) && rm(p; force=true)
-        end
-
-        println("All 4 lazy BM25 indices and RocksDB backend successfully built.")
+        consolidated = _consolidated_profiles!(db, rdb, authors_data, raw_id_of, index_dir; reuse_authors)
+        _build_author_projects!(building, consolidated, refitted)
 
         println("Precomputing global and per-repo statistics...")
-        precompute_all_statistics!(db, n_groups)
-        println("Statistics precomputed.")
-
+        precompute_all_statistics!(db, all_docs, length(consolidated))
         println("Compacting RocksDB (reclaims write-ahead logs from this bulk-write session)...")
         compact_all!(db)
-        println("Compaction complete.")
-
-        return docs_content_invfile
+        save_profile(joinpath(index_dir, "profile"), refitted)
     finally
         close_database(db)
     end
-end
 
-"""
-    build_repo_indices(; data_dir=DEFAULT_DATA_DIR, index_dir=DEFAULT_INDEX_DIR)
-
-Builds the per-repository indices of `docs_content` and `authors_name` from the global indices
-already stored in RocksDB, without reading the corpus or tokenizing anything. It reads each
-global posting list once and writes it split by repository (see
-[`LazyBM25.export_repo_postings!`](@ref)). `build_search_index` and `rebuild_authors_index` write
-these lists too; this function is for a database built before they did.
-"""
-function build_repo_indices(; data_dir=DEFAULT_DATA_DIR, index_dir=DEFAULT_INDEX_DIR)
-    db = open_database(joinpath(data_dir, "rocksdb"); create_if_missing=false)
-    rdb = rocksdb_handle(db)
-    try
-        docs_inv, doc_keys = load_docs_content_index(db; index_dir)
-        docs_inv === nothing && error("No hay índice docs_content en '$index_dir'. Corre 'reposmx prepare-index' primero.")
-        t = time()
-        repo_of_doc = _save_repo_table_from_doc_keys!(rdb, collect(doc_keys))
-        n_ids = export_repo_postings!(rdb, DOCS_CONTENT, docs_inv.adj, id -> (repo_of_doc[id],))
-        println("docs_content: $(length(unique(repo_of_doc))) repositorios, $n_ids ids, $(round(time() - t; digits=1)) s")
-
-        auth_inv, author_keys = load_authors_name_index(db; index_dir)
-        if auth_inv === nothing
-            println("authors_name: no hay índice; se omite")
-        else
-            t = time()
-            repos = Vector{Vector{String}}(undef, length(author_keys))
-            for i in eachindex(repos)
-                p = get_consolidated_profile(db, author_keys[i])
-                repos[i] = p === nothing ? String[] : String.(get(p, "repos", String[]))
-            end
-            _export_author_repo_postings!(rdb, auth_inv.adj, i -> repos[i])
-            println("authors_name: $(length(author_keys)) autores, $(round(time() - t; digits=1)) s")
-        end
-        compact_all!(db)
-    finally
-        close_database(db)
+    _replace_dir!(workdir, building)
+    _replace_dir!(db_path, db_building)
+    for f in LEGACY_INDEX_FILES
+        rm(joinpath(index_dir, f); force=true)
     end
+    println("The 4 engine projects and the RocksDB backend were built.")
     return nothing
-end
-
-"""
-    load_docs_content_index(db::Database; index_dir=DEFAULT_INDEX_DIR)
-
-Loads the vocabulary from its `.zip` (via `VocabIO.load_vocabulary_zip`) plus the small shell —
-BM25 params/doc lengths/query pipeline — from its own `.zip` (via
-`IndexShellIO.load_index_shell_zip`; see `IndexShellIO.save_index_shell_zip`'s docstring for why
-this replaced a JLD2
-`jldsave`/`JLD2.load` round-trip), and assembles a `BM25InvertedFile` whose posting lists and
-per-document term vectors are read lazily from RocksDB (`postings`/`docvecs` column families)
-instead of being deserialized eagerly into RAM.
-"""
-function load_docs_content_index(db::Union{Database, Nothing}; index_dir=DEFAULT_INDEX_DIR)
-    f = joinpath(index_dir, "docs_content_shell.zip")
-    vf = joinpath(index_dir, "docs_content_vocab.zip")
-    (db === nothing || !isfile(f) || !isfile(vf)) && return (nothing, Tuple{String, String}[])
-    d = load_index_shell_zip(f)
-    voc = load_vocabulary_zip(vf)
-    rdb = rocksdb_handle(db)
-    invfile = assemble_bm25(rdb, DOCS_CONTENT, voc, d.bm25, d.doclens, d.len, d.query)
-    return (invfile, LazyDocKeys(rdb, length(d.doclens)))
-end
-
-"""
-    load_docs_refs_index(db::Database; index_dir=DEFAULT_INDEX_DIR)
-"""
-function load_docs_refs_index(db::Union{Database, Nothing}; index_dir=DEFAULT_INDEX_DIR)
-    f = joinpath(index_dir, "docs_refs_shell.zip")
-    vf = joinpath(index_dir, "docs_refs_vocab.zip")
-    (db === nothing || !isfile(f) || !isfile(vf)) && return (nothing, Tuple{String, String}[])
-    d = load_index_shell_zip(f)
-    voc = load_vocabulary_zip(vf)
-    rdb = rocksdb_handle(db)
-    invfile = assemble_bm25(rdb, DOCS_REFS, voc, d.bm25, d.doclens, d.len, d.query)
-    return (invfile, LazyDocKeys(rdb, length(d.doclens)))
-end
-
-"""
-    load_authors_name_index(db::Database; index_dir=DEFAULT_INDEX_DIR)
-"""
-function load_authors_name_index(db::Union{Database, Nothing}; index_dir=DEFAULT_INDEX_DIR)
-    f = joinpath(index_dir, "authors_name_shell.zip")
-    vf = joinpath(index_dir, "authors_name_vocab.zip")
-    (db === nothing || !isfile(f) || !isfile(vf)) && return (nothing, String[])
-    d = load_index_shell_zip(f)
-    voc = load_vocabulary_zip(vf)
-    rdb = rocksdb_handle(db)
-    invfile = assemble_bm25(rdb, AUTHORS_NAME, voc, d.bm25, d.doclens, d.len, d.query)
-    return (invfile, LazyAuthorKeys(rdb, length(d.doclens)))
-end
-
-"""
-    load_authors_profile_index(db::Database; index_dir=DEFAULT_INDEX_DIR)
-"""
-function load_authors_profile_index(db::Union{Database, Nothing}; index_dir=DEFAULT_INDEX_DIR)
-    f = joinpath(index_dir, "authors_profile_shell.zip")
-    vf = joinpath(index_dir, "authors_profile_vocab.zip")
-    (db === nothing || !isfile(f) || !isfile(vf)) && return (nothing, String[])
-    d = load_index_shell_zip(f)
-    voc = load_vocabulary_zip(vf)
-    rdb = rocksdb_handle(db)
-    invfile = assemble_bm25(rdb, AUTHORS_PROFILE, voc, d.bm25, d.doclens, d.len, d.query)
-    return (invfile, LazyAuthorKeys(rdb, length(d.doclens)))
 end
 
 """
