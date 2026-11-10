@@ -1,13 +1,14 @@
 ---
 name: julia-app-compile-latency
-description: Diagnóstico y arreglo de arranque lento en CLIs/apps de Julia (julia -m Module, Pkg.Apps, @main) — separar los tres costos (precompilación de paquetes en cada arranque, carga de paquetes, compilación de métodos), compilación anticipada de ramas nunca ejecutadas, deserialización genérica (JLD2), manifiestos de app que quedan obsoletos con dependencias dev, y las herramientas (--trace-compile + --trace-compile-timing, Base.invokelatest, despacho por Dict, PrecompileTools, juliac/--trim) para diagnosticarlo y evitarlo. Úsala para cualquier app/CLI de Julia con arranque lento, no solo este repo.
+description: Diagnóstico y arreglo de arranque lento en CLIs/apps de Julia (julia -m Module, Pkg.Apps, @main) — separar los tres costos (precompilación de paquetes en cada arranque, carga de paquetes, compilación de métodos), compilación anticipada de ramas nunca ejecutadas, deserialización genérica (JLD2), manifiestos de app que quedan obsoletos con dependencias dev, dependencias pesadas que casi ningún comando usa (carga bajo demanda con Base.require + invokelatest, y su trampa de world age en los valores devueltos), y las herramientas (--trace-compile + --trace-compile-timing, Base.invokelatest, despacho por Dict, PrecompileTools, juliac/--trim) para diagnosticarlo y evitarlo. Úsala para cualquier app/CLI de Julia con arranque lento, no solo este repo.
 ---
 
 # Latencia de arranque en apps/CLIs de Julia
 
-Destilado de dos casos reales medidos: `reposmx --help` tardaba ~40s en imprimir texto estático
-(compilación anticipada), y `textsearch --help` tardaba ~31s (precompilación de paquetes fallida
-en cada invocación). **Son causas distintas con el mismo síntoma**, y confundirlas hace perder
+Destilado de tres casos reales medidos: `reposmx --help` tardaba ~40s en imprimir texto estático
+(compilación anticipada), `textsearch --help` tardaba ~31s (precompilación de paquetes fallida
+en cada invocación), y ya arreglado eso, ~4s por cargar en cada arranque un lector de Parquet que
+casi ningún comando usa. **Son causas distintas con el mismo síntoma**, y confundirlas hace perder
 horas — por eso §0 va antes que nada.
 
 ## Estado verificado
@@ -19,6 +20,8 @@ Medido el **2026-09-09** con **Julia 1.12.7** (juliaup), shims de `Pkg.Apps` ver
 | piso absoluto: `julia --startup-file=no -e ''` | **0.18s** |
 | `reposmx --help` (con `invokelatest`, §3) | **3.3s**, reproducible en frío y en tibio |
 | `textsearch --help` (manifiesto de app obsoleto, §6) | **31-34s**, reproducible, y termina en error |
+| `textsearch --help`, manifiesto ya resuelto (2026-09-24) | **~4.0s**: 207 ms de compilación, el resto carga de paquetes |
+| `textsearch --help` con CSV/Parquet2 bajo demanda (§7, TextSearch.jl #58) | **~1.9s** |
 
 El caso histórico de ReposMx (40s → 3.9s) se midió en una versión anterior de Julia; los 3.3s de
 hoy confirman que el arreglo sigue en pie tras subir a 1.12.
@@ -34,7 +37,7 @@ uno.
 | # | costo | cómo se ve | herramienta |
 |---|---|---|---|
 | 1 | **Precompilación de paquetes al arrancar** | el stderr empieza con `Precompiling packages...`; puede tardar decenas de segundos y **repetirse en cada invocación** si falla | mirar el stderr sin redirigir; §6 |
-| 2 | **Carga de paquetes** (`using X`) | tiempo constante, mismo en todas las invocaciones, incompresible sin cambiar dependencias | `@time using X`; §5 opción 3 |
+| 2 | **Carga de paquetes** (`using X`) | tiempo constante, mismo en todas las invocaciones; se reduce quitando dependencias o **cargándolas solo cuando un comando las necesita** | tiempo marginal por paquete; §7, §5 opción 3 |
 | 3 | **Compilación de métodos en ejecución** | el trabajo trivial (`--help`) tarda tanto como el trabajo real | `--trace-compile` + `--trace-compile-timing`; §1-§4 |
 
 Empieza siempre estableciendo **el piso**: `time julia --startup-file=no -e ''` (aquí: 0.18s). Todo
@@ -242,7 +245,7 @@ Julia App" significa "compilar una vez", y no es así por defecto.
 Esa lectura del shim además te dice dos cosas que vas a necesitar:
 
 - **Qué `Manifest.toml` manda**: el `JULIA_LOAD_PATH` que fija. Puede apuntar al directorio del
-  proyecto que desarrollaste (`reposmx` → `~/Projects/Repositorios-Institucionales/`) o al
+  proyecto que desarrollaste (`reposmx` → `~/Projects/ReposMx/`) o al
   subproyecto del app (`textsearch` → `~/Research/TextSearch.jl/apps/textsearch`). Ese es el
   entorno que tiene que estar resuelto — ver §6.
 - **Con qué `julia` corre**: el shim clava la ruta absoluta del binario de juliaup vigente al
@@ -346,7 +349,116 @@ tarda medio minuto.
 - Cuando una dependencia `dev` gana una dependencia nueva, **todos** los entornos que la consumen
   por `path` quedan obsoletos a la vez, no solo el que estabas usando. Vale la pena enumerarlos.
 
-## 7. Checklist rápido
+## 7. El costo (2): dependencias pesadas que casi ningún comando usa
+
+Tercer caso medido, y el que queda cuando (1) y (3) ya están resueltos: `textsearch --help`
+tardaba **~4.0s** con el manifiesto sano y el despacho por tabla (§3.2) funcionando — la traza
+sumaba **207 ms**, así que no era compilación. Era carga de paquetes, y casi la mitad era un
+solo paquete que solo necesita un formato de entrada.
+
+### 7.1 Medir el costo *marginal* de cada paquete, en orden
+
+`@time using X` aislado miente, porque atribuye a `X` dependencias que otro paquete ya iba a
+cargar. Lo que importa es cuánto agrega cada uno **sobre lo ya cargado**, en el orden en que el
+módulo los carga:
+
+```bash
+julia --startup-file=no --project=apps/tuapp -e '
+t0=time(); @eval using LibreriaPrincipal; t1=time()
+for p in (:ArgParse, :CSV, :Parquet2, :Tables, :JSON3)
+    t=time(); @eval using $p; println(rpad(p,10), round(time()-t; digits=2), "s")
+end
+println("LibreriaPrincipal ", round(t1-t0; digits=2), "s")'
+```
+
+Resultado en textsearch: **Parquet2 1.84s**, TextSearch 1.64s, CSV 0.21s, todo lo demás < 0.2s.
+Parquet2 y CSV solo sirven para leer un corpus en esos formatos; `--help`, `list`, `info`, y
+cualquier comando sobre JSONL los pagaban igual.
+
+**La trampa inversa, que es la intuición de "quitar dependencias":** quitar un paquete que *otra*
+dependencia también carga no ahorra nada. En TextSearch, StatsBase (0.82s) y Accessors (0.36s)
+parecían candidatos — y SimilaritySearch los carga de todos modos. Antes de quitar algo,
+comprueba que nadie más en el grafo lo trae (`grep` en los `Project.toml` de las dependencias
+directas). Lo que sí paga es lo que **solo tu código** trae y **solo algunos comandos** usan.
+
+### 7.2 El patrón: dependencia instalada, cargada bajo demanda
+
+El paquete **sigue en `[deps]`** (así se instala y precompila con el app), pero se quita el
+`using` del módulo y se carga donde se usa:
+
+```julia
+const _PARQUET2 = Base.PkgId(Base.UUID("98572fba-bba0-415d-956f-fa77e587d26d"), "Parquet2")
+
+function _lazy_rows(pkg::Base.PkgId, open_rows, path, key)
+    mod = Base.require(pkg)                              # carga en el primer uso
+    rows = Base.invokelatest(open_rows, mod, path)       # cada llamada al paquete: invokelatest
+    (Base.invokelatest(_table_record, row, key) for row in _LatestWorld(rows))
+end
+
+struct _LatestWorld{T}; it::T; end                       # iterate también es un método del paquete
+Base.IteratorSize(::Type{<:_LatestWorld}) = Base.SizeUnknown()
+Base.iterate(w::_LatestWorld, s...) = Base.invokelatest(iterate, w.it, s...)
+```
+
+**Por qué `invokelatest` en todas partes:** un paquete cargado a mitad de un comando define sus
+métodos en una *world age* más nueva que la del comando en curso. Llamarlos directamente desde el
+código del comando falla con `MethodError ... method too new to be called from this world
+context`. Eso incluye lo que no parece una llamada al paquete: `iterate` sobre su tabla, o
+`Tables.getcolumn` sobre sus filas. El costo es una llamada dinámica por fila frente a decodificar
+la fila — ruido.
+
+### 7.3 La trampa que se escapa: los *valores* devueltos
+
+Envolver las llamadas no basta. Si un valor de un **tipo definido por el paquete** sale del
+`invokelatest` y el comando lo usa después, en su propio mundo, falla igual. Caso real: CSV
+devuelve los campos de texto como `WeakRefStrings.PosLenString` (o `InlineStrings`), y
+`println`/`JSON3.write` de ese valor, ya de vuelta en el comando, reventó con:
+
+```
+MethodError: no method matching iterate(::WeakRefStrings.PosLenString)
+The applicable method may be too new: running in world age 38836, while current world is 38847.
+```
+
+El arreglo: convertir **dentro** del mundo nuevo a tipos que el comando ya conoce, antes de
+devolver — `_plain(v) = v isa AbstractString ? String(v) : v`. Números, `missing` y fechas ya son
+de Base. Un tipo de columna distinto (una lista anidada de Parquet, p. ej.) necesitaría lo mismo,
+y fallaría ruidosamente si no.
+
+### 7.4 El test tiene que correr en un proceso nuevo
+
+Este fallo **no aparece en la suite de tests normal** si el proceso de tests ya cargó el paquete
+(ahí `Base.require` devuelve el módulo ya cargado y no hay mundo nuevo que cruzar). En textsearch,
+`runtests.jl` hace `using CSV` al inicio, así que el test de CSV que ya existía pasaba igual con y
+sin el bug. El test que sí lo atrapa lanza un subproceso limpio y además verifica que el paquete
+**no** esté cargado antes del primer uso, para que un `using` reintroducido en el módulo lo rompa:
+
+```julia
+reader = """
+    using TuApp
+    loaded(name) = any(k -> k.name == name, keys(Base.loaded_modules))
+    println(loaded("CSV"), " ", loaded("Parquet2"))       # debe ser "false false"
+    recs = collect(TuApp.each_record(:csv, ARGS[1], "text"))
+    println(recs[2].second["extra"])                      # usar un VALOR, no solo contarlos
+    """
+out = readchomp(`$(Base.julia_cmd()) --startup-file=no --project=$(Base.active_project()) -e $reader $path`)
+```
+
+Usar un valor devuelto (imprimirlo) es lo que expone §7.3; un `length(recs)` pasaría.
+
+### 7.5 Resultado y cuándo no vale la pena
+
+`textsearch --help`: **~4.0s → ~1.9s** (4 corridas de cada uno, en tibio). Lo que queda (1.64s) es
+TextSearch mismo con SimilaritySearch y sus dependencias pesadas (Distributions/FFTW vía
+MultivariateStats) — bajarlo exige adelgazar la dependencia, no el app.
+
+No vale la pena para paquetes de décimas de segundo que casi todos los comandos usan: el costo en
+`invokelatest`, conversión de valores y un test en subproceso es real. El criterio es **costo
+marginal alto × fracción baja de comandos que lo usan**. Alternativa si el paquete es tuyo o
+admite extensión: una *package extension* (`[weakdeps]` + `[extensions]`) resuelve la carga
+condicional sin world age, pero solo se activa cuando **algo más** carga la dependencia — en un
+CLI que decide por el formato de entrada, `Base.require` explícito es lo que encaja.
+
+## 8. Checklist rápido
 
 **Separar el costo (§0)**
 
@@ -368,11 +480,19 @@ tarda medio minuto.
 8. ¿Un solo punto usa (de)serialización genérica mientras el resto usa formatos planos? Sospecha
    de él como pico aislado (§4).
 
+**Carga de paquetes (§7)**
+
+9. Mide el costo **marginal** de cada paquete en el orden en que el módulo los carga, no aislado.
+10. ¿Un paquete caro que solo algunos comandos usan, y que ninguna otra dependencia trae? Déjalo en
+    `[deps]`, quítale el `using`, y `Base.require` + `invokelatest` donde se use (§7.2).
+11. Convierte los valores que devuelve a tipos de Base dentro del mundo nuevo (§7.3), y pruébalo en
+    un **subproceso** que no lo tenga cargado, usando un valor devuelto (§7.4).
+
 **Lo que queda (§5)**
 
-9. ¿El shim de `Pkg.Apps` de verdad precompila algo, o solo re-ejecuta `julia -m Módulo`? Léelo.
+12. ¿El shim de `Pkg.Apps` de verdad precompila algo, o solo re-ejecuta `julia -m Módulo`? Léelo.
    De paso te dice qué `Manifest.toml` manda y con qué binario de julia corre.
-10. Si el costo restante es la rama que SÍ se usa siempre, la siguiente palanca es
+13. Si el costo restante es la rama que SÍ se usa siempre, la siguiente palanca es
     `PrecompileTools.@compile_workload`, no más despacho dinámico.
-11. Si vas hacia `juliac --trim`, recuerda que el despacho dinámico de §3 es justo lo que el
+14. Si vas hacia `juliac --trim`, recuerda que el despacho dinámico de §3 es justo lo que el
     análisis de alcanzabilidad no puede seguir. Decídelo a conciencia, no lo descubras al final.
