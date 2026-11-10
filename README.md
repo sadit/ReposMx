@@ -35,8 +35,13 @@ depender de servicios externos. Los cuatro índices de texto son proyectos de
 - **Acoplamiento bibliográfico**: qué autores citan las mismas fuentes, para sugerir
   investigadores afines.
 - **Búsqueda profunda por párrafos** dentro de un documento específico.
-- **Persistencia embebida con RocksDB**: filtrado facetado (por año, tipo, repositorio,
-  disciplina) en sub-milisegundos, sin depender de un servidor de base de datos externo.
+- **Persistencia embebida, sin servidor de base de datos externo**: los documentos se guardan
+  en el proyecto `docs_content` de `SimilaritySearchEngine.jl`, junto con su índice. Autores,
+  citas, tópicos y estadísticas van en un RocksDB propio, cada uno en su *column family*, con
+  operaciones de conjuntos por prefijo (los documentos o autores de un tema, intersectados con un
+  repositorio). El filtro por repositorio busca solo en la partición de ese repositorio. Los
+  filtros por tipo, palabra clave y rango de años se aplican sobre los candidatos que recupera
+  BM25.
 - **Tres formas de usarlo**: shell interactiva en terminal, servidor web con API REST, o como
   librería de Julia.
 
