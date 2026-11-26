@@ -1,6 +1,7 @@
 module Parser
 
 using PDFIO
+using ..Config: DEFAULT_DATA_DIR
 using ..Storage: get_repo_dir, list_repo_names
 
 export extract_text_from_file, parse_repository_documents, parse_all_documents

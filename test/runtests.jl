@@ -9,6 +9,43 @@ using TOML
 using JSON3
 
 @testset "ReposMx Tests" begin
+    @testset "Storage repo info round trip (isolated)" begin
+        # JSON.jl v1 parses info.json into a JSON.Object, not a Dict. save_repo_info accepted only a
+        # Dict, so every harvest failed to record its date after appending its records.
+        mktempdir() do dir
+            ReposMx.Storage.save_repo_info("r", Dict{String,Any}("repo" => "r", "total_records" => 1); data_dir=dir)
+            info = ReposMx.Storage.get_repo_info("r"; data_dir=dir)
+            info["last_harvest"] = "2026-11-25T00:00:00"
+            ReposMx.Storage.save_repo_info("r", info; data_dir=dir)
+            @test ReposMx.Storage.get_repo_info("r"; data_dir=dir)["last_harvest"] == "2026-11-25T00:00:00"
+        end
+    end
+
+    @testset "OAI harvest advances last_harvest only when complete (isolated)" begin
+        # A harvest that fails (network, HTTP or XML error) must keep the previous date: otherwise
+        # the next incremental harvest skips everything published since the last good one.
+        mktempdir() do dir
+            data = joinpath(dir, "data")
+            ReposMx.Storage.save_repo_info("r", Dict{String,Any}("repo" => "r", "last_harvest" => "2025-01-01T00:00:00");
+                                           data_dir=data)
+            redirect_stderr(devnull) do
+                ReposMx.OAI.harvest_repository("r", "file://" * joinpath(dir, "missing.xml"); data_dir=data)
+            end
+            @test ReposMx.Storage.get_repo_info("r"; data_dir=data)["last_harvest"] == "2025-01-01T00:00:00"
+
+            ok = joinpath(dir, "ok.xml")
+            write(ok, """<?xml version="1.0"?><OAI-PMH xmlns="http://www.openarchives.org/OAI/2.0/"><ListRecords>""" *
+                      """<record><header><identifier>oai:x:1</identifier></header></record></ListRecords></OAI-PMH>""")
+            res = redirect_stderr(devnull) do
+                ReposMx.OAI.harvest_repository("r", "file://" * ok; data_dir=data)
+            end
+            @test res == (1, 1)
+            info = ReposMx.Storage.get_repo_info("r"; data_dir=data)
+            @test info["last_harvest"] > "2025-01-01T00:00:00"
+            @test info["total_records"] == 1
+        end
+    end
+
     @testset "Corpus keyword parsing (parse_keywords / CTI catalog resolution, isolated)" begin
         # Guards the fix for the most common dc:subject shape in this corpus, the DRIVER/OpenAIRE
         # "info:eu-repo/classification/<esquema>/<valor>" convention: parse_keywords used to split

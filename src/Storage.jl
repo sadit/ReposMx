@@ -49,11 +49,11 @@ function get_repo_info(reponame::AbstractString; data_dir=DEFAULT_DATA_DIR)
 end
 
 """
-    save_repo_info(reponame, info::Dict; data_dir=DEFAULT_DATA_DIR)
+    save_repo_info(reponame, info::AbstractDict; data_dir=DEFAULT_DATA_DIR)
 
 Saves `info.json` for a repository.
 """
-function save_repo_info(reponame::AbstractString, info::Dict; data_dir=DEFAULT_DATA_DIR)
+function save_repo_info(reponame::AbstractString, info::AbstractDict; data_dir=DEFAULT_DATA_DIR)
     rdir = get_repo_dir(reponame; data_dir)
     mkpath(rdir)
     info_file = joinpath(rdir, "info.json")

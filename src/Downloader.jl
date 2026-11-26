@@ -3,7 +3,7 @@ module Downloader
 using Downloads, EzXML, JSON, URIs, SHA, Dates
 using Downloads: request
 using ..Config: DEFAULT_HEADERS, DEFAULT_OAI_NS, DEFAULT_DATA_DIR
-using ..Storage: get_repo_dir, load_metadata_records, save_metadata_records
+using ..Storage: get_repo_dir, load_metadata_records, save_metadata_records, list_repo_names
 
 export download_repository_files, download_all_files
 
@@ -18,6 +18,17 @@ function parse_manuscript_url(line::AbstractString, valid_exts::Set{String})
     occursin(r"aviso.+privacidad"i, url) && return (nothing, nothing)
     occursin(r"licencia"i, url) && return (nothing, nothing)
     return (url, lowercase(ext))
+end
+
+# The extension of the path of `url`, or "" for a URL that does not parse (some records carry
+# URLs with raw spaces); one such record must not stop the downloads of its repository.
+function _url_ext(url::AbstractString)
+    uri = try
+        parse(URI, url)
+    catch
+        return ""
+    end
+    return splitext(uri.path)[2]
 end
 
 function extract_document_url(landing_url::AbstractString; timeout::Float64=30.0, valid_exts=VALID_EXTENSIONS)
@@ -44,15 +55,23 @@ function extract_document_url(landing_url::AbstractString; timeout::Float64=30.0
 end
 
 """
-    download_repository_files(reponame; data_dir=DEFAULT_DATA_DIR, timeout=120.0, max_downloads=nothing)
+    download_repository_files(reponame; data_dir=DEFAULT_DATA_DIR, timeout=120.0, max_downloads=nothing,
+                              retry_attempted=false)
 
 Downloads pending PDF/document files for a repository.
+
+A record is attempted once. An attempt leaves a `status` in the record: `"200"` with its `file`,
+the failed response of the download, or `"nodoc"` when no document URL was found (the record has
+no URL, its landing page did not answer, or the page links no document). Records with a `status`
+and no file are skipped, so each run only visits new records; `retry_attempted=true` visits
+them again.
 """
 function download_repository_files(
     reponame::AbstractString;
     data_dir=DEFAULT_DATA_DIR,
     timeout::Float64=120.0,
-    max_downloads::Union{Int, Nothing}=nothing
+    max_downloads::Union{Int, Nothing}=nothing,
+    retry_attempted::Bool=false
 )
     rdir = get_repo_dir(reponame; data_dir)
     files_dir = joinpath(rdir, "files")
@@ -74,6 +93,7 @@ function download_repository_files(
         if curr_file !== nothing && isfile(curr_file)
             continue
         end
+        retry_attempted || isempty(string(get(r, "status", ""))) || continue
         
         xml = get(r, "xml", "")
         isempty(xml) && continue
@@ -94,21 +114,29 @@ function download_repository_files(
             end
         end
         
-        item_url === nothing && continue
+        if item_url === nothing
+            r["status"] = "nodoc"
+            modified = true
+            continue
+        end
         
         # Check if item_url itself is a direct file
-        _, ext = splitext(parse(URI, item_url).path)
+        ext = _url_ext(item_url)
         doc_url = if lowercase(ext) in VALID_EXTENSIONS
             item_url
         else
             extract_document_url(item_url; timeout)
         end
         
-        doc_url === nothing && continue
+        if doc_url === nothing
+            r["status"] = "nodoc"
+            modified = true
+            continue
+        end
         
         # Target file path with SHA256 of XML
         file_hash = bytes2hex(sha256(xml))
-        _, file_ext = splitext(parse(URI, doc_url).path)
+        file_ext = _url_ext(doc_url)
         isempty(file_ext) && (file_ext = ".pdf")
         target_path = joinpath(files_dir, "$file_hash$file_ext")
         
@@ -146,14 +174,15 @@ function download_repository_files(
 end
 
 """
-    download_all_files(; data_dir=DEFAULT_DATA_DIR, repos=nothing, timeout=120.0)
+    download_all_files(; data_dir=DEFAULT_DATA_DIR, repos=nothing, timeout=120.0, retry_attempted=false)
 
-Runs document downloads across all repositories in parallel.
+Runs document downloads across all repositories in parallel (see [`download_repository_files`](@ref)).
 """
 function download_all_files(;
     data_dir=DEFAULT_DATA_DIR,
     repos::Union{Vector{String}, Nothing}=nothing,
-    timeout::Float64=120.0
+    timeout::Float64=120.0,
+    retry_attempted::Bool=false
 )
     from_repos = repos !== nothing ? repos : list_repo_names(; data_dir)
     println("Starting document downloads for $(length(from_repos)) repositories...")
@@ -161,7 +190,7 @@ function download_all_files(;
     Threads.@threads for i in eachindex(from_repos)
         r = from_repos[i]
         try
-            download_repository_files(r; data_dir, timeout)
+            download_repository_files(r; data_dir, timeout, retry_attempted)
         catch e
             println(stderr, "[$r] Error downloading files: $e")
         end

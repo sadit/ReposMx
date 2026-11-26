@@ -64,6 +64,11 @@ function harvest_repository(
     page = 1
     new_records = 0
     total_processed = 0
+    # The date of the next incremental harvest: when this one started, since the repository may
+    # publish records while it runs. It is saved only if every page was read: after an error, the
+    # next harvest has to ask again from the previous date.
+    started = string(now())
+    complete = false
     
     # Open file for appending
     open(meta_path, "a") do f
@@ -96,6 +101,8 @@ function harvest_repository(
                 code = haskey(oai_error, "code") ? oai_error["code"] : ""
                 msg = nodecontent(oai_error)
                 println(stderr, "[$reponame] OAI response note: code='$code' msg='$msg'")
+                # noRecordsMatch is the normal answer of an incremental harvest with nothing new.
+                complete = code == "noRecordsMatch"
                 break
             end
             
@@ -125,12 +132,14 @@ function harvest_repository(
                 token = strip(nodecontent(resumption))
                 if isempty(token)
                     curr_url = nothing
+                    complete = true
                 else
                     curr_url = resumption_url(endpoint, token)
                     page += 1
                 end
             else
                 curr_url = nothing
+                complete = true
             end
         end
     end
@@ -139,10 +148,11 @@ function harvest_repository(
     info = get_repo_info(reponame; data_dir)
     info["repo"] = String(reponame)
     info["total_records"] = length(existing_ids)
-    info["last_harvest"] = string(now())
+    complete && (info["last_harvest"] = started)
     save_repo_info(reponame, info; data_dir)
-    
-    println(stderr, "[$reponame] Harvest complete: $total_processed seen, $new_records newly added. Total records: $(length(existing_ids))")
+
+    status = complete ? "Harvest complete" : "Harvest incomplete (last_harvest kept)"
+    println(stderr, "[$reponame] $status: $total_processed seen, $new_records newly added. Total records: $(length(existing_ids))")
     return (total_processed, new_records)
 end
 
