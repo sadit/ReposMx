@@ -2,7 +2,7 @@
     EngineIndex
 
 The four text indices of ReposMx as projects of `SimilaritySearchEngine` (docs/plan-motor.md,
-phase 2). Each index is a `FullTextEngine` project with a `BM25InvertedFile`, stored under
+phase 2). Each index is a text project (`TextDocuments` with a `BM25` index), stored under
 `<index_dir>/engine/<name>/`:
 
 | project           | text of each item                         | `doc_id`           | partitions       |
@@ -115,8 +115,8 @@ function build_text_project!(workdir::AbstractString, name::AbstractString, prof
                              texts::AbstractVector{<:AbstractString}, doc_ids::AbstractVector{<:AbstractString},
                              metas::AbstractVector; partition_by::Union{Nothing,AbstractString})
     length(texts) == length(doc_ids) == length(metas) || error("texts, doc_ids and metas differ in length")
-    h = SSE.create_project(workdir, name; engine=SSE.FullTextEngine, backend=SSE.BM25InvertedFile,
-                           textmodel=SSE.BaseProfile(profile), partition_by)
+    h = SSE.create_project(workdir, name, SSE.TextDocuments(SSE.BaseProfile(profile); index=SSE.BM25());
+                           partitions=partition_by === nothing ? nothing : SSE.PartitionBy(partition_by))
     try
         batch = 50_000
         for sp in 1:batch:length(texts)
