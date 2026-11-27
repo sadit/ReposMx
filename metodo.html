@@ -1,0 +1,1626 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="es" xml:lang="es"><head>
+
+<meta charset="utf-8">
+<meta name="generator" content="quarto-1.9.38">
+
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
+
+
+<title>Cómo se hizo – ReposMx</title>
+<style>
+/* Default styles provided by pandoc.
+** See https://pandoc.org/MANUAL.html#variables-for-html for config info.
+*/
+code{white-space: pre-wrap;}
+span.smallcaps{font-variant: small-caps;}
+div.columns{display: flex; gap: min(4vw, 1.5em);}
+div.column{flex: auto; overflow-x: auto;}
+div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+ul.task-list{list-style: none;}
+ul.task-list li input[type="checkbox"] {
+  width: 0.8em;
+  margin: 0 0.8em 0.2em -1em; /* quarto-specific, see https://github.com/quarto-dev/quarto-cli/issues/4556 */ 
+  vertical-align: middle;
+}
+</style>
+
+
+<script src="site_libs/quarto-nav/quarto-nav.js"></script>
+<script src="site_libs/quarto-nav/headroom.min.js"></script>
+<script src="site_libs/clipboard/clipboard.min.js"></script>
+<script src="site_libs/quarto-search/autocomplete.umd.js"></script>
+<script src="site_libs/quarto-search/fuse.min.js"></script>
+<script src="site_libs/quarto-search/quarto-search.js"></script>
+<meta name="quarto:offset" content="./">
+<script src="site_libs/quarto-html/quarto.js" type="module"></script>
+<script src="site_libs/quarto-html/tabsets/tabsets.js" type="module"></script>
+<script src="site_libs/quarto-html/popper.min.js"></script>
+<script src="site_libs/quarto-html/tippy.umd.min.js"></script>
+<script src="site_libs/quarto-html/anchor.min.js"></script>
+<link href="site_libs/quarto-html/tippy.css" rel="stylesheet">
+<link href="site_libs/quarto-html/quarto-syntax-highlighting-15634bcf2e68342d4ad2dfa704d543f6.css" rel="stylesheet" class="quarto-color-scheme" id="quarto-text-highlighting-styles">
+<link href="site_libs/quarto-html/quarto-syntax-highlighting-dark-0a6b7249c26820e032cb0bd839ff02b1.css" rel="stylesheet" class="quarto-color-scheme quarto-color-alternate" id="quarto-text-highlighting-styles">
+<link href="site_libs/quarto-html/quarto-syntax-highlighting-15634bcf2e68342d4ad2dfa704d543f6.css" rel="stylesheet" class="quarto-color-scheme-extra" id="quarto-text-highlighting-styles">
+<script src="site_libs/bootstrap/bootstrap.min.js"></script>
+<link href="site_libs/bootstrap/bootstrap-icons.css" rel="stylesheet">
+<link href="site_libs/bootstrap/bootstrap-30e3431ae5cbac7a5cb1fd616ab7c00b.min.css" rel="stylesheet" append-hash="true" class="quarto-color-scheme" id="quarto-bootstrap" data-mode="light">
+<link href="site_libs/bootstrap/bootstrap-dark-85dbe192ee8f6afe00700f0bc14ac85f.min.css" rel="stylesheet" append-hash="true" class="quarto-color-scheme quarto-color-alternate" id="quarto-bootstrap" data-mode="dark">
+<link href="site_libs/bootstrap/bootstrap-30e3431ae5cbac7a5cb1fd616ab7c00b.min.css" rel="stylesheet" append-hash="true" class="quarto-color-scheme-extra" id="quarto-bootstrap" data-mode="light">
+<script id="quarto-search-options" type="application/json">{
+  "location": "navbar",
+  "copy-button": false,
+  "collapse-after": 3,
+  "panel-placement": "end",
+  "type": "overlay",
+  "limit": 50,
+  "keyboard-shortcut": [
+    "f",
+    "/",
+    "s"
+  ],
+  "show-item-context": false,
+  "language": {
+    "search-no-results-text": "No se han encontrado resultados",
+    "search-matching-documents-text": "documentos encontrados",
+    "search-copy-link-title": "Copiar el enlace en la búsqueda",
+    "search-hide-matches-text": "Ocultar resultados adicionales",
+    "search-more-match-text": "resultado adicional en este documento",
+    "search-more-matches-text": "resultados adicionales en este documento",
+    "search-clear-button-title": "Borrar",
+    "search-text-placeholder": "",
+    "search-detached-cancel-button-title": "Cancelar",
+    "search-submit-button-title": "Enviar",
+    "search-label": "Buscar"
+  }
+}</script>
+
+
+</head>
+
+<body class="nav-fixed quarto-light"><script id="quarto-html-before-body" type="application/javascript">
+    const toggleBodyColorMode = (bsSheetEl) => {
+      const mode = bsSheetEl.getAttribute("data-mode");
+      const bodyEl = window.document.querySelector("body");
+      if (mode === "dark") {
+        bodyEl.classList.add("quarto-dark");
+        bodyEl.classList.remove("quarto-light");
+      } else {
+        bodyEl.classList.add("quarto-light");
+        bodyEl.classList.remove("quarto-dark");
+      }
+    }
+    const toggleBodyColorPrimary = () => {
+      const bsSheetEl = window.document.querySelector("link#quarto-bootstrap:not([rel=disabled-stylesheet])");
+      if (bsSheetEl) {
+        toggleBodyColorMode(bsSheetEl);
+      }
+    }
+    const setColorSchemeToggle = (alternate) => {
+      const toggles = window.document.querySelectorAll('.quarto-color-scheme-toggle');
+      for (let i=0; i < toggles.length; i++) {
+        const toggle = toggles[i];
+        if (toggle) {
+          if (alternate) {
+            toggle.classList.add("alternate");
+          } else {
+            toggle.classList.remove("alternate");
+          }
+        }
+      }
+    };
+    const toggleColorMode = (alternate) => {
+      // Switch the stylesheets
+      const primaryStylesheets = window.document.querySelectorAll('link.quarto-color-scheme:not(.quarto-color-alternate)');
+      const alternateStylesheets = window.document.querySelectorAll('link.quarto-color-scheme.quarto-color-alternate');
+      manageTransitions('#quarto-margin-sidebar .nav-link', false);
+      if (alternate) {
+        // note: dark is layered on light, we don't disable primary!
+        enableStylesheet(alternateStylesheets);
+        for (const sheetNode of alternateStylesheets) {
+          if (sheetNode.id === "quarto-bootstrap") {
+            toggleBodyColorMode(sheetNode);
+          }
+        }
+      } else {
+        disableStylesheet(alternateStylesheets);
+        enableStylesheet(primaryStylesheets)
+        toggleBodyColorPrimary();
+      }
+      manageTransitions('#quarto-margin-sidebar .nav-link', true);
+      // Switch the toggles
+      setColorSchemeToggle(alternate)
+      // Hack to workaround the fact that safari doesn't
+      // properly recolor the scrollbar when toggling (#1455)
+      if (navigator.userAgent.indexOf('Safari') > 0 && navigator.userAgent.indexOf('Chrome') == -1) {
+        manageTransitions("body", false);
+        window.scrollTo(0, 1);
+        setTimeout(() => {
+          window.scrollTo(0, 0);
+          manageTransitions("body", true);
+        }, 40);
+      }
+    }
+    const disableStylesheet = (stylesheets) => {
+      for (let i=0; i < stylesheets.length; i++) {
+        const stylesheet = stylesheets[i];
+        stylesheet.rel = 'disabled-stylesheet';
+      }
+    }
+    const enableStylesheet = (stylesheets) => {
+      for (let i=0; i < stylesheets.length; i++) {
+        const stylesheet = stylesheets[i];
+        if(stylesheet.rel !== 'stylesheet') { // for Chrome, which will still FOUC without this check
+          stylesheet.rel = 'stylesheet';
+        }
+      }
+    }
+    const manageTransitions = (selector, allowTransitions) => {
+      const els = window.document.querySelectorAll(selector);
+      for (let i=0; i < els.length; i++) {
+        const el = els[i];
+        if (allowTransitions) {
+          el.classList.remove('notransition');
+        } else {
+          el.classList.add('notransition');
+        }
+      }
+    }
+    const isFileUrl = () => {
+      return window.location.protocol === 'file:';
+    }
+    const hasAlternateSentinel = () => {
+      let styleSentinel = getColorSchemeSentinel();
+      if (styleSentinel !== null) {
+        return styleSentinel === "alternate";
+      } else {
+        return false;
+      }
+    }
+    const setStyleSentinel = (alternate) => {
+      const value = alternate ? "alternate" : "default";
+      if (!isFileUrl()) {
+        window.localStorage.setItem("quarto-color-scheme", value);
+      } else {
+        localAlternateSentinel = value;
+      }
+    }
+    const getColorSchemeSentinel = () => {
+      if (!isFileUrl()) {
+        const storageValue = window.localStorage.getItem("quarto-color-scheme");
+        return storageValue != null ? storageValue : localAlternateSentinel;
+      } else {
+        return localAlternateSentinel;
+      }
+    }
+    const toggleGiscusIfUsed = (isAlternate, darkModeDefault) => {
+      const baseTheme = document.querySelector('#giscus-base-theme')?.value ?? 'light';
+      const alternateTheme = document.querySelector('#giscus-alt-theme')?.value ?? 'dark';
+      let newTheme = '';
+      if(authorPrefersDark) {
+        newTheme = isAlternate ? baseTheme : alternateTheme;
+      } else {
+        newTheme = isAlternate ? alternateTheme : baseTheme;
+      }
+      const changeGiscusTheme = () => {
+        // From: https://github.com/giscus/giscus/issues/336
+        const sendMessage = (message) => {
+          const iframe = document.querySelector('iframe.giscus-frame');
+          if (!iframe) return;
+          iframe.contentWindow.postMessage({ giscus: message }, 'https://giscus.app');
+        }
+        sendMessage({
+          setConfig: {
+            theme: newTheme
+          }
+        });
+      }
+      const isGiscussLoaded = window.document.querySelector('iframe.giscus-frame') !== null;
+      if (isGiscussLoaded) {
+        changeGiscusTheme();
+      }
+    };
+    const authorPrefersDark = false;
+    const darkModeDefault = authorPrefersDark;
+      document.querySelector('link#quarto-text-highlighting-styles.quarto-color-scheme-extra').rel = 'disabled-stylesheet';
+      document.querySelector('link#quarto-bootstrap.quarto-color-scheme-extra').rel = 'disabled-stylesheet';
+    let localAlternateSentinel = darkModeDefault ? 'alternate' : 'default';
+    // Dark / light mode switch
+    window.quartoToggleColorScheme = () => {
+      // Read the current dark / light value
+      let toAlternate = !hasAlternateSentinel();
+      toggleColorMode(toAlternate);
+      setStyleSentinel(toAlternate);
+      toggleGiscusIfUsed(toAlternate, darkModeDefault);
+      window.dispatchEvent(new Event('resize'));
+    };
+    // Switch to dark mode if need be
+    if (hasAlternateSentinel()) {
+      toggleColorMode(true);
+    } else {
+      toggleColorMode(false);
+    }
+  </script>
+
+<div id="quarto-search-results"></div>
+  <header id="quarto-header" class="headroom fixed-top">
+    <nav class="navbar navbar-expand-lg " data-bs-theme="dark">
+      <div class="navbar-container container-fluid">
+      <div class="navbar-brand-container mx-auto">
+    <a class="navbar-brand" href="./index.html">
+    <span class="navbar-title">ReposMx</span>
+    </a>
+  </div>
+            <div id="quarto-search" class="" title="Buscar"></div>
+          <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarCollapse" aria-controls="navbarCollapse" role="menu" aria-expanded="false" aria-label="Navegación de palanca" onclick="if (window.quartoToggleHeadroom) { window.quartoToggleHeadroom(); }">
+  <span class="navbar-toggler-icon"></span>
+</button>
+          <div class="collapse navbar-collapse" id="navbarCollapse">
+            <ul class="navbar-nav navbar-nav-scroll me-auto">
+  <li class="nav-item">
+    <a class="nav-link" href="./index.html"> 
+<span class="menu-text">Inicio</span></a>
+  </li>  
+  <li class="nav-item">
+    <a class="nav-link" href="./datos.html"> 
+<span class="menu-text">Datos</span></a>
+  </li>  
+  <li class="nav-item">
+    <a class="nav-link active" href="./metodo.html" aria-current="page"> 
+<span class="menu-text">Cómo se hizo</span></a>
+  </li>  
+  <li class="nav-item">
+    <a class="nav-link" href="./repositorio-nacional.html"> 
+<span class="menu-text">Repositorio Nacional</span></a>
+  </li>  
+  <li class="nav-item">
+    <a class="nav-link" href="./mapa.html"> 
+<span class="menu-text">Mapa</span></a>
+  </li>  
+</ul>
+            <ul class="navbar-nav navbar-nav-scroll ms-auto">
+  <li class="nav-item">
+    <a class="nav-link" href="https://github.com/sadit/ReposMx/tree/master/web"> 
+<span class="menu-text">Demo</span></a>
+  </li>  
+</ul>
+          </div> <!-- /navcollapse -->
+            <div class="quarto-navbar-tools">
+  <a href="" class="quarto-color-scheme-toggle quarto-navigation-tool  px-1" onclick="window.quartoToggleColorScheme(); return false;" title="Alternar modo oscuro"><i class="bi"></i></a>
+</div>
+      </div> <!-- /container-fluid -->
+    </nav>
+</header>
+<!-- content -->
+<div id="quarto-content" class="quarto-container page-columns page-rows-contents page-layout-article page-navbar">
+<!-- sidebar -->
+<!-- margin-sidebar -->
+    <div id="quarto-margin-sidebar" class="sidebar margin-sidebar">
+        <nav id="TOC" role="doc-toc" class="toc-active">
+    <h2 id="toc-title">En esta página</h2>
+   
+  <ul>
+  <li><a href="#la-tubería" id="toc-la-tubería" class="nav-link active" data-scroll-target="#la-tubería">La tubería</a></li>
+  <li><a href="#búsqueda-por-palabras" id="toc-búsqueda-por-palabras" class="nav-link" data-scroll-target="#búsqueda-por-palabras">Búsqueda por palabras</a></li>
+  <li><a href="#autores-consolidados" id="toc-autores-consolidados" class="nav-link" data-scroll-target="#autores-consolidados">Autores consolidados</a></li>
+  <li><a href="#búsqueda-por-significado" id="toc-búsqueda-por-significado" class="nav-link" data-scroll-target="#búsqueda-por-significado">Búsqueda por significado</a></li>
+  <li><a href="#meta-disciplinas" id="toc-meta-disciplinas" class="nav-link" data-scroll-target="#meta-disciplinas">Meta-disciplinas</a></li>
+  <li><a href="#la-respuesta-redactada" id="toc-la-respuesta-redactada" class="nav-link" data-scroll-target="#la-respuesta-redactada">La respuesta redactada</a></li>
+  <li><a href="#lo-que-se-probó-y-no-sirvió" id="toc-lo-que-se-probó-y-no-sirvió" class="nav-link" data-scroll-target="#lo-que-se-probó-y-no-sirvió">Lo que se probó y no sirvió</a>
+  <ul class="collapse">
+  <li><a href="#la-clasificación-cti-no-se-aprende" id="toc-la-clasificación-cti-no-se-aprende" class="nav-link" data-scroll-target="#la-clasificación-cti-no-se-aprende">La clasificación CTI no se aprende</a></li>
+  <li><a href="#palabras-clave-por-prototipos" id="toc-palabras-clave-por-prototipos" class="nav-link" data-scroll-target="#palabras-clave-por-prototipos">Palabras clave por prototipos</a></li>
+  </ul></li>
+  <li><a href="#meta-disciplinas-oficiales" id="toc-meta-disciplinas-oficiales" class="nav-link" data-scroll-target="#meta-disciplinas-oficiales">Meta-disciplinas oficiales</a></li>
+  </ul>
+</nav>
+    </div>
+<!-- main -->
+<main class="content" id="quarto-document-content">
+
+
+<header id="title-block-header" class="quarto-title-block default">
+<div class="quarto-title">
+<h1 class="title">Cómo se hizo</h1>
+</div>
+
+
+
+<div class="quarto-title-meta">
+
+    
+  
+    
+  </div>
+  
+
+
+</header>
+
+
+<p>ReposMx es un paquete de Julia (<code>src/</code>) con una línea de comandos (<code>reposmx</code>), una interfaz de terminal y un demo web (<code>web/</code>). Los índices son proyectos de <a href="https://github.com/sadit/SimilaritySearchEngine.jl">SimilaritySearchEngine.jl</a>, sobre <a href="https://github.com/sadit/SimilaritySearch.jl">SimilaritySearch.jl</a> y <a href="https://github.com/sadit/TextSearch.jl">TextSearch.jl</a>; la base de relaciones (autores, citas, temas) es RocksDB.</p>
+<section id="la-tubería" class="level2">
+<h2 class="anchored" data-anchor-id="la-tubería">La tubería</h2>
+<table class="caption-top table">
+<colgroup>
+<col style="width: 33%">
+<col style="width: 33%">
+<col style="width: 33%">
+</colgroup>
+<thead>
+<tr class="header">
+<th>Paso</th>
+<th>Qué hace</th>
+<th>Comando</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Cosecha</td>
+<td>OAI-PMH de cada repositorio, incremental: la fecha de la última cosecha sólo avanza cuando se leyeron todas las páginas</td>
+<td><code>reposmx harvest</code></td>
+</tr>
+<tr class="even">
+<td>Descarga</td>
+<td>El documento que enlaza la página de cada registro; cada registro se intenta una vez</td>
+<td><code>reposmx download</code></td>
+</tr>
+<tr class="odd">
+<td>Texto</td>
+<td>Extracción del texto de los PDF</td>
+<td><code>reposmx parse</code></td>
+</tr>
+<tr class="even">
+<td>Corpus</td>
+<td>Un registro limpio por documento: autores separados, palabras clave, tipo, clasificación CTI, liga, conclusiones y citas</td>
+<td><code>reposmx build-corpus</code></td>
+</tr>
+<tr class="odd">
+<td>Índices</td>
+<td>La base RocksDB, los autores consolidados y cuatro índices de palabras (BM25)</td>
+<td><code>reposmx index</code></td>
+</tr>
+<tr class="even">
+<td>Partes</td>
+<td>De cada documento, las partes que se codifican</td>
+<td><code>reposmx export-units</code></td>
+</tr>
+<tr class="odd">
+<td>Vectores</td>
+<td>Qwen3-Embedding-0.6B en Colab, desde la terminal</td>
+<td><code>colab/orquesta.sh</code></td>
+</tr>
+<tr class="even">
+<td>Índice denso</td>
+<td>Las partes con su vector, cuantizado, con seguidores por clasificación</td>
+<td><code>Dense.build_dense_project</code></td>
+</tr>
+</tbody>
+</table>
+</section>
+<section id="búsqueda-por-palabras" class="level2">
+<h2 class="anchored" data-anchor-id="búsqueda-por-palabras">Búsqueda por palabras</h2>
+<p>Cuatro índices BM25, con un perfil de texto en español ajustado al corpus:</p>
+<ul>
+<li><strong>Documentos</strong>: título, autores, colaboradores, palabras clave, resumen y conclusiones.</li>
+<li><strong>Referencias</strong>: las citas de cada documento, para encontrar quién cita una obra.</li>
+<li><strong>Autores por nombre</strong>: el nombre de cada autor consolidado y su forma con iniciales.</li>
+<li><strong>Autores por perfil</strong>: sus palabras clave, temas y citas, para encontrar autores parecidos.</li>
+</ul>
+<p>Todos están partidos por repositorio, y el de documentos también por la clasificación CTI declarada.</p>
+</section>
+<section id="autores-consolidados" class="level2">
+<h2 class="anchored" data-anchor-id="autores-consolidados">Autores consolidados</h2>
+<p>Un mismo autor aparece con muchos nombres: con o sin segundo apellido, con iniciales, con acentos o sin ellos, en otro orden. Los nombres se agrupan por similitud de cadenas (q-gramas y distancia de edición, con índices métricos de SimilaritySearch) y por evidencia de coautoría; los casos dudosos se corrigen a mano en <code>author_overrides.toml</code>. De 447,279 formas de nombre quedan 234,624 autores, cada uno con su producción, sus coautores y su red de citas.</p>
+</section>
+<section id="búsqueda-por-significado" class="level2">
+<h2 class="anchored" data-anchor-id="búsqueda-por-significado">Búsqueda por significado</h2>
+<p><strong>Qué se codifica.</strong> De cada documento, su ficha (título, autores, palabras clave y resumen) y, si tiene texto completo, las primeras 3 y las últimas 3 partes de su cuerpo: el resumen y la introducción, y la discusión y las conclusiones. Las partes se cortan en párrafos de hasta 2,000 caracteres, a partir de los encabezados de sección («Resumen», «Introducción», «Conclusiones»…) cuando se encuentran, y fuera la bibliografía. Son 701,588 partes de 329,717 documentos.</p>
+<p><strong>Con qué.</strong> <a href="https://huggingface.co/Qwen/Qwen3-Embedding-0.6B">Qwen3-Embedding-0.6B</a>, un codificador multilingüe de pesos abiertos: los documentos sin instrucción y las consultas con una instrucción en español. Los documentos se codificaron en Colab (una A100, unas dos horas), desde la terminal con <code>google-colab-cli</code>; antes de codificar se compara con 64 vectores hechos con Ollama, que es el que codifica las consultas: coseno mínimo 1.00000.</p>
+<p><strong>El índice.</strong> Vectores de 8 bits con rotación QR, comparados exhaustivamente, partido por repositorio. Contra la búsqueda exacta sobre los mismos vectores en Float32, en 30 consultas reales, el índice recupera los mismos 10 primeros (recuperación 1.0), en 116 ms por consulta contra 67 ms de la exacta (la diferencia es leer los metadatos de los resultados).</p>
+<p><strong>Dentro de la producción de un autor.</strong> Se toman las partes de sus documentos y se comparan exactamente con la consulta.</p>
+</section>
+<section id="meta-disciplinas" class="level2">
+<h2 class="anchored" data-anchor-id="meta-disciplinas">Meta-disciplinas</h2>
+<p>Las palabras clave son la clasificación más fina que ya traen los datos: la pone el 74 % de los documentos de texto, contra el 29 % que declara un área CTI. Pero vienen sucias, en dos idiomas y con miles de variantes.</p>
+<ol type="1">
+<li><strong>Vocabulario.</strong> Se normalizan (minúsculas, sin acentos), se quitan los nombres y rutas CTI escritos como texto, se reparan los acentos rotos («M?xico») y se dejan las que aparecen en al menos 5 documentos de al menos 2 repositorios (eso quita nombres de edificios y campus): 18,400 palabras.</li>
+<li><strong>Vector de cada palabra.</strong> El promedio de los vectores de los documentos que la usan. Como el codificador es multilingüe, «machine learning» y «aprendizaje automático» quedan juntas. Se quitan las palabras dispersas, cuyos documentos apuntan a todos lados («mexico», «maestria», «general»).</li>
+<li><strong>Grupos.</strong> k-means esférico sobre las palabras, con 120 centros sembrados por recorrido del más lejano (<code>fft</code> de SimilaritySearch).</li>
+<li><strong>Nombres.</strong> <code>qwen3.8-flash</code> lee las palabras de cada grupo y los títulos de sus documentos más cercanos, lo nombra en español y en inglés, lo describe y dice si es un tema de investigación; los genéricos o administrativos y los de menos de 200 documentos se quitan. Quedan 113.</li>
+<li><strong>Documentos.</strong> Cada documento va a la meta-disciplina más cercana a su ficha y, si la segunda está casi igual de cerca, también a ésa (18 % de los documentos).</li>
+</ol>
+<p>La corrida del 26 de noviembre de 2026 quedó como la oficial (<code>metadisciplinas/</code> en el repositorio); la lista completa está al final de esta página y en el <a href="./mapa.html">mapa</a>.</p>
+</section>
+<section id="la-respuesta-redactada" class="level2">
+<h2 class="anchored" data-anchor-id="la-respuesta-redactada">La respuesta redactada</h2>
+<p>Con los primeros 6 resultados, <code>qwen3.6-flash</code> (por la API de Qwen Cloud) redacta uno o dos párrafos y pone después de cada afirmación el número de la fuente que la dice; cada fuente se le da entre marcas, con su número, y se le pide no usar conocimiento de fuera, no copiar pasajes y decir cuando las fuentes no bastan. Propone además preguntas para seguir, que la página ofrece como botones. Es la misma máquina del <a href="https://legistlan.github.io/RAG-Ambiental/">RAG de normas ambientales</a>. La pregunta y los fragmentos se envían al servicio de Qwen; no se guarda el texto de las consultas.</p>
+</section>
+<section id="lo-que-se-probó-y-no-sirvió" class="level2">
+<h2 class="anchored" data-anchor-id="lo-que-se-probó-y-no-sirvió">Lo que se probó y no sirvió</h2>
+<section id="la-clasificación-cti-no-se-aprende" class="level3">
+<h3 class="anchored" data-anchor-id="la-clasificación-cti-no-se-aprende">La clasificación CTI no se aprende</h3>
+<p>Se intentó inferir el área, el campo y la disciplina de los documentos que no la declaran, con los que sí como entrenamiento: votación de los 15 vecinos más cercanos por coseno, y luego sólo con <strong>prototipos limpios</strong> (los documentos cuyo vecindario coincide con su etiqueta y tiene entropía baja). Acierto en un 10 % apartado:</p>
+<table class="caption-top table">
+<colgroup>
+<col style="width: 15%">
+<col style="width: 21%">
+<col style="width: 21%">
+<col style="width: 21%">
+<col style="width: 21%">
+</colgroup>
+<thead>
+<tr class="header">
+<th>Nivel</th>
+<th style="text-align: right;">Vecinos</th>
+<th style="text-align: right;">Prototipos consistentes</th>
+<th style="text-align: right;">50 % más limpio</th>
+<th style="text-align: right;">25 % más limpio</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Área (7)</td>
+<td style="text-align: right;">0.77</td>
+<td style="text-align: right;">0.76</td>
+<td style="text-align: right;">0.73</td>
+<td style="text-align: right;">0.71</td>
+</tr>
+<tr class="even">
+<td>Campo (24)</td>
+<td style="text-align: right;">0.70</td>
+<td style="text-align: right;">0.69</td>
+<td style="text-align: right;">0.65</td>
+<td style="text-align: right;">0.61</td>
+</tr>
+<tr class="odd">
+<td>Disciplina (236)</td>
+<td style="text-align: right;">0.50</td>
+<td style="text-align: right;">0.47</td>
+<td style="text-align: right;">0.40</td>
+<td style="text-align: right;">0.32</td>
+</tr>
+</tbody>
+</table>
+<p>Sólo el 51 % de las disciplinas declaradas coincide con la de sus vecinos, y quien publica no siempre sabe dónde poner su investigación; muchos trabajos mezclan disciplinas. La CTI se queda como metadato para filtrar.</p>
+</section>
+<section id="palabras-clave-por-prototipos" class="level3">
+<h3 class="anchored" data-anchor-id="palabras-clave-por-prototipos">Palabras clave por prototipos</h3>
+<p>Predecir las palabras clave de los documentos que no las traen con el mismo método da precisión@5 de 0.20 y recuperación@5 de 0.43 contra sus palabras propias, y otra vez filtrar a los prototipos limpios lo empeora. La medida exige la palabra idéntica y penaliza sinónimos y traducciones; por eso se pasó a agrupar las palabras.</p>
+</section>
+</section>
+<section id="meta-disciplinas-oficiales" class="level2">
+<h2 class="anchored" data-anchor-id="meta-disciplinas-oficiales">Meta-disciplinas oficiales</h2>
+<table class="caption-top table">
+<colgroup>
+<col style="width: 23%">
+<col style="width: 23%">
+<col style="width: 30%">
+<col style="width: 23%">
+</colgroup>
+<thead>
+<tr class="header">
+<th>Meta-disciplina</th>
+<th>En inglés</th>
+<th style="text-align: right;">Documentos</th>
+<th>Palabras más representativas</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Historia fiscal colonial</td>
+<td>Colonial Fiscal History</td>
+<td style="text-align: right;">15,913</td>
+<td>plata · hacienda · cargas · tribunal · oficios · mineros</td>
+</tr>
+<tr class="even">
+<td>Agricultura protegida y sustratos</td>
+<td>Protected agriculture and substrates</td>
+<td style="text-align: right;">13,313</td>
+<td>cultivo · planta · plantas · fertilizacion · rendimiento · invernadero</td>
+</tr>
+<tr class="odd">
+<td>Historia de la Real Hacienda</td>
+<td>History of the Royal Treasury</td>
+<td style="text-align: right;">10,630</td>
+<td>articulo · ayuntamiento · pueblos · autoridades · noticias · libro</td>
+</tr>
+<tr class="even">
+<td>Políticas y educación superior</td>
+<td>Higher Education Policies</td>
+<td style="text-align: right;">9,541</td>
+<td>educacion superior · planificacion educativa · educacion metas y objetivos · docencia · ensenanza superior · educacion superior mexico</td>
+</tr>
+<tr class="odd">
+<td>Didáctica y estrategias de enseñanza</td>
+<td>Didactics and teaching strategies</td>
+<td style="text-align: right;">7,121</td>
+<td>aprendizaje · ensenanza · teoria y practica de la educacion · proceso de ensenanza aprendizaje · ensenanza aprendizaje · estrategias de aprendizaje</td>
+</tr>
+<tr class="even">
+<td>Literatura hispánica clásica</td>
+<td>Classical Hispanic Literature</td>
+<td style="text-align: right;">7,078</td>
+<td>novela mexicana siglo xx · literatura mexicana siglo xx · autores mexicanos siglo xx · cuentos mexicanos siglo xx · novela cubana siglo xx · novela historica</td>
+</tr>
+<tr class="odd">
+<td>Historia de México</td>
+<td>History of Mexico</td>
+<td style="text-align: right;">6,599</td>
+<td>siglo xix · historia de mexico · mexico historia colonia 1540 1810 · mexico historia siglo xix · revolucion mexicana · nueva espana</td>
+</tr>
+<tr class="even">
+<td>Producción animal tropical</td>
+<td>Tropical animal production</td>
+<td style="text-align: right;">6,271</td>
+<td>ganado vacuno · vacas · caprinos · tropico · ovejas · ganado</td>
+</tr>
+<tr class="odd">
+<td>Filosofía teórica y práctica</td>
+<td>Theoretical and Practical Philosophy</td>
+<td style="text-align: right;">6,039</td>
+<td>ontologia · metafisica · teoria del conocimiento · fenomenologia · ser · dialectica</td>
+</tr>
+<tr class="even">
+<td>Botánica y Taxonomía Vegetal</td>
+<td>Plant Botany and Taxonomy</td>
+<td style="text-align: right;">5,942</td>
+<td>especies · especie · taxonomia · flora · taxonomy · endemismo</td>
+</tr>
+<tr class="odd">
+<td>Tecnología educativa</td>
+<td>Educational technology</td>
+<td style="text-align: right;">5,492</td>
+<td>educational technology · innovaciones educativas · tecnologia educativa · innovacion educativa · ensenanza asistida por computadora · lb1028 3</td>
+</tr>
+<tr class="even">
+<td>Control biológico de plagas</td>
+<td>Biological pest control</td>
+<td style="text-align: right;">5,474</td>
+<td>plagas · control biologico · control biologico de plagas · control de plagas · plaga · plagas agricolas</td>
+</tr>
+<tr class="odd">
+<td>Mejoramiento genético vegetal</td>
+<td>Plant genetic breeding</td>
+<td style="text-align: right;">5,309</td>
+<td>genotypes · germplasm · plant breeding · genes · breeding · selection</td>
+</tr>
+<tr class="even">
+<td>Estudios Agrarios y Agroecología</td>
+<td>Agrarian Studies and Agroecology</td>
+<td style="text-align: right;">5,305</td>
+<td>estudios agrarios · productividad agricola · productores · ecologia agricola · agricultura sustentable · comercializacion</td>
+</tr>
+<tr class="odd">
+<td>Ictiología y Ecología Costera</td>
+<td>Ichthyology and Coastal Ecology</td>
+<td style="text-align: right;">5,025</td>
+<td>peces · poblaciones · efectos ambientales · moluscos · fishes · lagunas costeras</td>
+</tr>
+<tr class="even">
+<td>Literatura mexicana y latinoamericana</td>
+<td>Mexican and Latin American Literature</td>
+<td style="text-align: right;">4,908</td>
+<td>literatura mexicana · analisis del discurso literario · novela · autores mexicanos · literatura y sociedad · literatura latinoamericana</td>
+</tr>
+<tr class="odd">
+<td>Estudios urbanos</td>
+<td>Urban Studies</td>
+<td style="text-align: right;">4,897</td>
+<td>politica urbana · urbanizacion · desarrollo urbano · ciudades y pueblos crecimiento · ciudad · planeacion urbana</td>
+</tr>
+<tr class="even">
+<td>Metabolitos secundarios vegetales</td>
+<td>Plant secondary metabolites</td>
+<td style="text-align: right;">4,854</td>
+<td>compuestos bioactivos · compuestos fenolicos · extractos vegetales · antioxidante · antioxidantes · polifenoles</td>
+</tr>
+<tr class="odd">
+<td>Planeación estratégica en pymes</td>
+<td>Strategic planning in SMEs</td>
+<td style="text-align: right;">4,751</td>
+<td>planificacion empresarial · capacidad empresarial · pequenas y medianas empresas administracion · planificacion estrategica · investigacion de mercado · pyme</td>
+</tr>
+<tr class="even">
+<td>Historia social y política</td>
+<td>Social and Political History</td>
+<td style="text-align: right;">4,700</td>
+<td>acciones · negociacion · asistencia · empleados · monterrey · naturales</td>
+</tr>
+<tr class="odd">
+<td>Estudios de género</td>
+<td>Gender Studies</td>
+<td style="text-align: right;">4,687</td>
+<td>genero · mujeres · estudios de genero · roles sexuales · perspectiva de genero · mujeres condiciones sociales</td>
+</tr>
+<tr class="even">
+<td>Etnografía y cosmovisión indígena</td>
+<td>Indigenous Ethnography and Cosmovision</td>
+<td style="text-align: right;">4,685</td>
+<td>indios de mexico vida social y costumbres · costumbres · indios de mexico · indigena · indios de mexico ritos y ceremonias · etnografia</td>
+</tr>
+<tr class="odd">
+<td>Gestión de recursos hídricos</td>
+<td>Water resources management</td>
+<td style="text-align: right;">4,670</td>
+<td>agua · recursos hidricos · acuiferos · cuencas · gestion del agua · calidad del agua</td>
+</tr>
+<tr class="even">
+<td>Ciencia y tecnología de alimentos</td>
+<td>Food Science and Technology</td>
+<td style="text-align: right;">4,628</td>
+<td>tecnologia de alimentos · alimento funcional · alimentos funcionales · industria alimentaria · composicion quimica · valor nutricional</td>
+</tr>
+<tr class="odd">
+<td>Ecología de Bosques</td>
+<td>Forest Ecology</td>
+<td style="text-align: right;">4,492</td>
+<td>vegetacion · biodiversidad · actividades antropogenicas · paisajes fragmentados · bosques · fragmented landscapes</td>
+</tr>
+<tr class="even">
+<td>Literatura y Artes Escénicas</td>
+<td>Literature and Performing Arts</td>
+<td style="text-align: right;">4,352</td>
+<td>cuentos · ficcion · mitologia · relatos · literatura popular · tiras comicas historietas etc</td>
+</tr>
+<tr class="odd">
+<td>Ciencia Política y Gobierno</td>
+<td>Political Science and Government</td>
+<td style="text-align: right;">4,350</td>
+<td>politica y gobierno · mexico politica y gobierno · democracia · democracia mexico · elecciones mexico · partidos politicos mexico</td>
+</tr>
+<tr class="even">
+<td>Gestión ambiental y sustentabilidad</td>
+<td>Environmental Management and Sustainability</td>
+<td style="text-align: right;">4,270</td>
+<td>proteccion ambiental · politica ambiental · impacto ambiental · sustentabilidad · gestion ambiental · degradacion ambiental</td>
+</tr>
+<tr class="odd">
+<td>Psicología del desarrollo</td>
+<td>Developmental Psychology</td>
+<td style="text-align: right;">4,245</td>
+<td>adolescentes · adolescencia · infancia · relaciones interpersonales · relaciones familiares · emociones</td>
+</tr>
+<tr class="even">
+<td>Tratamiento y biorremediación ambiental</td>
+<td>Environmental treatment and bioremediation</td>
+<td style="text-align: right;">4,215</td>
+<td>water pollution · agua contaminacion · aguas residuales purificacion · agua purificacion · biorremediacion · sewage purification</td>
+</tr>
+<tr class="odd">
+<td>Microbiología y Genética Bacteriana</td>
+<td>Microbiology and Bacterial Genetics</td>
+<td style="text-align: right;">4,160</td>
+<td>microbiology · bacteria · virulencia · genetica bacteriana · pcr · escherichia coli</td>
+</tr>
+<tr class="even">
+<td>Ingeniería de Software</td>
+<td>Software Engineering</td>
+<td style="text-align: right;">4,142</td>
+<td>software de aplicacion desarrollo · tecnologia de la informacion · sistemas de informacion · ingenieria de software · tecnologias de informacion · desarrollo de software</td>
+</tr>
+<tr class="odd">
+<td>Gestión de operaciones y calidad</td>
+<td>Operations and Quality Management</td>
+<td style="text-align: right;">4,058</td>
+<td>administracion de la produccion · mejora continua · administracion de calidad total · administracion industrial · control de calidad · control de procesos industriales</td>
+</tr>
+<tr class="even">
+<td>Servicios de salud</td>
+<td>Health services</td>
+<td style="text-align: right;">4,018</td>
+<td>enfermeria · pacientes · atencion medica · administracion de servicios de salud · servicios de salud · medico y paciente</td>
+</tr>
+<tr class="odd">
+<td>Historia de la Iglesia en México</td>
+<td>History of the Church in Mexico</td>
+<td style="text-align: right;">3,940</td>
+<td>iglesia · conventos · religiosos · doctrina · misa · sermon</td>
+</tr>
+<tr class="even">
+<td>Arquitectura y habitabilidad</td>
+<td>Architecture and Habitability</td>
+<td style="text-align: right;">3,906</td>
+<td>arquitectura y sociedad · vivienda · espacio arquitectura · edificios · confort · arquitectura sustentable</td>
+</tr>
+<tr class="odd">
+<td>Comportamiento y cultura organizacional</td>
+<td>Organizational behavior and culture</td>
+<td style="text-align: right;">3,809</td>
+<td>comportamiento organizacional · efectividad organizacional · organizacion · empresas administracion · cultura organizacional · administracion de personal</td>
+</tr>
+<tr class="even">
+<td>Materiales nanoestructurados</td>
+<td>Nanostructured materials</td>
+<td style="text-align: right;">3,777</td>
+<td>materiales nanoestructurados · nanostructured materials · nanotecnologia · materiales nanoestructurados sintesis · nanoparticles · nanoparticulas metalicas</td>
+</tr>
+<tr class="odd">
+<td>Enseñanza de lenguas y lectura</td>
+<td>Language Teaching and Reading</td>
+<td style="text-align: right;">3,760</td>
+<td>lenguaje y lenguas estudio y ensenanza · comprension de lectura · alfabetizacion · comunicacion oral · lectura · comunicacion escrita</td>
+</tr>
+<tr class="even">
+<td>Economía del desarrollo</td>
+<td>Development economics</td>
+<td style="text-align: right;">3,706</td>
+<td>desarrollo economico · economic development · crecimiento economico · desarrollo economico mexico · economic development mexico · condiciones economicas</td>
+</tr>
+<tr class="odd">
+<td>Catálisis y Química Verde</td>
+<td>Catalysis and Green Chemistry</td>
+<td style="text-align: right;">3,693</td>
+<td>chemical engineering · ingenieria quimica · reacciones quimicas · compuestos organicos · catalysis · oxidacion</td>
+</tr>
+<tr class="even">
+<td>Ciencias de la Información</td>
+<td>Information Science</td>
+<td style="text-align: right;">3,588</td>
+<td>bibliotecas · recursos de informacion · ciencias de la informacion · bibliotecologia · organizacion de la informacion · investigacion bibliotecologica</td>
+</tr>
+<tr class="odd">
+<td>Historia del arte mexicano</td>
+<td>History of Mexican Art</td>
+<td style="text-align: right;">3,489</td>
+<td>arte · artes · grabado · colores · arte y sociedad · artistas</td>
+</tr>
+<tr class="even">
+<td>Desarrollo territorial y rural</td>
+<td>Territorial and Rural Development</td>
+<td style="text-align: right;">3,446</td>
+<td>territorio · factores socioeconomicos · situacion economica · socioeconomic factors · rural · desarrollo rural</td>
+</tr>
+<tr class="odd">
+<td>Biotecnología de fermentación</td>
+<td>Fermentation biotechnology</td>
+<td style="text-align: right;">3,424</td>
+<td>biotechnology · fermentation · energia biomasica · enzimas · biodegradacion · enzymes</td>
+</tr>
+<tr class="even">
+<td>Comunicación y producción científica</td>
+<td>Scientific communication and production</td>
+<td style="text-align: right;">3,422</td>
+<td>investigacion cientifica · comunicacion cientifica · investigadores · produccion cientifica · divulgacion de la ciencia · produccion academica</td>
+</tr>
+<tr class="odd">
+<td>Migración internacional México-Estados Unidos</td>
+<td>Mexico-US International Migration</td>
+<td style="text-align: right;">3,370</td>
+<td>migration · migracion · emigracion e inmigracion · mexico emigracion e inmigracion · emigracion · inmigracion</td>
+</tr>
+<tr class="even">
+<td>Filosofía de la subjetividad</td>
+<td>Philosophy of Subjectivity</td>
+<td style="text-align: right;">3,336</td>
+<td>expresion · critica · otredad · subjetividad · semiotica · cuerpo</td>
+</tr>
+<tr class="odd">
+<td>Teoría social latinoamericana</td>
+<td>Latin American Social Theory</td>
+<td style="text-align: right;">3,292</td>
+<td>ideologia · modernidad · capitalismo · hegemonia · neoliberalismo · intelectuales</td>
+</tr>
+<tr class="even">
+<td>Poesía mexicana contemporánea</td>
+<td>Contemporary Mexican Poetry</td>
+<td style="text-align: right;">3,288</td>
+<td>poesia · poesia mexicana · poetas mexicanos · poesia mexicana siglo xx historia y critica · poetica · poetry</td>
+</tr>
+<tr class="odd">
+<td>Desarrollo y participación comunitaria</td>
+<td>Community Development and Participation</td>
+<td style="text-align: right;">3,288</td>
+<td>participacion social · desarrollo social · participacion · organizacion social · desarrollo de la comunidad · capital social</td>
+</tr>
+<tr class="even">
+<td>Arqueología mesoamericana</td>
+<td>Mesoamerican archaeology</td>
+<td style="text-align: right;">3,243</td>
+<td>prehispanico · ceramica · civilizacion · monumentos · teotihuacan · mixteca</td>
+</tr>
+<tr class="odd">
+<td>Medicina veterinaria y zoonosis</td>
+<td>Veterinary medicine and zoonoses</td>
+<td style="text-align: right;">3,234</td>
+<td>medicina veterinaria y zootecnia · zoonosis · perros · medicina veterinaria · parasitos · frecuencia</td>
+</tr>
+<tr class="even">
+<td>Derecho constitucional y fiscal</td>
+<td>Constitutional and Fiscal Law</td>
+<td style="text-align: right;">3,102</td>
+<td>derecho constitucional mexico · administracion de justicia mexico · jurisprudencia · administracion de justicia · reformas constitucionales mexico · estado de derecho</td>
+</tr>
+<tr class="odd">
+<td>Polímeros y Biomateriales</td>
+<td>Polymers and Biomaterials</td>
+<td style="text-align: right;">3,080</td>
+<td>polymers · materiales biomedicos · biomateriales · biopolimeros · composite materials · biopolymers</td>
+</tr>
+<tr class="even">
+<td>Estudios de identidad y cultura</td>
+<td>Identity and Culture Studies</td>
+<td style="text-align: right;">3,031</td>
+<td>estudios culturales · identidad colectiva · vida cotidiana · identity · cambio social · practicas sociales</td>
+</tr>
+<tr class="odd">
+<td>Ingeniería de Manufactura</td>
+<td>Manufacturing Engineering</td>
+<td style="text-align: right;">3,026</td>
+<td>manufactura · sistemas de manufactura · procesos de manufactura · ingenieria industrial · mct · manufacturing</td>
+</tr>
+<tr class="even">
+<td>Medicina materno-infantil</td>
+<td>Maternal and Child Medicine</td>
+<td style="text-align: right;">3,017</td>
+<td>estadistica medica · monitoreo de pacientes · enfermedades factores de riesgo · cuidados intensivos medicina · comorbilidad · sangre analisis</td>
+</tr>
+<tr class="odd">
+<td>Medios digitales y TIC</td>
+<td>Digital Media and ICTs</td>
+<td style="text-align: right;">3,011</td>
+<td>medios digitales · redes sociales · internet · redes sociales en linea · social networks · internet aspectos sociales</td>
+</tr>
+<tr class="even">
+<td>Estudios del Trabajo</td>
+<td>Labor Studies</td>
+<td style="text-align: right;">2,971</td>
+<td>trabajadores · trabajo y trabajadores · work · empleo · mercado de trabajo · condiciones de trabajo</td>
+</tr>
+<tr class="odd">
+<td>Administración Pública Local</td>
+<td>Local Public Administration</td>
+<td style="text-align: right;">2,966</td>
+<td>administracion publica mexico · gestion publica · politicas publicas · politica publica · gobierno municipal · gobierno local</td>
+</tr>
+<tr class="even">
+<td>Biología experimental con roedores</td>
+<td>Experimental biology with rodents</td>
+<td style="text-align: right;">2,954</td>
+<td>biologia experimental · modelos animales en investigacion · ratas como animales de laboratorio · muerte celular · cell death · estres oxidativo</td>
+</tr>
+<tr class="odd">
+<td>Óptica avanzada y fotónica</td>
+<td>Advanced optics and photonics</td>
+<td style="text-align: right;">2,835</td>
+<td>difraccion · diffraction · microscopy · interferometria · nonlinear optics · polarizacion</td>
+</tr>
+<tr class="even">
+<td>Sistemas de producción agrícola</td>
+<td>Agricultural production systems</td>
+<td style="text-align: right;">2,768</td>
+<td>farming systems · farmers · food production · economic analysis · crops · agricultural development</td>
+</tr>
+<tr class="odd">
+<td>Didáctica de las matemáticas</td>
+<td>Mathematics Education</td>
+<td style="text-align: right;">2,762</td>
+<td>calculo · sciences · ecuaciones · solucion de problemas · rubrica · problemas</td>
+</tr>
+<tr class="even">
+<td>Películas delgadas luminiscentes</td>
+<td>Luminescent thin films</td>
+<td style="text-align: right;">2,701</td>
+<td>peliculas delgadas · fotoluminiscencia · optical properties · thin films · semiconductors · silicon</td>
+</tr>
+<tr class="odd">
+<td>Transferencia de calor y fluidos</td>
+<td>Heat and Fluid Transfer</td>
+<td style="text-align: right;">2,653</td>
+<td>dinamica de fluidos · thermodynamics · fluid dynamics · calor transmision · dinamica de fluidos computacional · computational fluid dynamics</td>
+</tr>
+<tr class="even">
+<td>Finanzas y Mercados</td>
+<td>Finance and Markets</td>
+<td style="text-align: right;">2,646</td>
+<td>finanzas · finance · instituciones financieras · mercado de capitales · empresas finanzas · financiamiento</td>
+</tr>
+<tr class="odd">
+<td>Cine y cultura latinoamericana</td>
+<td>Latin American cinema and culture</td>
+<td style="text-align: right;">2,614</td>
+<td>latin america · entretenimiento · cine · historia social · american · recreation</td>
+</tr>
+<tr class="even">
+<td>Estudios de identidad indígena</td>
+<td>Indigenous Identity Studies</td>
+<td style="text-align: right;">2,576</td>
+<td>identidad cultural · etnicidad · indigenas · indigenas de mexico · identidad etnica · pueblos indigenas</td>
+</tr>
+<tr class="odd">
+<td>Derechos Humanos y Bioética</td>
+<td>Human Rights and Bioethics</td>
+<td style="text-align: right;">2,550</td>
+<td>dignidad · justice · dignidad humana · justicia social · human rights · derechos humanos mexico</td>
+</tr>
+<tr class="even">
+<td>Violencia y seguridad pública</td>
+<td>Violence and public security</td>
+<td style="text-align: right;">2,528</td>
+<td>violencia · crimen organizado · delito · seguridad publica · inseguridad · prevencion del delito</td>
+</tr>
+<tr class="odd">
+<td>Ingeniería sísmica estructural</td>
+<td>Structural seismic engineering</td>
+<td style="text-align: right;">2,511</td>
+<td>analisis estructural ingenieria · dinamica de estructuras · estructuras · esfuerzo y tension · diseno de estructuras · sismos</td>
+</tr>
+<tr class="even">
+<td>Metalurgia y Corrosión</td>
+<td>Metallurgy and Corrosion</td>
+<td style="text-align: right;">2,497</td>
+<td>microestructura · microstructure · acero · corrosion · soldadura · corrosion y anticorrosivos</td>
+</tr>
+<tr class="odd">
+<td>Diseño gráfico y visual</td>
+<td>Graphic and Visual Design</td>
+<td style="text-align: right;">2,475</td>
+<td>artes graficas · diseno grafico · disenadores · diseno de producto · design methodology · comunicacion visual</td>
+</tr>
+<tr class="even">
+<td>Energía solar fotovoltaica</td>
+<td>Photovoltaic solar energy</td>
+<td style="text-align: right;">2,401</td>
+<td>produccion de energia electrica · distribucion de energia electrica · recursos energeticos renovables · energia eolica · solar energy · energy efficiency</td>
+</tr>
+<tr class="odd">
+<td>Relaciones Internacionales México</td>
+<td>Mexico International Relations</td>
+<td style="text-align: right;">2,364</td>
+<td>united states · international relations · estados unidos · north america · relaciones exteriores · relaciones</td>
+</tr>
+<tr class="even">
+<td>Nutrición y obesidad infantil</td>
+<td>Childhood nutrition and obesity</td>
+<td style="text-align: right;">2,358</td>
+<td>obesidad · estado nutricional · nutricion humana · sobrepeso · indice de masa corporal · habitos alimenticios</td>
+</tr>
+<tr class="odd">
+<td>Diabetes y enfermedades crónicas</td>
+<td>Diabetes and chronic diseases</td>
+<td style="text-align: right;">2,332</td>
+<td>diabetes · diabetes mellitus · diabetes complicaciones · sistema cardiovascular enfermedades · hipertension · enfermedades cronicas</td>
+</tr>
+<tr class="even">
+<td>Industria eléctrica mexicana</td>
+<td>Mexican electric industry</td>
+<td style="text-align: right;">2,264</td>
+<td>mooc · energias renovables · industria electrica · reforma energetica · eficiencia energetica · consumo de energia</td>
+</tr>
+<tr class="odd">
+<td>Movimientos sociales en México</td>
+<td>Social Movements in Mexico</td>
+<td style="text-align: right;">2,193</td>
+<td>movimientos sociales · aspectos politicos · movimiento social · comunicacion y politica · movimientos sociales mexico · luchas sociales</td>
+</tr>
+<tr class="even">
+<td>Estadística Aplicada y Modelado</td>
+<td>Applied Statistics and Modeling</td>
+<td style="text-align: right;">2,142</td>
+<td>multivariate analysis · estimacion · estadistica matematica · analisis de regresion · modelacion · analisis de varianza</td>
+</tr>
+<tr class="odd">
+<td>Estudios de turismo</td>
+<td>Tourism Studies</td>
+<td style="text-align: right;">2,040</td>
+<td>turismo · estudios de turismo · tourism · turismo sustentable · turismo aspectos sociales · turismo rural</td>
+</tr>
+<tr class="even">
+<td>Epidemiología de enfermedades infecciosas</td>
+<td>Epidemiology of infectious diseases</td>
+<td style="text-align: right;">2,036</td>
+<td>marcadores bioquimicos · biomarcadores · enfermedades transmisibles · major clinical study · severidad · sistema gastrointestinal enfermedades</td>
+</tr>
+<tr class="odd">
+<td>Gravitación y Cosmología</td>
+<td>Gravity and Cosmology</td>
+<td style="text-align: right;">2,005</td>
+<td>relatividad general fisica · teoria del campo cuantico · fisica matematica · cosmology · cosmologia · espacio y tiempo</td>
+</tr>
+<tr class="even">
+<td>Analgesia postoperatoria</td>
+<td>Postoperative analgesia</td>
+<td style="text-align: right;">1,989</td>
+<td>cuidados postoperatorios · cirugia operatoria · abdomen cirugia · analgesicos · dolor tratamiento · anestesicos administracion</td>
+</tr>
+<tr class="odd">
+<td>Oncología ginecológica y mamaria</td>
+<td>Gynecological and Breast Oncology</td>
+<td style="text-align: right;">1,934</td>
+<td>tumores · cancer tratamiento · cancer de mama · mujeres enfermedades · mamas cancer · celulas cancerosas</td>
+</tr>
+<tr class="even">
+<td>Geriatría y Envejecimiento</td>
+<td>Geriatrics and Aging</td>
+<td style="text-align: right;">1,859</td>
+<td>envejecimiento · personas mayores · adulto mayor · older adults · geriatrics · elderly</td>
+</tr>
+<tr class="odd">
+<td>Conocimiento tradicional y agroecología</td>
+<td>Traditional Knowledge and Agroecology</td>
+<td style="text-align: right;">1,835</td>
+<td>conocimiento tradicional · indigenous knowledge · milpa · usos y costumbres · conocimiento ecologico tradicional · modo de vida</td>
+</tr>
+<tr class="even">
+<td>Ingeniería biomédica y neurociencia</td>
+<td>Biomedical engineering and neuroscience</td>
+<td style="text-align: right;">1,806</td>
+<td>ingenieria biomedica · biomedical engineering · electrofisiologia · electroencefalografia · sistemas de imagenes en medicina · electroencephalography</td>
+</tr>
+<tr class="odd">
+<td>Salud reproductiva y materna</td>
+<td>Reproductive and Maternal Health</td>
+<td style="text-align: right;">1,803</td>
+<td>salud reproductiva · embarazo · mujeres embarazadas · educacion sanitaria · reproductive health · atencion prenatal</td>
+</tr>
+<tr class="even">
+<td>Control de Robots</td>
+<td>Robot Control</td>
+<td style="text-align: right;">1,793</td>
+<td>robots sistemas de control · control automatico · robot · robotica · robots · mecatronica</td>
+</tr>
+<tr class="odd">
+<td>Estudios sobre la pandemia de COVID-19</td>
+<td>COVID-19 Pandemic Studies</td>
+<td style="text-align: right;">1,738</td>
+<td>covid 19 · pandemia · covid · coronavirus · pandemic · sars cov 2</td>
+</tr>
+<tr class="even">
+<td>Visión por Computadora</td>
+<td>Computer Vision</td>
+<td style="text-align: right;">1,691</td>
+<td>procesamiento de imagenes tecnicas digitales · procesamiento de imagenes · image analysis · vision por computadora · image processing digital techniques · convolutional neural networks</td>
+</tr>
+<tr class="odd">
+<td>Sistemas embebidos e IoT</td>
+<td>Embedded Systems and IoT</td>
+<td style="text-align: right;">1,661</td>
+<td>sistemas embebidos · arduino · internet de las cosas · sensores · embedded systems · iot</td>
+</tr>
+<tr class="even">
+<td>Historia de la exploración</td>
+<td>History of Exploration</td>
+<td style="text-align: right;">1,599</td>
+<td>america descubrimiento y exploracion · america discovery and exploration · viajes · mexico descripcion y viajes · america historia · america descubrimiento y exploracion espanoles</td>
+</tr>
+<tr class="odd">
+<td>Odontología y Salud Bucal</td>
+<td>Dentistry and Oral Health</td>
+<td style="text-align: right;">1,492</td>
+<td>estomatologia · odontologia · odontopediatria · caries · salud bucal · caries dental</td>
+</tr>
+<tr class="even">
+<td>Interacción Humano-Computadora</td>
+<td>Human-Computer Interaction</td>
+<td style="text-align: right;">1,463</td>
+<td>software de aplicacion · diseno de sistemas centrado en el usuario · human computer interaction · interaccion hombre computadora · interfaces con el usuario sistemas para computadora · desarrollo de sitios web</td>
+</tr>
+<tr class="odd">
+<td>Comercio Internacional y TLCAN</td>
+<td>International Trade and NAFTA</td>
+<td style="text-align: right;">1,440</td>
+<td>libre comercio · internacional · international · comercio internacional · free trade · commerce</td>
+</tr>
+<tr class="even">
+<td>Redes Neuronales y Aprendizaje Profundo</td>
+<td>Neural Networks and Deep Learning</td>
+<td style="text-align: right;">1,417</td>
+<td>aprendizaje automatico · redes neuronales · aprendizaje automatico inteligencia artificial · redes neuronales computacion · aprendizaje profundo · artificial neural network</td>
+</tr>
+<tr class="odd">
+<td>Teología y pastoral</td>
+<td>Theology and Pastoral Studies</td>
+<td style="text-align: right;">1,411</td>
+<td>teologia · jesuitas · espiritualidad · compania de jesus · evangelio · pastoral</td>
+</tr>
+<tr class="even">
+<td>Telecomunicaciones y redes</td>
+<td>Telecommunications and networks</td>
+<td style="text-align: right;">1,287</td>
+<td>telecomunicaciones · redes de computadoras · sistemas inalambricos de comunicacion · comunicaciones digitales · sistemas de comunicacion movil · red</td>
+</tr>
+<tr class="odd">
+<td>Sistemas Dinámicos y Caos</td>
+<td>Dynamical Systems and Chaos</td>
+<td style="text-align: right;">1,287</td>
+<td>sistemas dinamicos · caos · comportamiento caotico en sistemas · dynamics · teoria del control · chaos</td>
+</tr>
+<tr class="even">
+<td>Análisis Funcional y Topología</td>
+<td>Functional Analysis and Topology</td>
+<td style="text-align: right;">1,277</td>
+<td>analisis funcional · teoria de conjuntos · espacios topologicos · procesos de levy</td>
+</tr>
+<tr class="odd">
+<td>Optimización con Metaheurísticas</td>
+<td>Metaheuristic Optimization</td>
+<td style="text-align: right;">1,261</td>
+<td>optimizacion matematica · metaheuristics · mathematical optimization · genetic algorithms · costs</td>
+</tr>
+<tr class="even">
+<td>Historia política comparada</td>
+<td>Comparative political history</td>
+<td style="text-align: right;">1,243</td>
+<td>general · government · siglo xx · liberalismo · ciencia social · politics</td>
+</tr>
+<tr class="odd">
+<td>Procesamiento digital de señales</td>
+<td>Digital signal processing</td>
+<td style="text-align: right;">1,241</td>
+<td>procesamiento de senales · fpga · matlab · computer simulation · filters · cryptography</td>
+</tr>
+<tr class="even">
+<td>Integridad de señal y modelado</td>
+<td>Signal Integrity and Modeling</td>
+<td style="text-align: right;">1,069</td>
+<td>signal integrity · cad · surrogate modeling · kriging · artificial neural networks ann · transmission lines</td>
+</tr>
+<tr class="odd">
+<td>Teoría de grafos y algoritmos</td>
+<td>Graph Theory and Algorithms</td>
+<td style="text-align: right;">972</td>
+<td>algoritmo · graph theory · algoritmos geneticos · teoria de grafos · criptografia</td>
+</tr>
+<tr class="even">
+<td>Procesamiento de lenguaje natural</td>
+<td>Natural Language Processing</td>
+<td style="text-align: right;">956</td>
+<td>procesamiento de lenguaje natural computacion · natural language processing · information retrieval · mineria de datos · web semantica</td>
+</tr>
+<tr class="odd">
+<td>Física Matemática Cuántica</td>
+<td>Mathematical Quantum Physics</td>
+<td style="text-align: right;">758</td>
+<td>quantum theory · mecanica cuantica · ecuacion de schrodinger · mathematical physics · quimica cuantica · quantum optics</td>
+</tr>
+<tr class="even">
+<td>Empresas familiares y sucesión</td>
+<td>Family businesses and succession</td>
+<td style="text-align: right;">309</td>
+<td>empresas familiares · sucesion · legado · business model canvas · liderazgo femenino · protocolo familiar</td>
+</tr>
+<tr class="odd">
+<td>Narrativa del terrorismo</td>
+<td>Terrorism Narrative</td>
+<td style="text-align: right;">271</td>
+<td>ciberespacio · performance · testimonios · islam · medio oriente · trauma</td>
+</tr>
+</tbody>
+</table>
+
+
+</section>
+
+</main> <!-- /main -->
+<script id="quarto-html-after-body" type="application/javascript">
+  window.document.addEventListener("DOMContentLoaded", function (event) {
+    // Ensure there is a toggle, if there isn't float one in the top right
+    if (window.document.querySelector('.quarto-color-scheme-toggle') === null) {
+      const a = window.document.createElement('a');
+      a.classList.add('top-right');
+      a.classList.add('quarto-color-scheme-toggle');
+      a.href = "";
+      a.onclick = function() { try { window.quartoToggleColorScheme(); } catch {} return false; };
+      const i = window.document.createElement("i");
+      i.classList.add('bi');
+      a.appendChild(i);
+      window.document.body.appendChild(a);
+    }
+    setColorSchemeToggle(hasAlternateSentinel())
+    const icon = "";
+    const anchorJS = new window.AnchorJS();
+    anchorJS.options = {
+      placement: 'right',
+      icon: icon
+    };
+    anchorJS.add('.anchored');
+    const isCodeAnnotation = (el) => {
+      for (const clz of el.classList) {
+        if (clz.startsWith('code-annotation-')) {                     
+          return true;
+        }
+      }
+      return false;
+    }
+    const onCopySuccess = function(e) {
+      // button target
+      const button = e.trigger;
+      // don't keep focus
+      button.blur();
+      // flash "checked"
+      button.classList.add('code-copy-button-checked');
+      var currentTitle = button.getAttribute("title");
+      button.setAttribute("title", "Copiado");
+      let tooltip;
+      if (window.bootstrap) {
+        button.setAttribute("data-bs-toggle", "tooltip");
+        button.setAttribute("data-bs-placement", "left");
+        button.setAttribute("data-bs-title", "Copiado");
+        tooltip = new bootstrap.Tooltip(button, 
+          { trigger: "manual", 
+            customClass: "code-copy-button-tooltip",
+            offset: [0, -8]});
+        tooltip.show();    
+      }
+      setTimeout(function() {
+        if (tooltip) {
+          tooltip.hide();
+          button.removeAttribute("data-bs-title");
+          button.removeAttribute("data-bs-toggle");
+          button.removeAttribute("data-bs-placement");
+        }
+        button.setAttribute("title", currentTitle);
+        button.classList.remove('code-copy-button-checked');
+      }, 1000);
+      // clear code selection
+      e.clearSelection();
+    }
+    const getTextToCopy = function(trigger) {
+      const outerScaffold = trigger.parentElement.cloneNode(true);
+      const codeEl = outerScaffold.querySelector('code');
+      for (const childEl of codeEl.children) {
+        if (isCodeAnnotation(childEl)) {
+          childEl.remove();
+        }
+      }
+      return codeEl.innerText;
+    }
+    const clipboard = new window.ClipboardJS('.code-copy-button:not([data-in-quarto-modal])', {
+      text: getTextToCopy
+    });
+    clipboard.on('success', onCopySuccess);
+    if (window.document.getElementById('quarto-embedded-source-code-modal')) {
+      const clipboardModal = new window.ClipboardJS('.code-copy-button[data-in-quarto-modal]', {
+        text: getTextToCopy,
+        container: window.document.getElementById('quarto-embedded-source-code-modal')
+      });
+      clipboardModal.on('success', onCopySuccess);
+    }
+      var localhostRegex = new RegExp(/^(?:http|https):\/\/localhost\:?[0-9]*\//);
+      var mailtoRegex = new RegExp(/^mailto:/);
+        var filterRegex = new RegExp("https:\/\/sadit\.github\.io\/ReposMx\/");
+      var isInternal = (href) => {
+          return filterRegex.test(href) || localhostRegex.test(href) || mailtoRegex.test(href);
+      }
+      // Inspect non-navigation links and adorn them if external
+     var links = window.document.querySelectorAll('a[href]:not(.nav-link):not(.navbar-brand):not(.toc-action):not(.sidebar-link):not(.sidebar-item-toggle):not(.pagination-link):not(.no-external):not([aria-hidden]):not(.dropdown-item):not(.quarto-navigation-tool):not(.about-link)');
+      for (var i=0; i<links.length; i++) {
+        const link = links[i];
+        if (!isInternal(link.href)) {
+          // undo the damage that might have been done by quarto-nav.js in the case of
+          // links that we want to consider external
+          if (link.dataset.originalHref !== undefined) {
+            link.href = link.dataset.originalHref;
+          }
+        }
+      }
+    function tippyHover(el, contentFn, onTriggerFn, onUntriggerFn) {
+      const config = {
+        allowHTML: true,
+        maxWidth: 500,
+        delay: 100,
+        arrow: false,
+        appendTo: function(el) {
+            return el.parentElement;
+        },
+        interactive: true,
+        interactiveBorder: 10,
+        theme: 'quarto',
+        placement: 'bottom-start',
+      };
+      if (contentFn) {
+        config.content = contentFn;
+      }
+      if (onTriggerFn) {
+        config.onTrigger = onTriggerFn;
+      }
+      if (onUntriggerFn) {
+        config.onUntrigger = onUntriggerFn;
+      }
+      window.tippy(el, config); 
+    }
+    const noterefs = window.document.querySelectorAll('a[role="doc-noteref"]');
+    for (var i=0; i<noterefs.length; i++) {
+      const ref = noterefs[i];
+      tippyHover(ref, function() {
+        // use id or data attribute instead here
+        let href = ref.getAttribute('data-footnote-href') || ref.getAttribute('href');
+        try { href = new URL(href).hash; } catch {}
+        const id = href.replace(/^#\/?/, "");
+        const note = window.document.getElementById(id);
+        if (note) {
+          return note.innerHTML;
+        } else {
+          return "";
+        }
+      });
+    }
+    const xrefs = window.document.querySelectorAll('a.quarto-xref');
+    const processXRef = (id, note) => {
+      // Strip column container classes
+      const stripColumnClz = (el) => {
+        el.classList.remove("page-full", "page-columns");
+        if (el.children) {
+          for (const child of el.children) {
+            stripColumnClz(child);
+          }
+        }
+      }
+      stripColumnClz(note)
+      if (id === null || id.startsWith('sec-')) {
+        // Special case sections, only their first couple elements
+        const container = document.createElement("div");
+        if (note.children && note.children.length > 2) {
+          container.appendChild(note.children[0].cloneNode(true));
+          for (let i = 1; i < note.children.length; i++) {
+            const child = note.children[i];
+            if (child.tagName === "P" && child.innerText === "") {
+              continue;
+            } else {
+              container.appendChild(child.cloneNode(true));
+              break;
+            }
+          }
+          if (window.Quarto?.typesetMath) {
+            window.Quarto.typesetMath(container);
+          }
+          return container.innerHTML
+        } else {
+          if (window.Quarto?.typesetMath) {
+            window.Quarto.typesetMath(note);
+          }
+          return note.innerHTML;
+        }
+      } else {
+        // Remove any anchor links if they are present
+        const anchorLink = note.querySelector('a.anchorjs-link');
+        if (anchorLink) {
+          anchorLink.remove();
+        }
+        if (window.Quarto?.typesetMath) {
+          window.Quarto.typesetMath(note);
+        }
+        if (note.classList.contains("callout")) {
+          return note.outerHTML;
+        } else {
+          return note.innerHTML;
+        }
+      }
+    }
+    for (var i=0; i<xrefs.length; i++) {
+      const xref = xrefs[i];
+      tippyHover(xref, undefined, function(instance) {
+        instance.disable();
+        let url = xref.getAttribute('href');
+        let hash = undefined; 
+        if (url.startsWith('#')) {
+          hash = url;
+        } else {
+          try { hash = new URL(url).hash; } catch {}
+        }
+        if (hash) {
+          const id = hash.replace(/^#\/?/, "");
+          const note = window.document.getElementById(id);
+          if (note !== null) {
+            try {
+              const html = processXRef(id, note.cloneNode(true));
+              instance.setContent(html);
+            } finally {
+              instance.enable();
+              instance.show();
+            }
+          } else {
+            // See if we can fetch this
+            fetch(url.split('#')[0])
+            .then(res => res.text())
+            .then(html => {
+              const parser = new DOMParser();
+              const htmlDoc = parser.parseFromString(html, "text/html");
+              const note = htmlDoc.getElementById(id);
+              if (note !== null) {
+                const html = processXRef(id, note);
+                instance.setContent(html);
+              } 
+            }).finally(() => {
+              instance.enable();
+              instance.show();
+            });
+          }
+        } else {
+          // See if we can fetch a full url (with no hash to target)
+          // This is a special case and we should probably do some content thinning / targeting
+          fetch(url)
+          .then(res => res.text())
+          .then(html => {
+            const parser = new DOMParser();
+            const htmlDoc = parser.parseFromString(html, "text/html");
+            const note = htmlDoc.querySelector('main.content');
+            if (note !== null) {
+              // This should only happen for chapter cross references
+              // (since there is no id in the URL)
+              // remove the first header
+              if (note.children.length > 0 && note.children[0].tagName === "HEADER") {
+                note.children[0].remove();
+              }
+              const html = processXRef(null, note);
+              instance.setContent(html);
+            } 
+          }).finally(() => {
+            instance.enable();
+            instance.show();
+          });
+        }
+      }, function(instance) {
+      });
+    }
+        let selectedAnnoteEl;
+        const selectorForAnnotation = ( cell, annotation) => {
+          let cellAttr = 'data-code-cell="' + cell + '"';
+          let lineAttr = 'data-code-annotation="' +  annotation + '"';
+          const selector = 'span[' + cellAttr + '][' + lineAttr + ']';
+          return selector;
+        }
+        const selectCodeLines = (annoteEl) => {
+          const doc = window.document;
+          const targetCell = annoteEl.getAttribute("data-target-cell");
+          const targetAnnotation = annoteEl.getAttribute("data-target-annotation");
+          const annoteSpan = window.document.querySelector(selectorForAnnotation(targetCell, targetAnnotation));
+          const lines = annoteSpan.getAttribute("data-code-lines").split(",");
+          const lineIds = lines.map((line) => {
+            return targetCell + "-" + line;
+          })
+          let top = null;
+          let height = null;
+          let parent = null;
+          if (lineIds.length > 0) {
+              //compute the position of the single el (top and bottom and make a div)
+              const el = window.document.getElementById(lineIds[0]);
+              top = el.offsetTop;
+              height = el.offsetHeight;
+              parent = el.parentElement.parentElement;
+            if (lineIds.length > 1) {
+              const lastEl = window.document.getElementById(lineIds[lineIds.length - 1]);
+              const bottom = lastEl.offsetTop + lastEl.offsetHeight;
+              height = bottom - top;
+            }
+            if (top !== null && height !== null && parent !== null) {
+              // cook up a div (if necessary) and position it 
+              let div = window.document.getElementById("code-annotation-line-highlight");
+              if (div === null) {
+                div = window.document.createElement("div");
+                div.setAttribute("id", "code-annotation-line-highlight");
+                div.style.position = 'absolute';
+                parent.appendChild(div);
+              }
+              div.style.top = top - 2 + "px";
+              div.style.height = height + 4 + "px";
+              div.style.left = 0;
+              let gutterDiv = window.document.getElementById("code-annotation-line-highlight-gutter");
+              if (gutterDiv === null) {
+                gutterDiv = window.document.createElement("div");
+                gutterDiv.setAttribute("id", "code-annotation-line-highlight-gutter");
+                gutterDiv.style.position = 'absolute';
+                const codeCell = window.document.getElementById(targetCell);
+                const gutter = codeCell.querySelector('.code-annotation-gutter');
+                gutter.appendChild(gutterDiv);
+              }
+              gutterDiv.style.top = top - 2 + "px";
+              gutterDiv.style.height = height + 4 + "px";
+            }
+            selectedAnnoteEl = annoteEl;
+          }
+        };
+        const unselectCodeLines = () => {
+          const elementsIds = ["code-annotation-line-highlight", "code-annotation-line-highlight-gutter"];
+          elementsIds.forEach((elId) => {
+            const div = window.document.getElementById(elId);
+            if (div) {
+              div.remove();
+            }
+          });
+          selectedAnnoteEl = undefined;
+        };
+          // Handle positioning of the toggle
+      window.addEventListener(
+        "resize",
+        throttle(() => {
+          elRect = undefined;
+          if (selectedAnnoteEl) {
+            selectCodeLines(selectedAnnoteEl);
+          }
+        }, 10)
+      );
+      function throttle(fn, ms) {
+      let throttle = false;
+      let timer;
+        return (...args) => {
+          if(!throttle) { // first call gets through
+              fn.apply(this, args);
+              throttle = true;
+          } else { // all the others get throttled
+              if(timer) clearTimeout(timer); // cancel #2
+              timer = setTimeout(() => {
+                fn.apply(this, args);
+                timer = throttle = false;
+              }, ms);
+          }
+        };
+      }
+        // Attach click handler to the DT
+        const annoteDls = window.document.querySelectorAll('dt[data-target-cell]');
+        for (const annoteDlNode of annoteDls) {
+          annoteDlNode.addEventListener('click', (event) => {
+            const clickedEl = event.target;
+            if (clickedEl !== selectedAnnoteEl) {
+              unselectCodeLines();
+              const activeEl = window.document.querySelector('dt[data-target-cell].code-annotation-active');
+              if (activeEl) {
+                activeEl.classList.remove('code-annotation-active');
+              }
+              selectCodeLines(clickedEl);
+              clickedEl.classList.add('code-annotation-active');
+            } else {
+              // Unselect the line
+              unselectCodeLines();
+              clickedEl.classList.remove('code-annotation-active');
+            }
+          });
+        }
+    const findCites = (el) => {
+      const parentEl = el.parentElement;
+      if (parentEl) {
+        const cites = parentEl.dataset.cites;
+        if (cites) {
+          return {
+            el,
+            cites: cites.split(' ')
+          };
+        } else {
+          return findCites(el.parentElement)
+        }
+      } else {
+        return undefined;
+      }
+    };
+    var bibliorefs = window.document.querySelectorAll('a[role="doc-biblioref"]');
+    for (var i=0; i<bibliorefs.length; i++) {
+      const ref = bibliorefs[i];
+      const citeInfo = findCites(ref);
+      if (citeInfo) {
+        tippyHover(citeInfo.el, function() {
+          var popup = window.document.createElement('div');
+          citeInfo.cites.forEach(function(cite) {
+            var citeDiv = window.document.createElement('div');
+            citeDiv.classList.add('hanging-indent');
+            citeDiv.classList.add('csl-entry');
+            var biblioDiv = window.document.getElementById('ref-' + cite);
+            if (biblioDiv) {
+              citeDiv.innerHTML = biblioDiv.innerHTML;
+            }
+            popup.appendChild(citeDiv);
+          });
+          return popup.innerHTML;
+        });
+      }
+    }
+  });
+  </script>
+</div> <!-- /content -->
+<footer class="footer">
+  <div class="nav-footer">
+    <div class="nav-footer-left">
+      &nbsp;
+    </div>   
+    <div class="nav-footer-center">
+<p>ReposMx · estado al 26 de noviembre de 2026</p>
+</div>
+    <div class="nav-footer-right">
+      &nbsp;
+    </div>
+  </div>
+</footer>
+
+
+
+
+</body></html>

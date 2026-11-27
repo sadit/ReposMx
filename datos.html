@@ -1,0 +1,1883 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="es" xml:lang="es"><head>
+
+<meta charset="utf-8">
+<meta name="generator" content="quarto-1.9.38">
+
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
+
+
+<title>Datos – ReposMx</title>
+<style>
+/* Default styles provided by pandoc.
+** See https://pandoc.org/MANUAL.html#variables-for-html for config info.
+*/
+code{white-space: pre-wrap;}
+span.smallcaps{font-variant: small-caps;}
+div.columns{display: flex; gap: min(4vw, 1.5em);}
+div.column{flex: auto; overflow-x: auto;}
+div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+ul.task-list{list-style: none;}
+ul.task-list li input[type="checkbox"] {
+  width: 0.8em;
+  margin: 0 0.8em 0.2em -1em; /* quarto-specific, see https://github.com/quarto-dev/quarto-cli/issues/4556 */ 
+  vertical-align: middle;
+}
+</style>
+
+
+<script src="site_libs/quarto-nav/quarto-nav.js"></script>
+<script src="site_libs/quarto-nav/headroom.min.js"></script>
+<script src="site_libs/clipboard/clipboard.min.js"></script>
+<script src="site_libs/quarto-search/autocomplete.umd.js"></script>
+<script src="site_libs/quarto-search/fuse.min.js"></script>
+<script src="site_libs/quarto-search/quarto-search.js"></script>
+<meta name="quarto:offset" content="./">
+<script src="site_libs/quarto-html/quarto.js" type="module"></script>
+<script src="site_libs/quarto-html/tabsets/tabsets.js" type="module"></script>
+<script src="site_libs/quarto-html/popper.min.js"></script>
+<script src="site_libs/quarto-html/tippy.umd.min.js"></script>
+<script src="site_libs/quarto-html/anchor.min.js"></script>
+<link href="site_libs/quarto-html/tippy.css" rel="stylesheet">
+<link href="site_libs/quarto-html/quarto-syntax-highlighting-15634bcf2e68342d4ad2dfa704d543f6.css" rel="stylesheet" class="quarto-color-scheme" id="quarto-text-highlighting-styles">
+<link href="site_libs/quarto-html/quarto-syntax-highlighting-dark-0a6b7249c26820e032cb0bd839ff02b1.css" rel="stylesheet" class="quarto-color-scheme quarto-color-alternate" id="quarto-text-highlighting-styles">
+<link href="site_libs/quarto-html/quarto-syntax-highlighting-15634bcf2e68342d4ad2dfa704d543f6.css" rel="stylesheet" class="quarto-color-scheme-extra" id="quarto-text-highlighting-styles">
+<script src="site_libs/bootstrap/bootstrap.min.js"></script>
+<link href="site_libs/bootstrap/bootstrap-icons.css" rel="stylesheet">
+<link href="site_libs/bootstrap/bootstrap-30e3431ae5cbac7a5cb1fd616ab7c00b.min.css" rel="stylesheet" append-hash="true" class="quarto-color-scheme" id="quarto-bootstrap" data-mode="light">
+<link href="site_libs/bootstrap/bootstrap-dark-85dbe192ee8f6afe00700f0bc14ac85f.min.css" rel="stylesheet" append-hash="true" class="quarto-color-scheme quarto-color-alternate" id="quarto-bootstrap" data-mode="dark">
+<link href="site_libs/bootstrap/bootstrap-30e3431ae5cbac7a5cb1fd616ab7c00b.min.css" rel="stylesheet" append-hash="true" class="quarto-color-scheme-extra" id="quarto-bootstrap" data-mode="light">
+<script id="quarto-search-options" type="application/json">{
+  "location": "navbar",
+  "copy-button": false,
+  "collapse-after": 3,
+  "panel-placement": "end",
+  "type": "overlay",
+  "limit": 50,
+  "keyboard-shortcut": [
+    "f",
+    "/",
+    "s"
+  ],
+  "show-item-context": false,
+  "language": {
+    "search-no-results-text": "No se han encontrado resultados",
+    "search-matching-documents-text": "documentos encontrados",
+    "search-copy-link-title": "Copiar el enlace en la búsqueda",
+    "search-hide-matches-text": "Ocultar resultados adicionales",
+    "search-more-match-text": "resultado adicional en este documento",
+    "search-more-matches-text": "resultados adicionales en este documento",
+    "search-clear-button-title": "Borrar",
+    "search-text-placeholder": "",
+    "search-detached-cancel-button-title": "Cancelar",
+    "search-submit-button-title": "Enviar",
+    "search-label": "Buscar"
+  }
+}</script>
+
+
+</head>
+
+<body class="nav-fixed quarto-light"><script id="quarto-html-before-body" type="application/javascript">
+    const toggleBodyColorMode = (bsSheetEl) => {
+      const mode = bsSheetEl.getAttribute("data-mode");
+      const bodyEl = window.document.querySelector("body");
+      if (mode === "dark") {
+        bodyEl.classList.add("quarto-dark");
+        bodyEl.classList.remove("quarto-light");
+      } else {
+        bodyEl.classList.add("quarto-light");
+        bodyEl.classList.remove("quarto-dark");
+      }
+    }
+    const toggleBodyColorPrimary = () => {
+      const bsSheetEl = window.document.querySelector("link#quarto-bootstrap:not([rel=disabled-stylesheet])");
+      if (bsSheetEl) {
+        toggleBodyColorMode(bsSheetEl);
+      }
+    }
+    const setColorSchemeToggle = (alternate) => {
+      const toggles = window.document.querySelectorAll('.quarto-color-scheme-toggle');
+      for (let i=0; i < toggles.length; i++) {
+        const toggle = toggles[i];
+        if (toggle) {
+          if (alternate) {
+            toggle.classList.add("alternate");
+          } else {
+            toggle.classList.remove("alternate");
+          }
+        }
+      }
+    };
+    const toggleColorMode = (alternate) => {
+      // Switch the stylesheets
+      const primaryStylesheets = window.document.querySelectorAll('link.quarto-color-scheme:not(.quarto-color-alternate)');
+      const alternateStylesheets = window.document.querySelectorAll('link.quarto-color-scheme.quarto-color-alternate');
+      manageTransitions('#quarto-margin-sidebar .nav-link', false);
+      if (alternate) {
+        // note: dark is layered on light, we don't disable primary!
+        enableStylesheet(alternateStylesheets);
+        for (const sheetNode of alternateStylesheets) {
+          if (sheetNode.id === "quarto-bootstrap") {
+            toggleBodyColorMode(sheetNode);
+          }
+        }
+      } else {
+        disableStylesheet(alternateStylesheets);
+        enableStylesheet(primaryStylesheets)
+        toggleBodyColorPrimary();
+      }
+      manageTransitions('#quarto-margin-sidebar .nav-link', true);
+      // Switch the toggles
+      setColorSchemeToggle(alternate)
+      // Hack to workaround the fact that safari doesn't
+      // properly recolor the scrollbar when toggling (#1455)
+      if (navigator.userAgent.indexOf('Safari') > 0 && navigator.userAgent.indexOf('Chrome') == -1) {
+        manageTransitions("body", false);
+        window.scrollTo(0, 1);
+        setTimeout(() => {
+          window.scrollTo(0, 0);
+          manageTransitions("body", true);
+        }, 40);
+      }
+    }
+    const disableStylesheet = (stylesheets) => {
+      for (let i=0; i < stylesheets.length; i++) {
+        const stylesheet = stylesheets[i];
+        stylesheet.rel = 'disabled-stylesheet';
+      }
+    }
+    const enableStylesheet = (stylesheets) => {
+      for (let i=0; i < stylesheets.length; i++) {
+        const stylesheet = stylesheets[i];
+        if(stylesheet.rel !== 'stylesheet') { // for Chrome, which will still FOUC without this check
+          stylesheet.rel = 'stylesheet';
+        }
+      }
+    }
+    const manageTransitions = (selector, allowTransitions) => {
+      const els = window.document.querySelectorAll(selector);
+      for (let i=0; i < els.length; i++) {
+        const el = els[i];
+        if (allowTransitions) {
+          el.classList.remove('notransition');
+        } else {
+          el.classList.add('notransition');
+        }
+      }
+    }
+    const isFileUrl = () => {
+      return window.location.protocol === 'file:';
+    }
+    const hasAlternateSentinel = () => {
+      let styleSentinel = getColorSchemeSentinel();
+      if (styleSentinel !== null) {
+        return styleSentinel === "alternate";
+      } else {
+        return false;
+      }
+    }
+    const setStyleSentinel = (alternate) => {
+      const value = alternate ? "alternate" : "default";
+      if (!isFileUrl()) {
+        window.localStorage.setItem("quarto-color-scheme", value);
+      } else {
+        localAlternateSentinel = value;
+      }
+    }
+    const getColorSchemeSentinel = () => {
+      if (!isFileUrl()) {
+        const storageValue = window.localStorage.getItem("quarto-color-scheme");
+        return storageValue != null ? storageValue : localAlternateSentinel;
+      } else {
+        return localAlternateSentinel;
+      }
+    }
+    const toggleGiscusIfUsed = (isAlternate, darkModeDefault) => {
+      const baseTheme = document.querySelector('#giscus-base-theme')?.value ?? 'light';
+      const alternateTheme = document.querySelector('#giscus-alt-theme')?.value ?? 'dark';
+      let newTheme = '';
+      if(authorPrefersDark) {
+        newTheme = isAlternate ? baseTheme : alternateTheme;
+      } else {
+        newTheme = isAlternate ? alternateTheme : baseTheme;
+      }
+      const changeGiscusTheme = () => {
+        // From: https://github.com/giscus/giscus/issues/336
+        const sendMessage = (message) => {
+          const iframe = document.querySelector('iframe.giscus-frame');
+          if (!iframe) return;
+          iframe.contentWindow.postMessage({ giscus: message }, 'https://giscus.app');
+        }
+        sendMessage({
+          setConfig: {
+            theme: newTheme
+          }
+        });
+      }
+      const isGiscussLoaded = window.document.querySelector('iframe.giscus-frame') !== null;
+      if (isGiscussLoaded) {
+        changeGiscusTheme();
+      }
+    };
+    const authorPrefersDark = false;
+    const darkModeDefault = authorPrefersDark;
+      document.querySelector('link#quarto-text-highlighting-styles.quarto-color-scheme-extra').rel = 'disabled-stylesheet';
+      document.querySelector('link#quarto-bootstrap.quarto-color-scheme-extra').rel = 'disabled-stylesheet';
+    let localAlternateSentinel = darkModeDefault ? 'alternate' : 'default';
+    // Dark / light mode switch
+    window.quartoToggleColorScheme = () => {
+      // Read the current dark / light value
+      let toAlternate = !hasAlternateSentinel();
+      toggleColorMode(toAlternate);
+      setStyleSentinel(toAlternate);
+      toggleGiscusIfUsed(toAlternate, darkModeDefault);
+      window.dispatchEvent(new Event('resize'));
+    };
+    // Switch to dark mode if need be
+    if (hasAlternateSentinel()) {
+      toggleColorMode(true);
+    } else {
+      toggleColorMode(false);
+    }
+  </script>
+
+<div id="quarto-search-results"></div>
+  <header id="quarto-header" class="headroom fixed-top">
+    <nav class="navbar navbar-expand-lg " data-bs-theme="dark">
+      <div class="navbar-container container-fluid">
+      <div class="navbar-brand-container mx-auto">
+    <a class="navbar-brand" href="./index.html">
+    <span class="navbar-title">ReposMx</span>
+    </a>
+  </div>
+            <div id="quarto-search" class="" title="Buscar"></div>
+          <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarCollapse" aria-controls="navbarCollapse" role="menu" aria-expanded="false" aria-label="Navegación de palanca" onclick="if (window.quartoToggleHeadroom) { window.quartoToggleHeadroom(); }">
+  <span class="navbar-toggler-icon"></span>
+</button>
+          <div class="collapse navbar-collapse" id="navbarCollapse">
+            <ul class="navbar-nav navbar-nav-scroll me-auto">
+  <li class="nav-item">
+    <a class="nav-link" href="./index.html"> 
+<span class="menu-text">Inicio</span></a>
+  </li>  
+  <li class="nav-item">
+    <a class="nav-link active" href="./datos.html" aria-current="page"> 
+<span class="menu-text">Datos</span></a>
+  </li>  
+  <li class="nav-item">
+    <a class="nav-link" href="./metodo.html"> 
+<span class="menu-text">Cómo se hizo</span></a>
+  </li>  
+  <li class="nav-item">
+    <a class="nav-link" href="./repositorio-nacional.html"> 
+<span class="menu-text">Repositorio Nacional</span></a>
+  </li>  
+  <li class="nav-item">
+    <a class="nav-link" href="./mapa.html"> 
+<span class="menu-text">Mapa</span></a>
+  </li>  
+</ul>
+            <ul class="navbar-nav navbar-nav-scroll ms-auto">
+  <li class="nav-item">
+    <a class="nav-link" href="https://github.com/sadit/ReposMx/tree/master/web"> 
+<span class="menu-text">Demo</span></a>
+  </li>  
+</ul>
+          </div> <!-- /navcollapse -->
+            <div class="quarto-navbar-tools">
+  <a href="" class="quarto-color-scheme-toggle quarto-navigation-tool  px-1" onclick="window.quartoToggleColorScheme(); return false;" title="Alternar modo oscuro"><i class="bi"></i></a>
+</div>
+      </div> <!-- /container-fluid -->
+    </nav>
+</header>
+<!-- content -->
+<div id="quarto-content" class="quarto-container page-columns page-rows-contents page-layout-article page-navbar">
+<!-- sidebar -->
+<!-- margin-sidebar -->
+    <div id="quarto-margin-sidebar" class="sidebar margin-sidebar">
+        <nav id="TOC" role="doc-toc" class="toc-active">
+    <h2 id="toc-title">En esta página</h2>
+   
+  <ul>
+  <li><a href="#de-dónde-vienen" id="toc-de-dónde-vienen" class="nav-link active" data-scroll-target="#de-dónde-vienen">De dónde vienen</a></li>
+  <li><a href="#qué-se-agrega-a-cada-registro" id="toc-qué-se-agrega-a-cada-registro" class="nav-link" data-scroll-target="#qué-se-agrega-a-cada-registro">Qué se agrega a cada registro</a></li>
+  <li><a href="#tipos-de-documento" id="toc-tipos-de-documento" class="nav-link" data-scroll-target="#tipos-de-documento">Tipos de documento</a></li>
+  <li><a href="#clasificación-cti" id="toc-clasificación-cti" class="nav-link" data-scroll-target="#clasificación-cti">Clasificación CTI</a></li>
+  <li><a href="#lo-que-no-se-comparte" id="toc-lo-que-no-se-comparte" class="nav-link" data-scroll-target="#lo-que-no-se-comparte">Lo que no se comparte</a></li>
+  <li><a href="#los-repositorios" id="toc-los-repositorios" class="nav-link" data-scroll-target="#los-repositorios">Los repositorios</a></li>
+  </ul>
+</nav>
+    </div>
+<!-- main -->
+<main class="content" id="quarto-document-content">
+
+
+<header id="title-block-header" class="quarto-title-block default">
+<div class="quarto-title">
+<h1 class="title">Datos</h1>
+</div>
+
+
+
+<div class="quarto-title-meta">
+
+    
+  
+    
+  </div>
+  
+
+
+</header>
+
+
+<section id="de-dónde-vienen" class="level2">
+<h2 class="anchored" data-anchor-id="de-dónde-vienen">De dónde vienen</h2>
+<p>Cada repositorio institucional publica los metadatos de sus documentos por <strong>OAI-PMH</strong> en <strong>Dublin Core</strong> (<code>oai_dc</code>): título, autores, colaboradores (asesores), fecha, resumen, materias, tipo, editor, derechos e identificadores. ReposMx los cosecha directamente de cada repositorio, de forma incremental (sólo lo publicado desde la última cosecha completa), y descarga el documento cuando la página del registro enlaza uno, para extraer su texto.</p>
+<p class="nota">Las cifras son del corpus al 26 de noviembre de 2026; las calcula <code>sitio/genera.py</code>.</p>
+<table class="caption-top table">
+<colgroup>
+<col style="width: 42%">
+<col style="width: 57%">
+</colgroup>
+<thead>
+<tr class="header">
+<th>Qué</th>
+<th style="text-align: right;">Cantidad</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Repositorios con registros</td>
+<td style="text-align: right;">94</td>
+</tr>
+<tr class="even">
+<td>Registros</td>
+<td style="text-align: right;">472,161</td>
+</tr>
+<tr class="odd">
+<td>Con resumen</td>
+<td style="text-align: right;">372,153</td>
+</tr>
+<tr class="even">
+<td>Con palabras clave</td>
+<td style="text-align: right;">406,877</td>
+</tr>
+<tr class="odd">
+<td>Con texto completo extraído del PDF</td>
+<td style="text-align: right;">70,677</td>
+</tr>
+<tr class="even">
+<td>Citas bibliográficas extraídas de los textos</td>
+<td style="text-align: right;">3,972,939</td>
+</tr>
+<tr class="odd">
+<td>Formas de nombre de autor</td>
+<td style="text-align: right;">447,279, agrupadas en 234,624 autores consolidados</td>
+</tr>
+<tr class="even">
+<td>Con clasificación CTI declarada (área)</td>
+<td style="text-align: right;">136,363 (29 %); con disciplina, 33,412 (7 %)</td>
+</tr>
+</tbody>
+</table>
+</section>
+<section id="qué-se-agrega-a-cada-registro" class="level2">
+<h2 class="anchored" data-anchor-id="qué-se-agrega-a-cada-registro">Qué se agrega a cada registro</h2>
+<ul>
+<li><strong>La liga a su registro</strong> en el repositorio de origen (el primer identificador web, o el DOI): es a donde lleva cada resultado. La trae el 94 % de los registros.</li>
+<li><strong>El tipo de documento</strong>, a partir de todos los valores <code>dc:type</code> del registro (los repositorios los escriben de muchas formas: <code>info:eu-repo/semantics/masterThesis</code>, «Tesis de maestría», «thesis»…).</li>
+<li><strong>La clasificación CTI</strong> que declara el repositorio, con su camino en el árbol (área, campo y disciplina).</li>
+<li><strong>Las citas</strong> del texto completo, separadas una por una, y la sección de conclusiones.</li>
+<li><strong>El autor consolidado</strong>: las distintas formas de escribir un mismo nombre («Eric S. Tellez», «Tellez Avila, Eric Sadit») reunidas en un perfil, con sus coautores y su producción.</li>
+</ul>
+</section>
+<section id="tipos-de-documento" class="level2">
+<h2 class="anchored" data-anchor-id="tipos-de-documento">Tipos de documento</h2>
+<p>Cerca de una cuarta parte de los registros no es producción académica en texto: cartas y documentos de archivo, fotografías, sismos, conjuntos de datos. Esos se quedan sólo con sus metadatos (en la búsqueda por palabras), fuera de la búsqueda por significado y de lo que lee el modelo que redacta.</p>
+<table class="caption-top table">
+<colgroup>
+<col style="width: 15%">
+<col style="width: 20%">
+<col style="width: 20%">
+<col style="width: 20%">
+<col style="width: 25%">
+</colgroup>
+<thead>
+<tr class="header">
+<th>Tipo</th>
+<th style="text-align: right;">Registros</th>
+<th style="text-align: right;">%</th>
+<th style="text-align: right;">Con texto completo</th>
+<th style="text-align: center;">En la búsqueda por significado</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Artículo</td>
+<td style="text-align: right;">79,333</td>
+<td style="text-align: right;">16.8</td>
+<td style="text-align: right;">19,565</td>
+<td style="text-align: center;">sí</td>
+</tr>
+<tr class="even">
+<td>Tesis de maestría</td>
+<td style="text-align: right;">69,821</td>
+<td style="text-align: right;">14.8</td>
+<td style="text-align: right;">22,679</td>
+<td style="text-align: center;">sí</td>
+</tr>
+<tr class="odd">
+<td>Carta o documento de archivo</td>
+<td style="text-align: right;">43,537</td>
+<td style="text-align: right;">9.2</td>
+<td style="text-align: right;">0</td>
+<td style="text-align: center;">no (sólo metadatos)</td>
+</tr>
+<tr class="even">
+<td>Imagen, mapa, audio o video</td>
+<td style="text-align: right;">42,992</td>
+<td style="text-align: right;">9.1</td>
+<td style="text-align: right;">0</td>
+<td style="text-align: center;">no (sólo metadatos)</td>
+</tr>
+<tr class="odd">
+<td>Texto sin especificar</td>
+<td style="text-align: right;">39,737</td>
+<td style="text-align: right;">8.4</td>
+<td style="text-align: right;">2,198</td>
+<td style="text-align: center;">sí</td>
+</tr>
+<tr class="even">
+<td>Sin tipo</td>
+<td style="text-align: right;">39,250</td>
+<td style="text-align: right;">8.3</td>
+<td style="text-align: right;">1,542</td>
+<td style="text-align: center;">sí</td>
+</tr>
+<tr class="odd">
+<td>Tesis de licenciatura</td>
+<td style="text-align: right;">33,925</td>
+<td style="text-align: right;">7.2</td>
+<td style="text-align: right;">8,554</td>
+<td style="text-align: center;">sí</td>
+</tr>
+<tr class="even">
+<td>Evento</td>
+<td style="text-align: right;">26,787</td>
+<td style="text-align: right;">5.7</td>
+<td style="text-align: right;">0</td>
+<td style="text-align: center;">no (sólo metadatos)</td>
+</tr>
+<tr class="odd">
+<td>Tesis de doctorado</td>
+<td style="text-align: right;">18,139</td>
+<td style="text-align: right;">3.8</td>
+<td style="text-align: right;">6,414</td>
+<td style="text-align: center;">sí</td>
+</tr>
+<tr class="even">
+<td>Conjunto de datos</td>
+<td style="text-align: right;">14,186</td>
+<td style="text-align: right;">3.0</td>
+<td style="text-align: right;">0</td>
+<td style="text-align: center;">no (sólo metadatos)</td>
+</tr>
+<tr class="odd">
+<td>Tesis</td>
+<td style="text-align: right;">11,328</td>
+<td style="text-align: right;">2.4</td>
+<td style="text-align: right;">463</td>
+<td style="text-align: center;">sí</td>
+</tr>
+<tr class="even">
+<td>Libro</td>
+<td style="text-align: right;">10,677</td>
+<td style="text-align: right;">2.3</td>
+<td style="text-align: right;">1,249</td>
+<td style="text-align: center;">sí</td>
+</tr>
+<tr class="odd">
+<td>Capítulo de libro</td>
+<td style="text-align: right;">9,947</td>
+<td style="text-align: right;">2.1</td>
+<td style="text-align: right;">3,486</td>
+<td style="text-align: center;">sí</td>
+</tr>
+<tr class="even">
+<td>Reporte técnico o informe</td>
+<td style="text-align: right;">8,919</td>
+<td style="text-align: right;">1.9</td>
+<td style="text-align: right;">525</td>
+<td style="text-align: center;">sí</td>
+</tr>
+<tr class="odd">
+<td>Otro</td>
+<td style="text-align: right;">7,341</td>
+<td style="text-align: right;">1.6</td>
+<td style="text-align: right;">359</td>
+<td style="text-align: center;">sí</td>
+</tr>
+<tr class="even">
+<td>Tesis de especialidad</td>
+<td style="text-align: right;">7,065</td>
+<td style="text-align: right;">1.5</td>
+<td style="text-align: right;">900</td>
+<td style="text-align: center;">sí</td>
+</tr>
+<tr class="odd">
+<td>Ponencia o memoria</td>
+<td style="text-align: right;">5,302</td>
+<td style="text-align: right;">1.1</td>
+<td style="text-align: right;">1,444</td>
+<td style="text-align: center;">sí</td>
+</tr>
+<tr class="even">
+<td>Preprint o documento de trabajo</td>
+<td style="text-align: right;">2,948</td>
+<td style="text-align: right;">0.6</td>
+<td style="text-align: right;">826</td>
+<td style="text-align: center;">sí</td>
+</tr>
+<tr class="odd">
+<td>Reseña</td>
+<td style="text-align: right;">710</td>
+<td style="text-align: right;">0.2</td>
+<td style="text-align: right;">456</td>
+<td style="text-align: center;">sí</td>
+</tr>
+<tr class="even">
+<td>Patente</td>
+<td style="text-align: right;">187</td>
+<td style="text-align: right;">0.0</td>
+<td style="text-align: right;">17</td>
+<td style="text-align: center;">sí</td>
+</tr>
+<tr class="odd">
+<td>Software</td>
+<td style="text-align: right;">30</td>
+<td style="text-align: right;">0.0</td>
+<td style="text-align: right;">0</td>
+<td style="text-align: center;">sí</td>
+</tr>
+</tbody>
+</table>
+</section>
+<section id="clasificación-cti" class="level2">
+<h2 class="anchored" data-anchor-id="clasificación-cti">Clasificación CTI</h2>
+<p>Los catálogos de áreas del conocimiento del Repositorio Nacional de Ciencia, Tecnología e Innovación (de SECIHTI, antes CONACYT) forman un árbol: 7 áreas, 24 campos, unas 248 disciplinas y unas 3,600 subdisciplinas, y el código de cada nivel empieza con el de su nivel superior. Los repositorios lo ponen en <code>dc:subject</code> como <code>info:eu-repo/classification/cti/&lt;código&gt;</code>. ReposMx lo guarda tal como lo declara cada repositorio y deja filtrar por disciplina, pero no lo usa para aprender (ver <a href="./metodo.html#la-clasificación-cti-no-se-aprende">Cómo se hizo</a>).</p>
+</section>
+<section id="lo-que-no-se-comparte" class="level2">
+<h2 class="anchored" data-anchor-id="lo-que-no-se-comparte">Lo que no se comparte</h2>
+<p>Los textos completos son una copia de trabajo para analizar los documentos (partirlos, codificarlos, extraer sus citas). <strong>No se pueden descargar ni leer desde ReposMx</strong>: la web muestra los metadatos públicos del registro (título, autores, resumen) y la liga al repositorio de origen. El modelo que redacta la respuesta lee partes del texto completo, pero la página no las muestra y se le pide que resuma con sus palabras.</p>
+</section>
+<section id="los-repositorios" class="level2">
+<h2 class="anchored" data-anchor-id="los-repositorios">Los repositorios</h2>
+<table class="caption-top table">
+<colgroup>
+<col style="width: 12%">
+<col style="width: 12%">
+<col style="width: 16%">
+<col style="width: 16%">
+<col style="width: 16%">
+<col style="width: 16%">
+<col style="width: 12%">
+</colgroup>
+<thead>
+<tr class="header">
+<th>Repositorio</th>
+<th>Institución (editor más frecuente)</th>
+<th style="text-align: right;">Registros</th>
+<th style="text-align: right;">Con texto completo</th>
+<th style="text-align: right;">Con CTI</th>
+<th style="text-align: right;">Con palabras clave</th>
+<th>Última cosecha</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td><code>itesm</code></td>
+<td>México</td>
+<td style="text-align: right;">140,335</td>
+<td style="text-align: right;">0</td>
+<td style="text-align: right;">1 %</td>
+<td style="text-align: right;">93 %</td>
+<td>2026-08-26</td>
+</tr>
+<tr class="even">
+<td><code>uaaan</code></td>
+<td></td>
+<td style="text-align: right;">31,636</td>
+<td style="text-align: right;">7,201</td>
+<td style="text-align: right;">0 %</td>
+<td style="text-align: right;">72 %</td>
+<td>2026-11-25</td>
+</tr>
+<tr class="odd">
+<td><code>unam-ssn</code></td>
+<td>UNAM, IGEF, SSN, Grupo de Trabajo</td>
+<td style="text-align: right;">26,788</td>
+<td style="text-align: right;">0</td>
+<td style="text-align: right;">0 %</td>
+<td style="text-align: right;">100 %</td>
+<td>2025-09-22</td>
+</tr>
+<tr class="even">
+<td><code>uv</code></td>
+<td>Universidad Veracruzana</td>
+<td style="text-align: right;">18,147</td>
+<td style="text-align: right;">0</td>
+<td style="text-align: right;">0 %</td>
+<td style="text-align: right;">99 %</td>
+<td>2026-11-25</td>
+</tr>
+<tr class="odd">
+<td><code>unam-filos</code></td>
+<td>Universidad Nacional Aut?noma de M?xico. Facultad de Filosof?a y Letra</td>
+<td style="text-align: right;">15,227</td>
+<td style="text-align: right;">1,381</td>
+<td style="text-align: right;">0 %</td>
+<td style="text-align: right;">11 %</td>
+<td>2026-11-25</td>
+</tr>
+<tr class="even">
+<td><code>ipn-central</code></td>
+<td>Instituto Politécnico Nacional. Centro Interdisciplinario de Ciencias</td>
+<td style="text-align: right;">13,500</td>
+<td style="text-align: right;">0</td>
+<td style="text-align: right;">0 %</td>
+<td style="text-align: right;">84 %</td>
+<td>2026-08-26</td>
+</tr>
+<tr class="odd">
+<td><code>uam</code></td>
+<td>Universidad Autónoma Metropolitana (México). Unidad Azcapotzalco.</td>
+<td style="text-align: right;">13,350</td>
+<td style="text-align: right;">0</td>
+<td style="text-align: right;">23 %</td>
+<td style="text-align: right;">87 %</td>
+<td>2026-11-25</td>
+</tr>
+<tr class="even">
+<td><code>uam-izt</code></td>
+<td></td>
+<td style="text-align: right;">12,428</td>
+<td style="text-align: right;">0</td>
+<td style="text-align: right;">49 %</td>
+<td style="text-align: right;">99 %</td>
+<td>2025-09-22</td>
+</tr>
+<tr class="odd">
+<td><code>iteso</code></td>
+<td>ITESO</td>
+<td style="text-align: right;">12,058</td>
+<td style="text-align: right;">0</td>
+<td style="text-align: right;">0 %</td>
+<td style="text-align: right;">93 %</td>
+<td>2026-11-25</td>
+</tr>
+<tr class="even">
+<td><code>uam-xochimilco</code></td>
+<td>Universidad Autónoma Metropolitana. Unidad Xochimilco</td>
+<td style="text-align: right;">11,125</td>
+<td style="text-align: right;">0</td>
+<td style="text-align: right;">0 %</td>
+<td style="text-align: right;">86 %</td>
+<td>2026-11-25</td>
+</tr>
+<tr class="odd">
+<td><code>up-scripta</code></td>
+<td>Universidad Panamericana. Facultad de Filosofía</td>
+<td style="text-align: right;">10,340</td>
+<td style="text-align: right;">1</td>
+<td style="text-align: right;">0 %</td>
+<td style="text-align: right;">68 %</td>
+<td>2026-11-25</td>
+</tr>
+<tr class="even">
+<td><code>buap</code></td>
+<td></td>
+<td style="text-align: right;">10,141</td>
+<td style="text-align: right;">0</td>
+<td style="text-align: right;">94 %</td>
+<td style="text-align: right;">98 %</td>
+<td>2025-09-22</td>
+</tr>
+<tr class="odd">
+<td><code>unam-icmyl</code></td>
+<td></td>
+<td style="text-align: right;">9,441</td>
+<td style="text-align: right;">0</td>
+<td style="text-align: right;">0 %</td>
+<td style="text-align: right;">0 %</td>
+<td>2025-09-22</td>
+</tr>
+<tr class="even">
+<td><code>umich</code></td>
+<td>Universidad Michoacana de San Nicolás de Hidalgo</td>
+<td style="text-align: right;">8,380</td>
+<td style="text-align: right;">3,965</td>
+<td style="text-align: right;">100 %</td>
+<td style="text-align: right;">100 %</td>
+<td>2026-11-25</td>
+</tr>
+<tr class="odd">
+<td><code>uaemex</code></td>
+<td>Universidad Autónoma del Estado de México</td>
+<td style="text-align: right;">7,800</td>
+<td style="text-align: right;">181</td>
+<td style="text-align: right;">100 %</td>
+<td style="text-align: right;">100 %</td>
+<td>2026-11-25</td>
+</tr>
+<tr class="even">
+<td><code>uaem</code></td>
+<td>El autor</td>
+<td style="text-align: right;">7,672</td>
+<td style="text-align: right;">3,147</td>
+<td style="text-align: right;">99 %</td>
+<td style="text-align: right;">99 %</td>
+<td>2025-09-22</td>
+</tr>
+<tr class="odd">
+<td><code>ccg</code></td>
+<td>Centro de Ciencias Genómicas (UNAM)</td>
+<td style="text-align: right;">7,432</td>
+<td style="text-align: right;">0</td>
+<td style="text-align: right;">0 %</td>
+<td style="text-align: right;">0 %</td>
+<td>2025-09-22</td>
+</tr>
+<tr class="even">
+<td><code>unamic-micisan</code></td>
+<td>Universidad Nacional Aut?noma de M?xico, Coordinaci?n de Humanidades,</td>
+<td style="text-align: right;">6,783</td>
+<td style="text-align: right;">5,084</td>
+<td style="text-align: right;">0 %</td>
+<td style="text-align: right;">100 %</td>
+<td>2025-09-22</td>
+</tr>
+<tr class="odd">
+<td><code>unam-geofisica</code></td>
+<td>UNAM, IGEF (Michoacán)</td>
+<td style="text-align: right;">6,196</td>
+<td style="text-align: right;">0</td>
+<td style="text-align: right;">0 %</td>
+<td style="text-align: right;">100 %</td>
+<td>2026-11-25</td>
+</tr>
+<tr class="even">
+<td><code>cimmyt-mm</code></td>
+<td></td>
+<td style="text-align: right;">4,710</td>
+<td style="text-align: right;">0</td>
+<td style="text-align: right;">100 %</td>
+<td style="text-align: right;">100 %</td>
+<td>2026-11-25</td>
+</tr>
+<tr class="odd">
+<td><code>ujat</code></td>
+<td>Universidad Juárez Autónoma de Tabasco</td>
+<td style="text-align: right;">4,654</td>
+<td style="text-align: right;">0</td>
+<td style="text-align: right;">79 %</td>
+<td style="text-align: right;">80 %</td>
+<td>2026-11-25</td>
+</tr>
+<tr class="even">
+<td><code>tecnm</code></td>
+<td>Tecnológico Nacional de México</td>
+<td style="text-align: right;">4,277</td>
+<td style="text-align: right;">4,121</td>
+<td style="text-align: right;">98 %</td>
+<td style="text-align: right;">98 %</td>
+<td>2026-11-25</td>
+</tr>
+<tr class="odd">
+<td><code>ibero</code></td>
+<td></td>
+<td style="text-align: right;">4,239</td>
+<td style="text-align: right;">0</td>
+<td style="text-align: right;">91 %</td>
+<td style="text-align: right;">91 %</td>
+<td>2025-09-22</td>
+</tr>
+<tr class="even">
+<td><code>cicese</code></td>
+<td>CICESE</td>
+<td style="text-align: right;">4,193</td>
+<td style="text-align: right;">3,026</td>
+<td style="text-align: right;">98 %</td>
+<td style="text-align: right;">98 %</td>
+<td>2026-11-25</td>
+</tr>
+<tr class="odd">
+<td><code>uat</code></td>
+<td>Elsevier BV</td>
+<td style="text-align: right;">3,509</td>
+<td style="text-align: right;">59</td>
+<td style="text-align: right;">15 %</td>
+<td style="text-align: right;">77 %</td>
+<td>2026-11-25</td>
+</tr>
+<tr class="even">
+<td><code>cicy</code></td>
+<td>Centro de Investigación Científica de Yucatán, A.C.</td>
+<td style="text-align: right;">3,406</td>
+<td style="text-align: right;">2,515</td>
+<td style="text-align: right;">99 %</td>
+<td style="text-align: right;">99 %</td>
+<td>2026-11-25</td>
+</tr>
+<tr class="odd">
+<td><code>uacj</code></td>
+<td>Universidad Autónoma de Ciudad Juárez</td>
+<td style="text-align: right;">3,369</td>
+<td style="text-align: right;">259</td>
+<td style="text-align: right;">73 %</td>
+<td style="text-align: right;">80 %</td>
+<td>2026-11-25</td>
+</tr>
+<tr class="even">
+<td><code>colpos</code></td>
+<td>La autora</td>
+<td style="text-align: right;">3,119</td>
+<td style="text-align: right;">0</td>
+<td style="text-align: right;">97 %</td>
+<td style="text-align: right;">100 %</td>
+<td>2025-09-22</td>
+</tr>
+<tr class="odd">
+<td><code>unam-iibi</code></td>
+<td>Universidad Nacional Autónoma de México. Instituto de Investigaciones</td>
+<td style="text-align: right;">3,076</td>
+<td style="text-align: right;">2</td>
+<td style="text-align: right;">99 %</td>
+<td style="text-align: right;">100 %</td>
+<td>2025-09-22</td>
+</tr>
+<tr class="even">
+<td><code>uaz</code></td>
+<td></td>
+<td style="text-align: right;">2,926</td>
+<td style="text-align: right;">1,008</td>
+<td style="text-align: right;">90 %</td>
+<td style="text-align: right;">100 %</td>
+<td>2025-09-22</td>
+</tr>
+<tr class="odd">
+<td><code>colmex</code></td>
+<td></td>
+<td style="text-align: right;">2,912</td>
+<td style="text-align: right;">0</td>
+<td style="text-align: right;">100 %</td>
+<td style="text-align: right;">100 %</td>
+<td>2025-09-22</td>
+</tr>
+<tr class="even">
+<td><code>inaoe</code></td>
+<td>Instituto Nacional de Astrofísica, Óptica y Electrónica</td>
+<td style="text-align: right;">2,863</td>
+<td style="text-align: right;">2,450</td>
+<td style="text-align: right;">99 %</td>
+<td style="text-align: right;">99 %</td>
+<td>2026-11-25</td>
+</tr>
+<tr class="odd">
+<td><code>ecosur</code></td>
+<td>El Colegio de la Frontera Sur</td>
+<td style="text-align: right;">2,834</td>
+<td style="text-align: right;">1,879</td>
+<td style="text-align: right;">76 %</td>
+<td style="text-align: right;">76 %</td>
+<td>2026-11-25</td>
+</tr>
+<tr class="even">
+<td><code>cimav</code></td>
+<td>Centro de Investigación en Materiales Avanzados</td>
+<td style="text-align: right;">2,774</td>
+<td style="text-align: right;">1,939</td>
+<td style="text-align: right;">96 %</td>
+<td style="text-align: right;">96 %</td>
+<td>2026-11-25</td>
+</tr>
+<tr class="odd">
+<td><code>uaq</code></td>
+<td>Universidad Autónoma de Querétaro</td>
+<td style="text-align: right;">2,595</td>
+<td style="text-align: right;">1,457</td>
+<td style="text-align: right;">56 %</td>
+<td style="text-align: right;">99 %</td>
+<td>2025-09-22</td>
+</tr>
+<tr class="even">
+<td><code>uson</code></td>
+<td></td>
+<td style="text-align: right;">2,382</td>
+<td style="text-align: right;">1,968</td>
+<td style="text-align: right;">100 %</td>
+<td style="text-align: right;">100 %</td>
+<td>2025-09-22</td>
+</tr>
+<tr class="odd">
+<td><code>ciesas</code></td>
+<td>Centro de Investigaciones y Estudios Superiores en Antropología Social</td>
+<td style="text-align: right;">2,239</td>
+<td style="text-align: right;">1,513</td>
+<td style="text-align: right;">95 %</td>
+<td style="text-align: right;">95 %</td>
+<td>2026-11-25</td>
+</tr>
+<tr class="even">
+<td><code>ipicyt</code></td>
+<td>Elsevier</td>
+<td style="text-align: right;">2,088</td>
+<td style="text-align: right;">1,846</td>
+<td style="text-align: right;">99 %</td>
+<td style="text-align: right;">99 %</td>
+<td>2025-09-22</td>
+</tr>
+<tr class="odd">
+<td><code>unam-historicas</code></td>
+<td>Universidad Nacional Autónoma de México. Instituto de Investigaciones</td>
+<td style="text-align: right;">2,023</td>
+<td style="text-align: right;">4</td>
+<td style="text-align: right;">88 %</td>
+<td style="text-align: right;">88 %</td>
+<td>2025-09-22</td>
+</tr>
+<tr class="even">
+<td><code>uagro</code></td>
+<td>Universidad Autónoma de Guerrero (México)</td>
+<td style="text-align: right;">1,791</td>
+<td style="text-align: right;">1,505</td>
+<td style="text-align: right;">99 %</td>
+<td style="text-align: right;">100 %</td>
+<td>2026-11-25</td>
+</tr>
+<tr class="odd">
+<td><code>colsan</code></td>
+<td>El Colegio de San Luis</td>
+<td style="text-align: right;">1,755</td>
+<td style="text-align: right;">1,320</td>
+<td style="text-align: right;">98 %</td>
+<td style="text-align: right;">98 %</td>
+<td>2026-11-25</td>
+</tr>
+<tr class="even">
+<td><code>ugto</code></td>
+<td>Universidad de Guanajuato</td>
+<td style="text-align: right;">1,752</td>
+<td style="text-align: right;">1,658</td>
+<td style="text-align: right;">100 %</td>
+<td style="text-align: right;">100 %</td>
+<td>2026-11-25</td>
+</tr>
+<tr class="odd">
+<td><code>colson</code></td>
+<td>El Colegio de Sonora</td>
+<td style="text-align: right;">1,675</td>
+<td style="text-align: right;">291</td>
+<td style="text-align: right;">18 %</td>
+<td style="text-align: right;">86 %</td>
+<td>2026-11-25</td>
+</tr>
+<tr class="even">
+<td><code>uaslp</code></td>
+<td>Facultad de Medicina</td>
+<td style="text-align: right;">1,608</td>
+<td style="text-align: right;">1,426</td>
+<td style="text-align: right;">99 %</td>
+<td style="text-align: right;">99 %</td>
+<td>2026-11-25</td>
+</tr>
+<tr class="odd">
+<td><code>uady</code></td>
+<td></td>
+<td style="text-align: right;">1,600</td>
+<td style="text-align: right;">1,436</td>
+<td style="text-align: right;">100 %</td>
+<td style="text-align: right;">100 %</td>
+<td>2025-09-22</td>
+</tr>
+<tr class="even">
+<td><code>unam-tic</code></td>
+<td>Universidad Nacional Autónoma de México. Dirección General de Cómputo</td>
+<td style="text-align: right;">1,594</td>
+<td style="text-align: right;">1,149</td>
+<td style="text-align: right;">100 %</td>
+<td style="text-align: right;">100 %</td>
+<td>2025-09-22</td>
+</tr>
+<tr class="odd">
+<td><code>colmich</code></td>
+<td>El Colegio de Michoacán</td>
+<td style="text-align: right;">1,523</td>
+<td style="text-align: right;">1,278</td>
+<td style="text-align: right;">96 %</td>
+<td style="text-align: right;">96 %</td>
+<td>2026-11-25</td>
+</tr>
+<tr class="even">
+<td><code>ciad</code></td>
+<td>Centro de Investigación en Alimentación y Desarrollo, A.C.</td>
+<td style="text-align: right;">1,364</td>
+<td style="text-align: right;">903</td>
+<td style="text-align: right;">93 %</td>
+<td style="text-align: right;">93 %</td>
+<td>2026-11-25</td>
+</tr>
+<tr class="odd">
+<td><code>imta</code></td>
+<td>Instituto Mexicano de Tecnología del Agua</td>
+<td style="text-align: right;">1,335</td>
+<td style="text-align: right;">1</td>
+<td style="text-align: right;">96 %</td>
+<td style="text-align: right;">100 %</td>
+<td>2025-09-22</td>
+</tr>
+<tr class="even">
+<td><code>uam-cuajimalpa</code></td>
+<td>Ciudad de México : UAM, Unidad Cuajimalpa, División de Ciencias de la</td>
+<td style="text-align: right;">1,245</td>
+<td style="text-align: right;">1,166</td>
+<td style="text-align: right;">99 %</td>
+<td style="text-align: right;">100 %</td>
+<td>2025-09-22</td>
+</tr>
+<tr class="odd">
+<td><code>cimat</code></td>
+<td>CIMAT</td>
+<td style="text-align: right;">1,141</td>
+<td style="text-align: right;">1,042</td>
+<td style="text-align: right;">99 %</td>
+<td style="text-align: right;">99 %</td>
+<td>2026-11-25</td>
+</tr>
+<tr class="even">
+<td><code>cio</code></td>
+<td>OSA PUBLISHING</td>
+<td style="text-align: right;">1,114</td>
+<td style="text-align: right;">777</td>
+<td style="text-align: right;">98 %</td>
+<td style="text-align: right;">98 %</td>
+<td>2026-11-25</td>
+</tr>
+<tr class="odd">
+<td><code>cide</code></td>
+<td>El autor</td>
+<td style="text-align: right;">997</td>
+<td style="text-align: right;">796</td>
+<td style="text-align: right;">97 %</td>
+<td style="text-align: right;">97 %</td>
+<td>2026-11-25</td>
+</tr>
+<tr class="even">
+<td><code>insp</code></td>
+<td>ESPM INSP</td>
+<td style="text-align: right;">985</td>
+<td style="text-align: right;">463</td>
+<td style="text-align: right;">100 %</td>
+<td style="text-align: right;">100 %</td>
+<td>2025-09-22</td>
+</tr>
+<tr class="odd">
+<td><code>uqroo</code></td>
+<td>Universidad de Quintana Roo</td>
+<td style="text-align: right;">956</td>
+<td style="text-align: right;">0</td>
+<td style="text-align: right;">99 %</td>
+<td style="text-align: right;">99 %</td>
+<td>2025-09-22</td>
+</tr>
+<tr class="even">
+<td><code>unam-iztacala</code></td>
+<td>Universidad Nacional Autónoma de México. Facultad de Estudios Superior</td>
+<td style="text-align: right;">936</td>
+<td style="text-align: right;">0</td>
+<td style="text-align: right;">80 %</td>
+<td style="text-align: right;">80 %</td>
+<td>2026-11-25</td>
+</tr>
+<tr class="odd">
+<td><code>mora</code></td>
+<td>Instituto Mora</td>
+<td style="text-align: right;">835</td>
+<td style="text-align: right;">602</td>
+<td style="text-align: right;">98 %</td>
+<td style="text-align: right;">98 %</td>
+<td>2025-09-22</td>
+</tr>
+<tr class="even">
+<td><code>uan</code></td>
+<td>Universidad Autónoma de Nayarit</td>
+<td style="text-align: right;">830</td>
+<td style="text-align: right;">775</td>
+<td style="text-align: right;">100 %</td>
+<td style="text-align: right;">100 %</td>
+<td>2025-09-22</td>
+</tr>
+<tr class="odd">
+<td><code>utcv</code></td>
+<td>Universidad Tecnológica del Centro de Veracruz</td>
+<td style="text-align: right;">806</td>
+<td style="text-align: right;">745</td>
+<td style="text-align: right;">99 %</td>
+<td style="text-align: right;">99 %</td>
+<td>2025-09-22</td>
+</tr>
+<tr class="even">
+<td><code>inecol</code></td>
+<td>Instituto de Ecología, A.C.</td>
+<td style="text-align: right;">800</td>
+<td style="text-align: right;">499</td>
+<td style="text-align: right;">100 %</td>
+<td style="text-align: right;">100 %</td>
+<td>2025-09-22</td>
+</tr>
+<tr class="odd">
+<td><code>ciqa</code></td>
+<td>El Colegio de Tlaxcala, A.C</td>
+<td style="text-align: right;">755</td>
+<td style="text-align: right;">693</td>
+<td style="text-align: right;">100 %</td>
+<td style="text-align: right;">100 %</td>
+<td>2025-09-22</td>
+</tr>
+<tr class="even">
+<td><code>infotec</code></td>
+<td>INFOTEC Centro de Investigación e Innovación en Tecnologías de la Info</td>
+<td style="text-align: right;">721</td>
+<td style="text-align: right;">456</td>
+<td style="text-align: right;">94 %</td>
+<td style="text-align: right;">94 %</td>
+<td>2026-11-25</td>
+</tr>
+<tr class="odd">
+<td><code>ciateq</code></td>
+<td>CIATEQ, A.C.</td>
+<td style="text-align: right;">690</td>
+<td style="text-align: right;">668</td>
+<td style="text-align: right;">98 %</td>
+<td style="text-align: right;">98 %</td>
+<td>2026-11-25</td>
+</tr>
+<tr class="even">
+<td><code>unam-educacion</code></td>
+<td>Universidad Nacional Autónoma de México, Instituto de Investigaciones</td>
+<td style="text-align: right;">655</td>
+<td style="text-align: right;">642</td>
+<td style="text-align: right;">100 %</td>
+<td style="text-align: right;">100 %</td>
+<td>2025-09-22</td>
+</tr>
+<tr class="odd">
+<td><code>unam-iquimica</code></td>
+<td>Universidad Nacional Autónoma de México</td>
+<td style="text-align: right;">644</td>
+<td style="text-align: right;">579</td>
+<td style="text-align: right;">100 %</td>
+<td style="text-align: right;">100 %</td>
+<td>2026-11-25</td>
+</tr>
+<tr class="even">
+<td><code>colef</code></td>
+<td>El Colef</td>
+<td style="text-align: right;">634</td>
+<td style="text-align: right;">539</td>
+<td style="text-align: right;">99 %</td>
+<td style="text-align: right;">99 %</td>
+<td>2026-11-25</td>
+</tr>
+<tr class="odd">
+<td><code>ipn-ciidir-literatura</code></td>
+<td>Instituto Politécnico Nacional. Centro Interdisciplinario de Investiga</td>
+<td style="text-align: right;">625</td>
+<td style="text-align: right;">617</td>
+<td style="text-align: right;">100 %</td>
+<td style="text-align: right;">100 %</td>
+<td>2025-09-22</td>
+</tr>
+<tr class="even">
+<td><code>cimmyt-data</code></td>
+<td></td>
+<td style="text-align: right;">623</td>
+<td style="text-align: right;">0</td>
+<td style="text-align: right;">100 %</td>
+<td style="text-align: right;">100 %</td>
+<td>2026-11-25</td>
+</tr>
+<tr class="odd">
+<td><code>inmegen</code></td>
+<td>PLoS One</td>
+<td style="text-align: right;">579</td>
+<td style="text-align: right;">576</td>
+<td style="text-align: right;">100 %</td>
+<td style="text-align: right;">100 %</td>
+<td>2025-09-22</td>
+</tr>
+<tr class="even">
+<td><code>ipn-cbg</code></td>
+<td>Elsevier</td>
+<td style="text-align: right;">561</td>
+<td style="text-align: right;">554</td>
+<td style="text-align: right;">100 %</td>
+<td style="text-align: right;">100 %</td>
+<td>2025-09-22</td>
+</tr>
+<tr class="odd">
+<td><code>cideteq</code></td>
+<td>CENTRO DE INVESTIGACIÓN Y DESARROLLO TECNOLÓGICO EN ELECTROQUÍMICA, S.</td>
+<td style="text-align: right;">503</td>
+<td style="text-align: right;">0</td>
+<td style="text-align: right;">95 %</td>
+<td style="text-align: right;">95 %</td>
+<td>2026-08-26</td>
+</tr>
+<tr class="even">
+<td><code>cidesi</code></td>
+<td>CIDESI</td>
+<td style="text-align: right;">478</td>
+<td style="text-align: right;">217</td>
+<td style="text-align: right;">99 %</td>
+<td style="text-align: right;">99 %</td>
+<td>2026-11-25</td>
+</tr>
+<tr class="odd">
+<td><code>flacso</code></td>
+<td>FLACSO México</td>
+<td style="text-align: right;">476</td>
+<td style="text-align: right;">386</td>
+<td style="text-align: right;">100 %</td>
+<td style="text-align: right;">100 %</td>
+<td>2025-09-22</td>
+</tr>
+<tr class="even">
+<td><code>inprf</code></td>
+<td>Instituto Nacional de Psiquiatría Ramón de la Fuente Muñiz</td>
+<td style="text-align: right;">447</td>
+<td style="text-align: right;">0</td>
+<td style="text-align: right;">86 %</td>
+<td style="text-align: right;">86 %</td>
+<td>2025-09-22</td>
+</tr>
+<tr class="odd">
+<td><code>centrogeo</code></td>
+<td>CentroGeo</td>
+<td style="text-align: right;">429</td>
+<td style="text-align: right;">230</td>
+<td style="text-align: right;">98 %</td>
+<td style="text-align: right;">98 %</td>
+<td>2025-09-22</td>
+</tr>
+<tr class="even">
+<td><code>udlap</code></td>
+<td>Universidad de las Américas Puebla, UDLAP</td>
+<td style="text-align: right;">422</td>
+<td style="text-align: right;">285</td>
+<td style="text-align: right;">0 %</td>
+<td style="text-align: right;">0 %</td>
+<td>2025-09-22</td>
+</tr>
+<tr class="odd">
+<td><code>comimsa</code></td>
+<td></td>
+<td style="text-align: right;">382</td>
+<td style="text-align: right;">371</td>
+<td style="text-align: right;">100 %</td>
+<td style="text-align: right;">100 %</td>
+<td>2026-11-25</td>
+</tr>
+<tr class="even">
+<td><code>utmixteca</code></td>
+<td>Universidad Tecnológica de la Mixteca</td>
+<td style="text-align: right;">378</td>
+<td style="text-align: right;">1</td>
+<td style="text-align: right;">100 %</td>
+<td style="text-align: right;">100 %</td>
+<td>2026-11-25</td>
+</tr>
+<tr class="odd">
+<td><code>ipn-ciidir-colecciones</code></td>
+<td>Instituto Politécnico Nacional. Centro Interdisciplinario de Investiga</td>
+<td style="text-align: right;">376</td>
+<td style="text-align: right;">278</td>
+<td style="text-align: right;">100 %</td>
+<td style="text-align: right;">100 %</td>
+<td>2025-09-22</td>
+</tr>
+<tr class="even">
+<td><code>unach</code></td>
+<td>Universidad Autónoma de Chiapas</td>
+<td style="text-align: right;">283</td>
+<td style="text-align: right;">1</td>
+<td style="text-align: right;">94 %</td>
+<td style="text-align: right;">100 %</td>
+<td>2025-09-22</td>
+</tr>
+<tr class="odd">
+<td><code>inger</code></td>
+<td>Elsevier</td>
+<td style="text-align: right;">282</td>
+<td style="text-align: right;">259</td>
+<td style="text-align: right;">100 %</td>
+<td style="text-align: right;">100 %</td>
+<td>2025-09-22</td>
+</tr>
+<tr class="even">
+<td><code>unam-cenoteando</code></td>
+<td></td>
+<td style="text-align: right;">250</td>
+<td style="text-align: right;">0</td>
+<td style="text-align: right;">0 %</td>
+<td style="text-align: right;">0 %</td>
+<td>2026-11-25</td>
+</tr>
+<tr class="odd">
+<td><code>ciatec</code></td>
+<td>CIATEC A. C.</td>
+<td style="text-align: right;">244</td>
+<td style="text-align: right;">169</td>
+<td style="text-align: right;">97 %</td>
+<td style="text-align: right;">97 %</td>
+<td>2026-11-25</td>
+</tr>
+<tr class="even">
+<td><code>uam-lerma</code></td>
+<td>Universidad Autónoma Metropolitana. Unidad Lerma</td>
+<td style="text-align: right;">238</td>
+<td style="text-align: right;">0</td>
+<td style="text-align: right;">98 %</td>
+<td style="text-align: right;">98 %</td>
+<td>2026-11-25</td>
+</tr>
+<tr class="odd">
+<td><code>unad</code></td>
+<td>Universidad Abierta y a Distancia de México</td>
+<td style="text-align: right;">237</td>
+<td style="text-align: right;">236</td>
+<td style="text-align: right;">100 %</td>
+<td style="text-align: right;">100 %</td>
+<td>2026-11-25</td>
+</tr>
+<tr class="even">
+<td><code>ipn-tesis</code></td>
+<td>Gómez Montes, Elías Octavio</td>
+<td style="text-align: right;">215</td>
+<td style="text-align: right;">0</td>
+<td style="text-align: right;">0 %</td>
+<td style="text-align: right;">41 %</td>
+<td>2026-08-26</td>
+</tr>
+<tr class="odd">
+<td><code>padiatria</code></td>
+<td>El Autor</td>
+<td style="text-align: right;">144</td>
+<td style="text-align: right;">0</td>
+<td style="text-align: right;">99 %</td>
+<td style="text-align: right;">100 %</td>
+<td>2025-09-22</td>
+</tr>
+<tr class="even">
+<td><code>unacar</code></td>
+<td></td>
+<td style="text-align: right;">100</td>
+<td style="text-align: right;">0</td>
+<td style="text-align: right;">99 %</td>
+<td style="text-align: right;">99 %</td>
+<td>2025-09-22</td>
+</tr>
+<tr class="odd">
+<td><code>uanl</code></td>
+<td>UANL. Facultad de Ingeniería Mecánica y Eléctrica</td>
+<td style="text-align: right;">81</td>
+<td style="text-align: right;">69</td>
+<td style="text-align: right;">94 %</td>
+<td style="text-align: right;">94 %</td>
+<td>2026-11-25</td>
+</tr>
+<tr class="even">
+<td><code>unam-iimas</code></td>
+<td>MDPI</td>
+<td style="text-align: right;">42</td>
+<td style="text-align: right;">0</td>
+<td style="text-align: right;">0 %</td>
+<td style="text-align: right;">100 %</td>
+<td>2025-09-22</td>
+</tr>
+<tr class="odd">
+<td><code>unam-ssn-literatura</code></td>
+<td>UNAM, Instituto de Geofísica</td>
+<td style="text-align: right;">23</td>
+<td style="text-align: right;">0</td>
+<td style="text-align: right;">100 %</td>
+<td style="text-align: right;">100 %</td>
+<td>2025-09-22</td>
+</tr>
+<tr class="even">
+<td><code>unam-dgdc</code></td>
+<td>International School for Advanced Studies</td>
+<td style="text-align: right;">19</td>
+<td style="text-align: right;">13</td>
+<td style="text-align: right;">68 %</td>
+<td style="text-align: right;">68 %</td>
+<td>2025-09-22</td>
+</tr>
+<tr class="odd">
+<td><code>cibnor</code></td>
+<td>MDPI</td>
+<td style="text-align: right;">8</td>
+<td style="text-align: right;">0</td>
+<td style="text-align: right;">100 %</td>
+<td style="text-align: right;">100 %</td>
+<td>2026-11-25</td>
+</tr>
+<tr class="even">
+<td><code>unicach</code></td>
+<td>Universidad de Ciencias y Artes de Chiapas</td>
+<td style="text-align: right;">8</td>
+<td style="text-align: right;">0</td>
+<td style="text-align: right;">100 %</td>
+<td style="text-align: right;">100 %</td>
+<td>2025-09-22</td>
+</tr>
+</tbody>
+</table>
+
+
+</section>
+
+</main> <!-- /main -->
+<script id="quarto-html-after-body" type="application/javascript">
+  window.document.addEventListener("DOMContentLoaded", function (event) {
+    // Ensure there is a toggle, if there isn't float one in the top right
+    if (window.document.querySelector('.quarto-color-scheme-toggle') === null) {
+      const a = window.document.createElement('a');
+      a.classList.add('top-right');
+      a.classList.add('quarto-color-scheme-toggle');
+      a.href = "";
+      a.onclick = function() { try { window.quartoToggleColorScheme(); } catch {} return false; };
+      const i = window.document.createElement("i");
+      i.classList.add('bi');
+      a.appendChild(i);
+      window.document.body.appendChild(a);
+    }
+    setColorSchemeToggle(hasAlternateSentinel())
+    const icon = "";
+    const anchorJS = new window.AnchorJS();
+    anchorJS.options = {
+      placement: 'right',
+      icon: icon
+    };
+    anchorJS.add('.anchored');
+    const isCodeAnnotation = (el) => {
+      for (const clz of el.classList) {
+        if (clz.startsWith('code-annotation-')) {                     
+          return true;
+        }
+      }
+      return false;
+    }
+    const onCopySuccess = function(e) {
+      // button target
+      const button = e.trigger;
+      // don't keep focus
+      button.blur();
+      // flash "checked"
+      button.classList.add('code-copy-button-checked');
+      var currentTitle = button.getAttribute("title");
+      button.setAttribute("title", "Copiado");
+      let tooltip;
+      if (window.bootstrap) {
+        button.setAttribute("data-bs-toggle", "tooltip");
+        button.setAttribute("data-bs-placement", "left");
+        button.setAttribute("data-bs-title", "Copiado");
+        tooltip = new bootstrap.Tooltip(button, 
+          { trigger: "manual", 
+            customClass: "code-copy-button-tooltip",
+            offset: [0, -8]});
+        tooltip.show();    
+      }
+      setTimeout(function() {
+        if (tooltip) {
+          tooltip.hide();
+          button.removeAttribute("data-bs-title");
+          button.removeAttribute("data-bs-toggle");
+          button.removeAttribute("data-bs-placement");
+        }
+        button.setAttribute("title", currentTitle);
+        button.classList.remove('code-copy-button-checked');
+      }, 1000);
+      // clear code selection
+      e.clearSelection();
+    }
+    const getTextToCopy = function(trigger) {
+      const outerScaffold = trigger.parentElement.cloneNode(true);
+      const codeEl = outerScaffold.querySelector('code');
+      for (const childEl of codeEl.children) {
+        if (isCodeAnnotation(childEl)) {
+          childEl.remove();
+        }
+      }
+      return codeEl.innerText;
+    }
+    const clipboard = new window.ClipboardJS('.code-copy-button:not([data-in-quarto-modal])', {
+      text: getTextToCopy
+    });
+    clipboard.on('success', onCopySuccess);
+    if (window.document.getElementById('quarto-embedded-source-code-modal')) {
+      const clipboardModal = new window.ClipboardJS('.code-copy-button[data-in-quarto-modal]', {
+        text: getTextToCopy,
+        container: window.document.getElementById('quarto-embedded-source-code-modal')
+      });
+      clipboardModal.on('success', onCopySuccess);
+    }
+      var localhostRegex = new RegExp(/^(?:http|https):\/\/localhost\:?[0-9]*\//);
+      var mailtoRegex = new RegExp(/^mailto:/);
+        var filterRegex = new RegExp("https:\/\/sadit\.github\.io\/ReposMx\/");
+      var isInternal = (href) => {
+          return filterRegex.test(href) || localhostRegex.test(href) || mailtoRegex.test(href);
+      }
+      // Inspect non-navigation links and adorn them if external
+     var links = window.document.querySelectorAll('a[href]:not(.nav-link):not(.navbar-brand):not(.toc-action):not(.sidebar-link):not(.sidebar-item-toggle):not(.pagination-link):not(.no-external):not([aria-hidden]):not(.dropdown-item):not(.quarto-navigation-tool):not(.about-link)');
+      for (var i=0; i<links.length; i++) {
+        const link = links[i];
+        if (!isInternal(link.href)) {
+          // undo the damage that might have been done by quarto-nav.js in the case of
+          // links that we want to consider external
+          if (link.dataset.originalHref !== undefined) {
+            link.href = link.dataset.originalHref;
+          }
+        }
+      }
+    function tippyHover(el, contentFn, onTriggerFn, onUntriggerFn) {
+      const config = {
+        allowHTML: true,
+        maxWidth: 500,
+        delay: 100,
+        arrow: false,
+        appendTo: function(el) {
+            return el.parentElement;
+        },
+        interactive: true,
+        interactiveBorder: 10,
+        theme: 'quarto',
+        placement: 'bottom-start',
+      };
+      if (contentFn) {
+        config.content = contentFn;
+      }
+      if (onTriggerFn) {
+        config.onTrigger = onTriggerFn;
+      }
+      if (onUntriggerFn) {
+        config.onUntrigger = onUntriggerFn;
+      }
+      window.tippy(el, config); 
+    }
+    const noterefs = window.document.querySelectorAll('a[role="doc-noteref"]');
+    for (var i=0; i<noterefs.length; i++) {
+      const ref = noterefs[i];
+      tippyHover(ref, function() {
+        // use id or data attribute instead here
+        let href = ref.getAttribute('data-footnote-href') || ref.getAttribute('href');
+        try { href = new URL(href).hash; } catch {}
+        const id = href.replace(/^#\/?/, "");
+        const note = window.document.getElementById(id);
+        if (note) {
+          return note.innerHTML;
+        } else {
+          return "";
+        }
+      });
+    }
+    const xrefs = window.document.querySelectorAll('a.quarto-xref');
+    const processXRef = (id, note) => {
+      // Strip column container classes
+      const stripColumnClz = (el) => {
+        el.classList.remove("page-full", "page-columns");
+        if (el.children) {
+          for (const child of el.children) {
+            stripColumnClz(child);
+          }
+        }
+      }
+      stripColumnClz(note)
+      if (id === null || id.startsWith('sec-')) {
+        // Special case sections, only their first couple elements
+        const container = document.createElement("div");
+        if (note.children && note.children.length > 2) {
+          container.appendChild(note.children[0].cloneNode(true));
+          for (let i = 1; i < note.children.length; i++) {
+            const child = note.children[i];
+            if (child.tagName === "P" && child.innerText === "") {
+              continue;
+            } else {
+              container.appendChild(child.cloneNode(true));
+              break;
+            }
+          }
+          if (window.Quarto?.typesetMath) {
+            window.Quarto.typesetMath(container);
+          }
+          return container.innerHTML
+        } else {
+          if (window.Quarto?.typesetMath) {
+            window.Quarto.typesetMath(note);
+          }
+          return note.innerHTML;
+        }
+      } else {
+        // Remove any anchor links if they are present
+        const anchorLink = note.querySelector('a.anchorjs-link');
+        if (anchorLink) {
+          anchorLink.remove();
+        }
+        if (window.Quarto?.typesetMath) {
+          window.Quarto.typesetMath(note);
+        }
+        if (note.classList.contains("callout")) {
+          return note.outerHTML;
+        } else {
+          return note.innerHTML;
+        }
+      }
+    }
+    for (var i=0; i<xrefs.length; i++) {
+      const xref = xrefs[i];
+      tippyHover(xref, undefined, function(instance) {
+        instance.disable();
+        let url = xref.getAttribute('href');
+        let hash = undefined; 
+        if (url.startsWith('#')) {
+          hash = url;
+        } else {
+          try { hash = new URL(url).hash; } catch {}
+        }
+        if (hash) {
+          const id = hash.replace(/^#\/?/, "");
+          const note = window.document.getElementById(id);
+          if (note !== null) {
+            try {
+              const html = processXRef(id, note.cloneNode(true));
+              instance.setContent(html);
+            } finally {
+              instance.enable();
+              instance.show();
+            }
+          } else {
+            // See if we can fetch this
+            fetch(url.split('#')[0])
+            .then(res => res.text())
+            .then(html => {
+              const parser = new DOMParser();
+              const htmlDoc = parser.parseFromString(html, "text/html");
+              const note = htmlDoc.getElementById(id);
+              if (note !== null) {
+                const html = processXRef(id, note);
+                instance.setContent(html);
+              } 
+            }).finally(() => {
+              instance.enable();
+              instance.show();
+            });
+          }
+        } else {
+          // See if we can fetch a full url (with no hash to target)
+          // This is a special case and we should probably do some content thinning / targeting
+          fetch(url)
+          .then(res => res.text())
+          .then(html => {
+            const parser = new DOMParser();
+            const htmlDoc = parser.parseFromString(html, "text/html");
+            const note = htmlDoc.querySelector('main.content');
+            if (note !== null) {
+              // This should only happen for chapter cross references
+              // (since there is no id in the URL)
+              // remove the first header
+              if (note.children.length > 0 && note.children[0].tagName === "HEADER") {
+                note.children[0].remove();
+              }
+              const html = processXRef(null, note);
+              instance.setContent(html);
+            } 
+          }).finally(() => {
+            instance.enable();
+            instance.show();
+          });
+        }
+      }, function(instance) {
+      });
+    }
+        let selectedAnnoteEl;
+        const selectorForAnnotation = ( cell, annotation) => {
+          let cellAttr = 'data-code-cell="' + cell + '"';
+          let lineAttr = 'data-code-annotation="' +  annotation + '"';
+          const selector = 'span[' + cellAttr + '][' + lineAttr + ']';
+          return selector;
+        }
+        const selectCodeLines = (annoteEl) => {
+          const doc = window.document;
+          const targetCell = annoteEl.getAttribute("data-target-cell");
+          const targetAnnotation = annoteEl.getAttribute("data-target-annotation");
+          const annoteSpan = window.document.querySelector(selectorForAnnotation(targetCell, targetAnnotation));
+          const lines = annoteSpan.getAttribute("data-code-lines").split(",");
+          const lineIds = lines.map((line) => {
+            return targetCell + "-" + line;
+          })
+          let top = null;
+          let height = null;
+          let parent = null;
+          if (lineIds.length > 0) {
+              //compute the position of the single el (top and bottom and make a div)
+              const el = window.document.getElementById(lineIds[0]);
+              top = el.offsetTop;
+              height = el.offsetHeight;
+              parent = el.parentElement.parentElement;
+            if (lineIds.length > 1) {
+              const lastEl = window.document.getElementById(lineIds[lineIds.length - 1]);
+              const bottom = lastEl.offsetTop + lastEl.offsetHeight;
+              height = bottom - top;
+            }
+            if (top !== null && height !== null && parent !== null) {
+              // cook up a div (if necessary) and position it 
+              let div = window.document.getElementById("code-annotation-line-highlight");
+              if (div === null) {
+                div = window.document.createElement("div");
+                div.setAttribute("id", "code-annotation-line-highlight");
+                div.style.position = 'absolute';
+                parent.appendChild(div);
+              }
+              div.style.top = top - 2 + "px";
+              div.style.height = height + 4 + "px";
+              div.style.left = 0;
+              let gutterDiv = window.document.getElementById("code-annotation-line-highlight-gutter");
+              if (gutterDiv === null) {
+                gutterDiv = window.document.createElement("div");
+                gutterDiv.setAttribute("id", "code-annotation-line-highlight-gutter");
+                gutterDiv.style.position = 'absolute';
+                const codeCell = window.document.getElementById(targetCell);
+                const gutter = codeCell.querySelector('.code-annotation-gutter');
+                gutter.appendChild(gutterDiv);
+              }
+              gutterDiv.style.top = top - 2 + "px";
+              gutterDiv.style.height = height + 4 + "px";
+            }
+            selectedAnnoteEl = annoteEl;
+          }
+        };
+        const unselectCodeLines = () => {
+          const elementsIds = ["code-annotation-line-highlight", "code-annotation-line-highlight-gutter"];
+          elementsIds.forEach((elId) => {
+            const div = window.document.getElementById(elId);
+            if (div) {
+              div.remove();
+            }
+          });
+          selectedAnnoteEl = undefined;
+        };
+          // Handle positioning of the toggle
+      window.addEventListener(
+        "resize",
+        throttle(() => {
+          elRect = undefined;
+          if (selectedAnnoteEl) {
+            selectCodeLines(selectedAnnoteEl);
+          }
+        }, 10)
+      );
+      function throttle(fn, ms) {
+      let throttle = false;
+      let timer;
+        return (...args) => {
+          if(!throttle) { // first call gets through
+              fn.apply(this, args);
+              throttle = true;
+          } else { // all the others get throttled
+              if(timer) clearTimeout(timer); // cancel #2
+              timer = setTimeout(() => {
+                fn.apply(this, args);
+                timer = throttle = false;
+              }, ms);
+          }
+        };
+      }
+        // Attach click handler to the DT
+        const annoteDls = window.document.querySelectorAll('dt[data-target-cell]');
+        for (const annoteDlNode of annoteDls) {
+          annoteDlNode.addEventListener('click', (event) => {
+            const clickedEl = event.target;
+            if (clickedEl !== selectedAnnoteEl) {
+              unselectCodeLines();
+              const activeEl = window.document.querySelector('dt[data-target-cell].code-annotation-active');
+              if (activeEl) {
+                activeEl.classList.remove('code-annotation-active');
+              }
+              selectCodeLines(clickedEl);
+              clickedEl.classList.add('code-annotation-active');
+            } else {
+              // Unselect the line
+              unselectCodeLines();
+              clickedEl.classList.remove('code-annotation-active');
+            }
+          });
+        }
+    const findCites = (el) => {
+      const parentEl = el.parentElement;
+      if (parentEl) {
+        const cites = parentEl.dataset.cites;
+        if (cites) {
+          return {
+            el,
+            cites: cites.split(' ')
+          };
+        } else {
+          return findCites(el.parentElement)
+        }
+      } else {
+        return undefined;
+      }
+    };
+    var bibliorefs = window.document.querySelectorAll('a[role="doc-biblioref"]');
+    for (var i=0; i<bibliorefs.length; i++) {
+      const ref = bibliorefs[i];
+      const citeInfo = findCites(ref);
+      if (citeInfo) {
+        tippyHover(citeInfo.el, function() {
+          var popup = window.document.createElement('div');
+          citeInfo.cites.forEach(function(cite) {
+            var citeDiv = window.document.createElement('div');
+            citeDiv.classList.add('hanging-indent');
+            citeDiv.classList.add('csl-entry');
+            var biblioDiv = window.document.getElementById('ref-' + cite);
+            if (biblioDiv) {
+              citeDiv.innerHTML = biblioDiv.innerHTML;
+            }
+            popup.appendChild(citeDiv);
+          });
+          return popup.innerHTML;
+        });
+      }
+    }
+  });
+  </script>
+</div> <!-- /content -->
+<footer class="footer">
+  <div class="nav-footer">
+    <div class="nav-footer-left">
+      &nbsp;
+    </div>   
+    <div class="nav-footer-center">
+<p>ReposMx · estado al 26 de noviembre de 2026</p>
+</div>
+    <div class="nav-footer-right">
+      &nbsp;
+    </div>
+  </div>
+</footer>
+
+
+
+
+</body></html>
