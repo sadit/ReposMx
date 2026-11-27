@@ -26,7 +26,8 @@ import SimilaritySearchEngine
 const SSE = SimilaritySearchEngine
 
 export DOCS_CONTENT, DOCS_REFS, AUTHORS_NAME, AUTHORS_PROFILE, PROJECT_NAMES, QUERY_POLICY, TOKENS_POLICY,
-       engine_workdir, index_profile, build_text_project!, open_index, split_doc_key, doc_key_of
+       engine_workdir, index_profile, build_text_project!, open_index, split_doc_key, doc_key_of,
+       CTI_FOLLOWERS, create_partition_followers!
 
 const DOCS_CONTENT = "docs_content"
 const DOCS_REFS = "docs_refs"
@@ -104,16 +105,47 @@ function index_profile(voc::Vocabulary, artifacts::Union{TextProfile,Nothing})
 end
 
 """
-    build_text_project!(workdir, name, profile, texts, doc_ids, metas; partition_by) -> Nothing
+    CTI_FOLLOWERS
+
+The partition followers of the document projects (`docs_content` and the dense `docs_dense`), one per
+level of the CTI classification that the repositories declare (`Corpus.cti_codes`; the catalogs are those
+of SECIHTI, formerly CONACYT): follower name =>
+field of the `meta`. A document is in every partition it names (`disjoint=false`); one without
+classification is in none. `open_follower(h, "disciplina=CIENCIA DE LOS ORDENADORES")` restricts a
+search to one value, with the same score as the global search (SimilaritySearchEngine, followers).
+
+The CTI is metadata as declared, not training data (decision of the user, 2026-11-26): a classifier trained
+on it reached 0.50 on the disciplina of held-out documents, and only half of the labeled documents agree with
+their neighborhood (experiments/rag_web/cti_inferencia.jl).
+"""
+const CTI_FOLLOWERS = ["area" => "areas", "campo" => "campos", "disciplina" => "disciplinas"]
+
+"""
+    create_partition_followers!(h, followers) -> Nothing
+
+Creates on the open, writable project `h` one `PartitionFollower(MetaValue(field); disjoint=false)` per
+`name => field` of `followers`, and closes them.
+"""
+function create_partition_followers!(h, followers)
+    for (name, field) in followers
+        f = SSE.create_follower(h, name, SSE.PartitionFollower(SSE.MetaValue(field); disjoint=false))
+        SSE.close_follower!(f)
+    end
+    return nothing
+end
+
+"""
+    build_text_project!(workdir, name, profile, texts, doc_ids, metas; partition_by, followers=[]) -> Nothing
 
 Creates the project `name` under `workdir`, appends one item per text, and indexes them. Item
 `i` gets the text `texts[i]`, the `doc_id` `doc_ids[i]` and the meta `metas[i]`, so the items of
 the four projects keep the order of the corpus. An empty text is appended too: it is never
-found, and it keeps item `i` in its place.
+found, and it keeps item `i` in its place. `followers` (`name => meta field`) are partition followers
+created after indexing ([`create_partition_followers!`](@ref)).
 """
 function build_text_project!(workdir::AbstractString, name::AbstractString, profile::TextProfile,
                              texts::AbstractVector{<:AbstractString}, doc_ids::AbstractVector{<:AbstractString},
-                             metas::AbstractVector; partition_by::Union{Nothing,AbstractString})
+                             metas::AbstractVector; partition_by::Union{Nothing,AbstractString}, followers=Pair{String,String}[])
     length(texts) == length(doc_ids) == length(metas) || error("texts, doc_ids and metas differ in length")
     h = SSE.create_project(workdir, name, SSE.TextDocuments(SSE.BaseProfile(profile); index=SSE.BM25());
                            partitions=partition_by === nothing ? nothing : SSE.PartitionBy(partition_by))
@@ -124,6 +156,7 @@ function build_text_project!(workdir::AbstractString, name::AbstractString, prof
             SSE.append_items!(h, [SSE.TextItem(texts[i]; doc_id=doc_ids[i], meta=metas[i]) for i in sp:ep])
         end
         SSE.index!(h)
+        create_partition_followers!(h, followers)
     finally
         SSE.close_project!(h)
     end

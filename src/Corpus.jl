@@ -1,11 +1,11 @@
 module Corpus
 
-using EzXML, JSON, SHA
+using EzXML, JSON, SHA, Unicode
 using ..Config: DEFAULT_DATA_DIR
 using ..Storage: get_repo_dir, load_metadata_records, save_corpus_records, list_repo_names
-using ..Catalogs: resolve_cti_code
+using ..Catalogs: resolve_cti_code, cti_levels
 
-export parse_xml_metadata, parse_author_names, parse_keywords, normalize_doc_type,
+export parse_xml_metadata, parse_author_names, parse_keywords, normalize_doc_type, is_text_document, NON_TEXT_TYPES,
        extract_conclusions, extract_reference_section, parse_individual_references,
        extract_document_references, split_into_paragraphs,
        build_repository_corpus, build_all_corpus, build_authors_index_data, repair_author_names!
@@ -372,27 +372,80 @@ function parse_keywords(subject_str::AbstractString)
 end
 
 """
-    normalize_doc_type(type_str::AbstractString)
+    cti_codes(subject_str) -> Vector{String}
 
-Categorizes publication type: Tesis, Artículo, Libro, Capítulo, Reporte, Otro.
+The CTI codes (`info:eu-repo/classification/cti/<code>`) among the `dc:subject` values of a record.
+"""
+function cti_codes(subject_str::AbstractString)
+    codes = String[]
+    for p in split(subject_str, r"[;\n\|]")
+        m = match(DRIVER_SUBJECT_RE, strip(p))
+        m === nothing && continue
+        lowercase(m.captures[1]) == "cti" && push!(codes, String(strip(m.captures[2])))
+    end
+    return unique!(codes)
+end
+
+"""
+    DOC_TYPE_RULES
+
+The document types, in order of priority, each with the pattern that recognizes it in the `dc:type` values of
+a record joined together, lowercase and without accents (2026-11-26; the counts are in docs/plan-rag-web.md).
+A record with several values takes the first type that matches, so the specific one wins over a generic one
+("tesis de maestría ; texto" is a master's thesis).
+"""
+const DOC_TYPE_RULES = [
+    "Tesis de doctorado" => r"doctoralthesis|doctor",
+    "Tesis de maestría" => r"masterthesis|maestr|master",
+    "Tesis de licenciatura" => r"bachelorthesis|licenci|bachelor|tesina|proyecto terminal|trabajo terminal",
+    "Tesis de especialidad" => r"especialidad|specialization",
+    "Tesis" => r"thesis|tesis|dissertation|trabajo de grado",
+    "Artículo" => r"\barticle\b|articulo|journal|contributiontoperiodical",
+    "Capítulo de libro" => r"bookpart|capitulo|chapter",
+    "Libro" => r"\bbook\b|libro|monograf",
+    "Ponencia o memoria" => r"conferen|ponencia|congres|proceeding|memoria|lecture",
+    "Reporte técnico o informe" => r"report|informe|technicaldocumentation",
+    "Preprint o documento de trabajo" => r"preprint|workingpaper|working paper|documento de trabajo",
+    "Reseña" => r"review|resena",
+    "Conjunto de datos" => r"dataset|conjunto de datos|datos de ortologos",
+    "Patente" => r"patent",
+    "Material didáctico o de divulgación" => r"learningobject|didact|divulgac|educativ",
+    "Imagen, mapa, audio o video" => r"image|imagen|mapa|\bmap\b|audio|video|sound|fotogra|cartogra",
+    "Software" => r"software",
+    "Carta o documento de archivo" => r"\bcarta|correspond|manuscrito|expediente|documento de archivo|archival",
+    "Evento" => r"\bevent\b|evento",
+    "Texto sin especificar" => r"\btexto\b|\btext\b|semantics/other\b|^other$|^otro$",
+]
+
+"""
+    NON_TEXT_TYPES
+
+The types that are not academic work in text (letters and archive documents, photographs and other media,
+seismic events, datasets). They stay in the corpus and in the text indices with their metadata, but not in
+the dense project nor in what the generator of the web demo reads (decision of the user, 2026-11-26).
+"""
+const NON_TEXT_TYPES = ("Carta o documento de archivo", "Imagen, mapa, audio o video", "Evento", "Conjunto de datos")
+
+"""
+    is_text_document(doc_type) -> Bool
+
+Whether a document of type `doc_type` (a value of [`normalize_doc_type`](@ref)) is academic work in text.
+"""
+is_text_document(doc_type::AbstractString) = !(doc_type in NON_TEXT_TYPES)
+
+"""
+    normalize_doc_type(type_str::AbstractString) -> String
+
+The type of a document from its `dc:type` values joined together ([`DOC_TYPE_RULES`](@ref)): `"Otro"` when
+none matches and `"Sin tipo"` when there is none.
 """
 function normalize_doc_type(type_str::AbstractString)
-    t = lowercase(type_str)
-    if occursin(r"tesis|thesis|dissertation|grado|maestr|doctor"i, t)
-        return "Tesis"
-    elseif occursin(r"art[ií]culo|article|journal|paper|revista"i, t)
-        return "Artículo"
-    elseif occursin(r"libro|book|monograph"i, t)
-        return "Libro"
-    elseif occursin(r"cap[ií]tulo|chapter|secci[oó]n"i, t)
-        return "Capítulo de Libro"
-    elseif occursin(r"reporte|informe|technical report"i, t)
-        return "Reporte Técnico"
-    elseif occursin(r"conferencia|conference|proceedings|ponencia|memorias"i, t)
-        return "Conferencia / Ponencia"
-    else
-        return "Documento Académico"
+    t = strip(lowercase(Unicode.normalize(String(type_str); stripmark=true)))
+    isempty(t) && return "Sin tipo"
+    for (name, pattern) in DOC_TYPE_RULES
+        occursin(pattern, t) && return name
     end
+    return "Otro"
 end
 
 """
@@ -559,6 +612,33 @@ function parse_xml_metadata(xml_str::AbstractString)
 end
 
 """
+    record_link(xml) -> String
+
+The link to the record in its repository: the first `dc:identifier` that is an http(s) URL, or a
+DOI (`10.<prefix>/<suffix>`, alone or as `doi:`/`info:doi/`) turned into `https://doi.org/...`.
+A URL that does not end in a file extension (a landing page or a handle) is preferred to one that
+does. `""` when the record has neither. This is what the web cites: our copy of the files is not
+shared.
+"""
+function record_link(xml::AbstractString)
+    urls = String[]
+    doi = ""
+    for m in eachmatch(r"<(?:\w+:)?identifier\b[^>]*>([^<]*)</"i, xml)
+        v = strip(replace(m.captures[1], "&amp;" => "&"))
+        if occursin(r"^https?://"i, v)
+            push!(urls, v)
+        elseif isempty(doi)
+            d = match(r"^(?:doi:|info:doi/)?\s*(10\.\d{4,9}/\S+)$"i, v)
+            d === nothing || (doi = "https://doi.org/" * d.captures[1])
+        end
+    end
+    landing = findfirst(u -> !occursin(r"\.(pdf|docx?|pptx?|odt|epub|txt)$"i, u), urls)
+    landing !== nothing && return urls[landing]
+    isempty(doi) || return doi
+    return isempty(urls) ? "" : first(urls)
+end
+
+"""
     build_repository_corpus(reponame; data_dir=DEFAULT_DATA_DIR, include_fulltext=true)
 
 Unifies metadata records with extracted keywords, document types, extracted conclusions, and bibliographic citations into `corpus.jsonl`.
@@ -589,6 +669,7 @@ function build_repository_corpus(reponame::AbstractString; data_dir=DEFAULT_DATA
         contributors = parse_author_names(contrib_raw)
         keywords = parse_keywords(subj_raw)
         doc_type = normalize_doc_type(type_raw)
+        areas, campos, disciplinas = cti_levels(cti_codes(subj_raw))
         
         conclusions = ""
         references = Dict{String, Any}[]
@@ -626,6 +707,10 @@ function build_repository_corpus(reponame::AbstractString; data_dir=DEFAULT_DATA
         doc = Dict{String, Any}(
             "id" => id,
             "repo" => reponame,
+            "liga" => record_link(xml),
+            # la clasificación CTI declarada por el repositorio (área, campo y disciplina, con los niveles de
+            # arriba de cada código); vacía en los que no la declaran
+            "areas" => areas, "campos" => campos, "disciplinas" => disciplinas,
             "title" => title_str,
             "creator" => creator_raw,
             "creators" => creators,

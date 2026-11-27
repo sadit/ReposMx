@@ -8,6 +8,7 @@ using ..Catalogs: fetch_cti_catalogs
 using ..Parser: parse_all_documents
 using ..Corpus: build_all_corpus
 using ..Indexing: build_search_index, rebuild_authors_index
+using ..Dense: export_units
 using ..Search: SearchEngine, query_index, get_detailed_statistics
 using ..Server: start_server
 using ..TUI: launch_interactive_shell
@@ -44,6 +45,9 @@ SUBCOMANDOS INDIVIDUALES:
                              existen en lugar de agruparlos otra vez (unas 2 horas)
   consolidate-authors [repos...]  Re-agrupa perfiles de autor (tras editar author_overrides.toml),
                              sin re-tokenizar docs_content/docs_refs
+  export-units [repos...] [--force]
+                             Escribe en data/index/dense/ las unidades a codificar en Colab (ficha y
+                             partes del texto completo); --force reemplaza una exportación con vectores
   search "<query>"           Busca directamente en la terminal (BM25 + Wikipedia)
   info [repo]                Estadísticas detalladas de publicaciones, disciplinas y autores
   status                     Muestra estadísticas de cobertura y estado de los repositorios
@@ -276,7 +280,7 @@ function main_cli(args=ARGS)
     # Parse options and repos
     repos = String[]
     port = 8000
-    host = "0.0.0.0"
+    host = "127.0.0.1"
     top = 10
     reuse_authors = false
 
@@ -330,6 +334,9 @@ function main_cli(args=ARGS)
         Base.invokelatest(build_all_corpus; repos=target_repos)
     elseif cmd == "index"
         Base.invokelatest(build_search_index; repos=target_repos, reuse_authors)
+    elseif cmd == "export-units"
+        s = Base.invokelatest(export_units; repos=target_repos, force="--force" in subargs)
+        println("Unidades: $(s["unidades"]) $(s["por_seccion"]); textos distintos: $(s["textos_distintos"]) en $(s["lotes"]) lotes")
     elseif cmd == "consolidate-authors"
         Base.invokelatest(rebuild_authors_index; repos=target_repos)
     elseif cmd == "search"

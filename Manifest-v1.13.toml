@@ -2,7 +2,7 @@
 
 julia_version = "1.13.3"
 manifest_format = "2.1"
-project_hash = "b905b2444d367cbd5420ca1b9b32b6713beea9ba"
+project_hash = "8daca8bd3bdbdf3fecc0517d213104e45331b3c1"
 
 [[deps.AbstractTrees]]
 git-tree-sha1 = "2d9c9a55f9c93e8887ad391fbae72f8ef55e1177"
@@ -673,7 +673,7 @@ uuid = "189a3867-3050-52da-a836-e630ba90ab69"
 version = "1.2.2"
 
 [[deps.ReposMx]]
-deps = ["Dates", "Downloads", "EzXML", "HTTP", "JSON", "JSON3", "PDFIO", "Pkg", "REPL", "RocksDB", "SHA", "SimilaritySearch", "SimilaritySearchEngine", "TOML", "Term", "TextSearch", "URIs", "ZipArchives"]
+deps = ["Dates", "Downloads", "EzXML", "HTTP", "JSON", "JSON3", "LinearAlgebra", "PDFIO", "Pkg", "REPL", "RocksDB", "SHA", "SimilaritySearch", "SimilaritySearchEngine", "TOML", "Term", "TextSearch", "URIs", "Unicode", "ZipArchives"]
 path = "."
 uuid = "b7f9d8a1-4321-4f12-9876-123456789abc"
 version = "0.2.0"
@@ -775,7 +775,7 @@ version = "1.6.12"
 deps = ["Dates", "JSON", "PrecompileTools", "Random", "RocksDB", "SimilaritySearch", "SparseArrays", "TextSearch"]
 path = "../../Research/SimilaritySearchEngine.jl"
 uuid = "727cb942-cf72-4dec-85ff-a934ba36de1c"
-version = "0.1.0"
+version = "0.2.0"
 
 [[deps.Sockets]]
 uuid = "6462fe0b-24de-5631-8697-dd941f90decc"

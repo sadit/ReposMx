@@ -49,16 +49,36 @@ function parse_opt_int(params, key::AbstractString)
 end
 
 const JSON_HEADERS = ["Content-Type" => "application/json; charset=utf-8"]
-json_response(data; status::Int=200) = HTTP.Response(status, JSON_HEADERS, JSON.json(data))
 
 """
-    start_server(; port=8000, host="0.0.0.0", data_dir=DEFAULT_DATA_DIR, index_dir=DEFAULT_INDEX_DIR)
+    PRIVATE_KEYS
+
+Fields that hold paths of our local copy of the documents (the downloaded file and its extracted
+text). The web does not share that copy: a document is cited by its metadata and the link to its
+record in the repository. The command line and the shell are local and keep showing them.
+"""
+const PRIVATE_KEYS = ("file", "fulltext_file")
+
+"""
+    public(data)
+
+`data` without the keys of [`PRIVATE_KEYS`](@ref), at any depth.
+"""
+public(d::AbstractDict) = Dict{String,Any}(string(k) => public(v) for (k, v) in d if !(string(k) in PRIVATE_KEYS))
+public(v::AbstractVector) = Any[public(x) for x in v]
+public(x) = x
+
+json_response(data; status::Int=200) = HTTP.Response(status, JSON_HEADERS, JSON.json(public(data)))
+
+"""
+    start_server(; port=8000, host="127.0.0.1", data_dir=DEFAULT_DATA_DIR, index_dir=DEFAULT_INDEX_DIR)
 
 Starts the HTTP server and web interface (Read-Only analytical client). Static assets (HTML/CSS/JS)
-are served directly from the `assets/` directory via `HTTP.fileserver`; only `/api/*` and `/file` are
-handled programmatically.
+are served directly from the `assets/` directory via `HTTP.fileserver`; only `/api/*` is handled
+programmatically. It listens on 127.0.0.1 unless told otherwise: from outside it is reached through
+the reverse proxy of the demos. The documents themselves are never served (see [`PRIVATE_KEYS`](@ref)).
 """
-function start_server(; port::Int=8000, host::String="0.0.0.0", data_dir=DEFAULT_DATA_DIR, index_dir=DEFAULT_INDEX_DIR)
+function start_server(; port::Int=8000, host::String="127.0.0.1", data_dir=DEFAULT_DATA_DIR, index_dir=DEFAULT_INDEX_DIR)
     println("Loading search engines for server on port $port...")
     engine = SearchEngine(; index_dir)
 
@@ -85,7 +105,8 @@ function start_server(; port::Int=8000, host::String="0.0.0.0", data_dir=DEFAULT
         doc_type = parse_opt_str(params, "doc_type")
         year_min = parse_opt_int(params, "year_min")
         year_max = parse_opt_int(params, "year_max")
-        wiki = get(params, "wiki", "true") == "true"
+        # Wikipedia only when asked for: it sends the query of the visitor to an external service.
+        wiki = get(params, "wiki", "false") == "true"
         top = parse_int(params, "top", 10)
         offset = parse_int(params, "offset", 0)
 
@@ -316,18 +337,6 @@ Comandos disponibles en ReposMx Shell:
         end
 
         return json_response(Dict("output" => output_str))
-    end)
-
-    HTTP.register!(router, "GET", "/file", function(req)
-        uri = URI(req.target)
-        params = queryparams(uri)
-        path = get(params, "path", "")
-        if isempty(path) || !isfile(path)
-            return HTTP.Response(404, "Archivo no encontrado")
-        end
-        data = read(path)
-        mime = endswith(path, ".pdf") ? "application/pdf" : "application/octet-stream"
-        return HTTP.Response(200, ["Content-Type" => mime], data)
     end)
 
     println("✓ ReposMx Server running at http://$host:$port")

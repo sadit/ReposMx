@@ -46,6 +46,145 @@ using JSON3
         end
     end
 
+    @testset "Corpus.record_link and the private fields of the web (isolated)" begin
+        rl = ReposMx.Corpus.record_link
+        @test rl("""<dc:identifier>El Cotidiano, año 1</dc:identifier><dc:identifier>http://hdl.handle.net/11191/100</dc:identifier>""") ==
+              "http://hdl.handle.net/11191/100"
+        # a landing page is preferred to a direct file, and a DOI to a direct file
+        @test rl("""<dc:identifier>https://r.mx/a.pdf</dc:identifier><dc:identifier>https://r.mx/handle/1/2</dc:identifier>""") ==
+              "https://r.mx/handle/1/2"
+        @test rl("""<dc:identifier>https://r.mx/a.pdf</dc:identifier><dc:identifier>info:doi/10.1234/abc.5</dc:identifier>""") ==
+              "https://doi.org/10.1234/abc.5"
+        @test rl("""<dc:identifier>https://r.mx/a.pdf</dc:identifier>""") == "https://r.mx/a.pdf"
+        @test rl("""<identifier>https://r.mx/x?a=1&amp;b=2</identifier>""") == "https://r.mx/x?a=1&b=2"
+        @test rl("<dc:title>sin liga</dc:title>") == ""
+
+        p = ReposMx.Server.public(Dict("hits" => [Dict("id" => "1", "file" => "/data/x.pdf", "fulltext_file" => "/data/x.txt",
+                                                       "liga" => "http://hdl.handle.net/1")]))
+        @test p["hits"][1] == Dict{String,Any}("id" => "1", "liga" => "http://hdl.handle.net/1")
+    end
+
+    @testset "Corpus: document types from all the dc:type values (isolated)" begin
+        T = ReposMx.Corpus.normalize_doc_type
+        @test T("info:eu-repo/semantics/masterThesis ; info:eu-repo/semantics/publishedVersion") == "Tesis de maestría"
+        @test T("Tesis de doctorado ; Texto") == "Tesis de doctorado"
+        @test T("Tesis de Licenciatura") == "Tesis de licenciatura"
+        @test T("Proyecto terminal") == "Tesis de licenciatura"
+        @test T("thesis") == "Tesis"
+        @test T("info:eu-repo/semantics/article") == "Artículo"
+        @test T("Artículo") == "Artículo"
+        @test T("info:eu-repo/semantics/bookPart") == "Capítulo de libro"
+        @test T("Libro ; Texto") == "Libro"
+        @test T("Texto ; Carta") == "Carta o documento de archivo"
+        @test T("Fotografía ; Imagen") == "Imagen, mapa, audio o video"
+        @test T("Event") == "Evento"
+        @test T("Dataset") == "Conjunto de datos"
+        @test T("Texto") == "Texto sin especificar"
+        @test T("algo raro") == "Otro"
+        @test T("") == "Sin tipo"
+        @test !ReposMx.Corpus.is_text_document("Evento")
+        @test ReposMx.Corpus.is_text_document("Tesis de maestría")
+        @test ReposMx.Corpus.is_text_document("Sin tipo")
+    end
+
+    @testset "Units: parts of the full text and the record text (isolated)" begin
+        U = ReposMx.Units
+        @test U.heading("Capı́tulo 1. Introducción") === :introduction        # dotless ı plus a combining accent
+        @test U.heading("  4.  CONCLUSIONES ") === :conclusions
+        @test U.heading("Referencias bibliográficas") === :bibliography
+        @test U.heading("1 Introducción . . . . . . . . . 3") === nothing        # dot leaders of a table of contents
+        @test U.heading("Introducción 3") === nothing                           # page number of a table of contents
+        @test U.heading("La introducción de especies exóticas") === nothing
+
+        @test U.split_units(["a"^1500, "", "b"^800, "", "c"^100]; max_chars=2000) == ["a"^1500, "b"^800 * "\n" * "c"^100]
+        @test all(length(u) <= 2000 for u in U.split_units([join(fill("palabra", 1000), " ")]; max_chars=2000))
+        @test U.split_units(["exten-", "sión"]) == ["extensión"]
+
+        prose(w) = [join(fill(w, 12), " ") for _ in 1:3]
+        lines = vcat(["Contenido", "1 Introducción . . . . . 1", "2 Métodos . . . . . 5", "3 Conclusiones . . . . 9", ""],
+                     ["Introducción", ""], [prose("intro") ; ""], repeat([prose("método"); ""], 30),
+                     ["Conclusiones", ""], [prose("conclusión"); ""], repeat([prose("anexo"); ""], 3),
+                     ["Referencias", ""], [prose("cita"); ""])
+        parts = U.fulltext_units(join(lines, "\n"); first_units=1, last_units=1, max_chars=300, min_chars=50)
+        @test first.(parts) == [:start, :end]
+        @test occursin("intro", last(parts[1])) && !occursin("Contenido", last(parts[1]))
+        @test occursin("conclusión", last(parts[2]))
+        @test !any(p -> occursin("cita", last(p)), parts)
+
+        @test U.record_text(Dict("title" => "T", "creators" => ["A B", "C D"], "keywords" => ["k1", "k2"], "description" => "R")) ==
+              "T\nA B; C D\nk1, k2\nR"
+        @test U.record_text(Dict("title" => "T", "creator" => "", "keywords" => String[], "subject" => "", "description" => "")) == "T"
+    end
+
+    @testset "Dense: build the project from an export and search it (isolated, synthetic vectors)" begin
+        D = ReposMx.Dense
+        mktempdir() do idx
+            dir = D.dense_dir(idx)
+            mkpath(joinpath(dir, "textos")); mkpath(joinpath(dir, "vectores"))
+            rng = Random.MersenneTwister(5)
+            n = 60
+            V = randn(rng, Float32, D.DIM, n)
+            shas = ["sha$i" for i in 1:n]
+            open(joinpath(dir, "textos", "textos-00001.jsonl"), "w") do f
+                for i in 1:n
+                    println(f, JSON3.write(Dict("sha" => shas[i], "texto" => "texto $i")))
+                end
+            end
+            write(joinpath(dir, "vectores", "textos-00001.f16"), Float16.(V))
+            # 20 documents of 3 units each, in two repositories; the last unit repeats a text
+            open(joinpath(dir, "unidades.jsonl"), "w") do f
+                for i in 1:n
+                    doc, k = divrem(i - 1, 3)
+                    repo = doc < 10 ? "ra" : "rb"
+                    println(f, JSON3.write(Dict("doc_id" => "$repo:d$doc#$k", "repo" => repo, "id" => "d$doc", "k" => k,
+                                                "seccion" => k == 0 ? "ficha" : "inicio", "sha" => shas[i])))
+                end
+            end
+            # the corpus: documents 0-4 declare the disciplina BIO (and its campo and área); document 5 is a
+            # seismic event, which stays only in the metadata
+            data = mktempdir()
+            for (repo, docs) in (("ra", 0:9), ("rb", 10:19))
+                mkpath(joinpath(data, repo))
+                open(joinpath(data, repo, "corpus.jsonl"), "w") do f
+                    for doc in docs
+                        bio = doc <= 4
+                        println(f, JSON3.write(Dict("id" => "d$doc", "repo" => repo, "type" => doc == 5 ? "Evento" : "Artículo",
+                            "areas" => bio ? ["BIOLOGÍA Y QUÍMICA"] : String[], "campos" => bio ? ["CIENCIAS DE LA VIDA"] : String[],
+                            "disciplinas" => bio ? ["BIO"] : String[])))
+                    end
+                end
+            end
+            s = D.build_dense_project(; index_dir=idx, data_dir=data, samplesize=n)
+            @test s["unidades"] == n - 3 && s["sin_vector"] == 0 && s["excluidas_por_tipo"] == 3
+            d = D.open_dense(idx)
+            try
+                q = V[:, 8] ./ sqrt(sum(abs2, V[:, 8]))          # unit 8: document 2, k = 1, repository ra
+                r = D.search_dense(d, q, 3)
+                @test r[1].doc_id == "ra:d2#1" && r[1].texto == "texto 8" && r[1].seccion == "inicio"
+                @test r[1].similarity > 0.95
+                @test all(x -> startswith(x.doc_id, "rb:"), D.search_dense(d, q, 3; repo="rb"))
+                @test isempty(D.search_dense(d, q, 3; repo="nada"))
+                @test length(D.search_dense(d, q, 10; per_document=1)) == length(unique(x.document for x in D.search_dense(d, q, 10; per_document=1)))
+                ex = D.search_among_documents(d, q, ["rb:d15", "ra:d2"], 2; per_document=1)
+                @test ex[1].doc_id == "ra:d2#1"
+                @test ex[1].similarity ≈ 1 atol = 1e-5
+                @test ex[2].document == "rb:d15"
+                # the CTI partition followers
+                @test D.cti_values(d.handle, "disciplina") == [(name="BIO", items=15)]
+                @test D.cti_values(d.handle, "campo") == [(name="CIENCIAS DE LA VIDA", items=15)]
+                b = D.search_dense(d, q, 5; cti="disciplina" => "BIO")
+                @test b[1].doc_id == "ra:d2#1" && all(x -> x.document in ("ra:d$i" for i in 0:4), b)
+                @test isempty(D.search_dense(d, q, 5; cti="disciplina" => "BIO", repo="rb"))
+                @test isempty(D.search_dense(d, q, 5; cti="disciplina" => "NADA"))
+                @test all(x -> x.document != "ra:d5", D.search_dense(d, V[:, 16] ./ sqrt(sum(abs2, V[:, 16])), 20; per_document=0))
+            finally
+                D.close_dense(d)
+            end
+            # a new export does not silently replace an export that already has vectors
+            @test_throws ErrorException D.export_units(; index_dir=idx, repos=String[])
+        end
+    end
+
     @testset "Corpus keyword parsing (parse_keywords / CTI catalog resolution, isolated)" begin
         # Guards the fix for the most common dc:subject shape in this corpus, the DRIVER/OpenAIRE
         # "info:eu-repo/classification/<esquema>/<valor>" convention: parse_keywords used to split
@@ -74,6 +213,25 @@ using JSON3
         @test resolve_cti_code("9"; catalogs_dir=tmpdir) === nothing        # right length, unknown code
         @test resolve_cti_code("12345"; catalogs_dir=tmpdir) === nothing    # no level has 5-digit codes
         @test resolve_cti_code("1"; catalogs_dir=mktempdir()) === nothing   # catalogs not fetched at all
+
+        # cti_levels: the levels above each code, by prefix (campo, disciplina) and by the campo
+        # catalog (área); the subdisciplina nesting is not used (the real one lists codes twice).
+        lv = mktempdir()
+        write(joinpath(lv, "cti_areacono.json"), """[{"cveArea":"1","descripcion":"FÍSICO MATEMÁTICAS"},
+                                                     {"cveArea":"7","descripcion":"INGENIERÍA"}]""")
+        write(joinpath(lv, "cti_campocono.json"), """[{"cveCampo":"12","descripcion":"MATEMÁTICAS","idArea":{"cveArea":"1"}},
+                                                      {"cveCampo":"33","descripcion":"CIENCIAS TECNOLÓGICAS","idArea":{"cveArea":"7"}}]""")
+        write(joinpath(lv, "cti_disciplinacono.json"), """[{"cveDisciplina":"1203","descripcion":"CIENCIA DE LOS ORDENADORES"}]""")
+        write(joinpath(lv, "cti_subdisciplinacono.json"), """[{"cveSubdisciplina":"120317","descripcion":"INFORMÁTICA",
+            "disciplinaCono":{"cveDisciplina":"3304","campoCono":{"cveCampo":"33"}}}]""")
+        @test ReposMx.Catalogs.cti_levels(["120317"]; catalogs_dir=lv) ==
+              (["FÍSICO MATEMÁTICAS"], ["MATEMÁTICAS"], ["CIENCIA DE LOS ORDENADORES"])
+        @test ReposMx.Catalogs.cti_levels(["7", "33", "99", "x"]; catalogs_dir=lv) == (["INGENIERÍA"], ["CIENCIAS TECNOLÓGICAS"], String[])
+        # the tree is not imposed: an área off the path of a declared disciplina is kept (documents mix disciplines)
+        @test ReposMx.Catalogs.cti_levels(["7", "1203"]; catalogs_dir=lv) == (["FÍSICO MATEMÁTICAS", "INGENIERÍA"], ["MATEMÁTICAS"], ["CIENCIA DE LOS ORDENADORES"])
+        # the path to each disciplina, to choose it going through its área and campo
+        @test ReposMx.Catalogs.cti_paths(lv) == Dict("CIENCIA DE LOS ORDENADORES" => [("FÍSICO MATEMÁTICAS", "MATEMÁTICAS")])
+        @test Corpus.cti_codes("info:eu-repo/classification/cti/12 ; Biología ; info:eu-repo/classification/cti/12") == ["12"]
 
         # parse_keywords: segment splitting and per-scheme handling. cti resolution here uses the
         # real catalogs fetched via `reposmx fetch-catalogs` into DEFAULT_CATALOGS_DIR -- real
@@ -905,7 +1063,8 @@ using JSON3
 
         ReposMx.Indexing.build_search_index(; data_dir, index_dir)
         workdir = ReposMx.EngineIndex.engine_workdir(index_dir)
-        @test sort(readdir(workdir)) == sort(collect(ReposMx.EngineIndex.PROJECT_NAMES))
+        # the four projects, and the CTI partition followers of docs_content next to it
+        @test sort(readdir(workdir)) == sort([collect(ReposMx.EngineIndex.PROJECT_NAMES); "docs_content.followers"])
         @test !isdir(workdir * ".building") && !isdir(joinpath(data_dir, "rocksdb.building"))
         # The database being built is never listed as a repository.
         @test sort(ReposMx.list_repo_names(; data_dir)) == ["alfa", "beta", "gama"]

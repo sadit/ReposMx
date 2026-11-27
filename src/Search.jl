@@ -204,6 +204,7 @@ function query_index(
             "doc_idx" => Int(item._id),
             "id" => doc["id"],
             "repo" => doc["repo"],
+            "liga" => get(doc, "liga", ""),
             "title" => title,
             "creator" => get(doc, "creator", ""),
             "contributor" => get(doc, "contributor", ""),

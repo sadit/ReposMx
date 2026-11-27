@@ -4,7 +4,7 @@ using Downloads, JSON
 using Downloads: request
 using ..Config: DEFAULT_HEADERS, DEFAULT_CATALOGS_DIR
 
-export fetch_cti_catalogs, resolve_cti_code
+export fetch_cti_catalogs, resolve_cti_code, cti_levels, cti_paths
 
 const CTI_API_BASE = "https://catalogs.repositorionacionalcti.mx/webresources"
 
@@ -112,6 +112,74 @@ function resolve_cti_code(code::AbstractString; catalogs_dir::AbstractString=DEF
             nothing
     level === nothing && return nothing
     return get(level, code, nothing)
+end
+
+# The área of each campo, read from the campo catalog. The other parents come from the code itself, which is
+# hierarchical (campo = 2 digits, disciplina = 4, subdisciplina = 6, each extending the one above): the
+# subdisciplina catalog lists some codes twice under different disciplinas (120317 under 1203 and 3304), so
+# its nesting is not used.
+const _CTI_AREA_OF_CAMPO = Dict{String, Dict{String,String}}()
+
+function _cti_area_of_campo(catalogs_dir::AbstractString)
+    get!(_CTI_AREA_OF_CAMPO, catalogs_dir) do
+        out = Dict{String,String}()
+        f = joinpath(catalogs_dir, "cti_campocono.json")
+        isfile(f) || return out
+        for e in JSON.parsefile(f)
+            a = get(e, "idArea", nothing)
+            a isa AbstractDict && (out[string(get(e, "cveCampo", ""))] = string(get(a, "cveArea", "")))
+        end
+        out
+    end
+end
+
+"""
+    cti_levels(codes; catalogs_dir=DEFAULT_CATALOGS_DIR) -> (areas, campos, disciplinas)
+
+The names of the CTI área, campo and disciplina that a set of codes (`cti/<code>` in `dc:subject`) names.
+A code gives its own level and the levels above it: the campo and the disciplina by its prefix, the área by
+the campo catalog. Every declared code counts, also one off the path of a deeper one: many documents mix
+disciplines, so the tree is not imposed on what the repositories declare (decision of the user, 2026-11-26).
+Unknown codes are skipped. Each list is sorted and without repetitions.
+"""
+function cti_levels(codes; catalogs_dir::AbstractString=DEFAULT_CATALOGS_DIR)
+    area, campo, disciplina, _ = _cti_dicts(catalogs_dir)
+    area_of = _cti_area_of_campo(catalogs_dir)
+    as, cs, ds = Set{String}(), Set{String}(), Set{String}()
+    for code in codes
+        x = String(strip(code))
+        all(isdigit, x) || continue
+        n = length(x)
+        n == 1 && haskey(area, x) && push!(as, area[x])
+        n in (2, 4, 6) || continue
+        c = x[1:2]
+        haskey(campo, c) || continue
+        push!(cs, campo[c])
+        a = get(area_of, c, "")
+        haskey(area, a) && push!(as, area[a])
+        n >= 4 && haskey(disciplina, x[1:4]) && push!(ds, disciplina[x[1:4]])
+    end
+    return sort!(collect(as)), sort!(collect(cs)), sort!(collect(ds))
+end
+
+"""
+    cti_paths(catalogs_dir=DEFAULT_CATALOGS_DIR) -> Dict{String,Vector{Tuple{String,String}}}
+
+For each disciplina name, the (área, campo) names of the path to it in the tree, to choose a disciplina going
+through its área and campo. A name that the catalog uses in more than one campo has more than one path.
+"""
+function cti_paths(catalogs_dir::AbstractString=DEFAULT_CATALOGS_DIR)
+    area, campo, disciplina, _ = _cti_dicts(catalogs_dir)
+    area_of = _cti_area_of_campo(catalogs_dir)
+    out = Dict{String,Vector{Tuple{String,String}}}()
+    for (d, name) in disciplina
+        c = d[1:2]
+        haskey(campo, c) || continue
+        p = (get(area, get(area_of, c, ""), ""), campo[c])
+        v = get!(Vector{Tuple{String,String}}, out, name)
+        p in v || push!(v, p)
+    end
+    return out
 end
 
 end # module Catalogs

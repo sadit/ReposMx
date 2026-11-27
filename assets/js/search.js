@@ -60,7 +60,7 @@ async function doSearch() {
   const type = document.getElementById('type-select').value;
   const yearMin = document.getElementById('year-min-input').value;
   const yearMax = document.getElementById('year-max-input').value;
-  let url = `/api/search?q=${encodeURIComponent(q)}&repo=${encodeURIComponent(repo)}&doc_type=${encodeURIComponent(type)}&wiki=true&offset=${currentOffset}`;
+  let url = `/api/search?q=${encodeURIComponent(q)}&repo=${encodeURIComponent(repo)}&doc_type=${encodeURIComponent(type)}&offset=${currentOffset}`;
   if (yearMin) url += `&year_min=${encodeURIComponent(yearMin)}`;
   if (yearMax) url += `&year_max=${encodeURIComponent(yearMax)}`;
 
@@ -189,7 +189,6 @@ function renderResults(data) {
           ${h.has_fulltext ? `<button class="btn-action" onclick="searchInside(${h.doc_idx}, '${h.repo}', '${h.id}')">🔍 Buscar en párrafos</button>` : ''}
           ${h.reference_count > 0 ? `<button class="btn-action-sec" onclick="showRefs(${h.doc_idx}, '${h.repo}', '${h.id}')">📚 Referencias (${h.reference_count})</button>` : ''}
         </div>
-        ${h.file ? `<a href="/file?path=${encodeURIComponent(h.file)}" target="_blank" class="btn-file">📄 Ver PDF</a>` : ''}
       </div>
       <div id="in-depth-${h.doc_idx}" class="in-depth-box">
         <div class="in-depth-header">Búsqueda profunda en párrafos del documento:</div>

@@ -1,0 +1,77 @@
+/* Fuente de la hoja de estilo; la que se sirve es estaticos/estilo.css y se genera con ./estilo.sh
+   (Tailwind toma las clases que aparecen en src/paginas.jl).
+
+   Los colores son tokens: src/paginas.jl usa bg-fondo, text-tenue, border-borde, ... y cada tema les da valor.
+   Cuatro temas para probar y decidir (indicación del usuario, 2026-11-26): Solarized claro y oscuro (la paleta
+   de Ethan Schoonover, con los acentos de texto un poco más oscuros en el claro para que se lean), pizarra (la
+   escala slate de Tailwind, oscura) y clásico (los colores de AmbientalWeb). Sin elección, sigue al sistema. */
+@import "tailwindcss" source(none);
+@source "./src/paginas.jl";
+@source "./estaticos/mapa.js";
+
+@theme inline {
+  --color-fondo: var(--t-fondo);
+  --color-superficie: var(--t-superficie);
+  --color-texto: var(--t-texto);
+  --color-fuerte: var(--t-fuerte);
+  --color-tenue: var(--t-tenue);
+  --color-borde: var(--t-borde);
+  --color-liga: var(--t-liga);
+  --color-acento: var(--t-acento);
+  --color-realce: var(--t-realce);
+  --color-barra: var(--t-barra);
+  --color-sobre-barra: var(--t-sobre-barra);
+  --color-boton: var(--t-boton);
+  --color-sobre-boton: var(--t-sobre-boton);
+  --color-aviso-fondo: var(--t-aviso-fondo);
+  --color-aviso-texto: var(--t-aviso-texto);
+  --color-aviso-borde: var(--t-aviso-borde);
+}
+
+/* Solarized: base03 #002b36, base02 #073642, base01 #586e75, base00 #657b83, base0 #839496, base1 #93a1a1,
+   base2 #eee8d5, base3 #fdf6e3; amarillo #b58900, naranja #cb4b16, rojo #dc322f, magenta #d33682,
+   violeta #6c71c4, azul #268bd2, cian #2aa198, verde #859900. */
+:root, [data-tema="sol-claro"] {
+  color-scheme: light;
+  --t-fondo: #fdf6e3; --t-superficie: #fffbef; --t-texto: #586e75; --t-fuerte: #073642; --t-tenue: #657b83;
+  --t-borde: #e4dcc4; --t-liga: #1f6ea8; --t-acento: #6c71c4; --t-realce: #eee8d5;
+  --t-barra: #073642; --t-sobre-barra: #eee8d5; --t-boton: #268bd2; --t-sobre-boton: #fdf6e3;
+  --t-aviso-fondo: #f7ecd0; --t-aviso-texto: #8a4b0f; --t-aviso-borde: #e0c27a;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-tema]) {
+    color-scheme: dark;
+    --t-fondo: #002b36; --t-superficie: #073642; --t-texto: #93a1a1; --t-fuerte: #eee8d5; --t-tenue: #839496;
+    --t-borde: #0f4b59; --t-liga: #4aa3e0; --t-acento: #2aa198; --t-realce: #0a3d4a;
+    --t-barra: #073642; --t-sobre-barra: #eee8d5; --t-boton: #268bd2; --t-sobre-boton: #fdf6e3;
+    --t-aviso-fondo: #3a2c08; --t-aviso-texto: #e8c35c; --t-aviso-borde: #6b5413;
+  }
+}
+[data-tema="sol-oscuro"] {
+  color-scheme: dark;
+  --t-fondo: #002b36; --t-superficie: #073642; --t-texto: #93a1a1; --t-fuerte: #eee8d5; --t-tenue: #839496;
+  --t-borde: #0f4b59; --t-liga: #4aa3e0; --t-acento: #2aa198; --t-realce: #0a3d4a;
+  --t-barra: #073642; --t-sobre-barra: #eee8d5; --t-boton: #268bd2; --t-sobre-boton: #fdf6e3;
+  --t-aviso-fondo: #3a2c08; --t-aviso-texto: #e8c35c; --t-aviso-borde: #6b5413;
+}
+/* La escala slate de Tailwind, oscura, con sky para ligas. */
+[data-tema="pizarra"] {
+  color-scheme: dark;
+  --t-fondo: #0f172a; --t-superficie: #1e293b; --t-texto: #cbd5e1; --t-fuerte: #f1f5f9; --t-tenue: #94a3b8;
+  --t-borde: #334155; --t-liga: #38bdf8; --t-acento: #7dd3fc; --t-realce: #172554;
+  --t-barra: #020617; --t-sobre-barra: #e2e8f0; --t-boton: #0284c7; --t-sobre-boton: #f8fafc;
+  --t-aviso-fondo: #422006; --t-aviso-texto: #fcd34d; --t-aviso-borde: #78350f;
+}
+/* Los colores de AmbientalWeb: azul marino, fondo casi blanco, escala stone. */
+[data-tema="clasico"] {
+  color-scheme: light;
+  --t-fondo: #fcfcfb; --t-superficie: #ffffff; --t-texto: #44403c; --t-fuerte: #1c1917; --t-tenue: #78716c;
+  --t-borde: #e7e5e4; --t-liga: #1c5cab; --t-acento: #0d366b; --t-realce: #eef3fa;
+  --t-barra: #0d366b; --t-sobre-barra: #ffffff; --t-boton: #0d366b; --t-sobre-boton: #ffffff;
+  --t-aviso-fondo: #fffbeb; --t-aviso-texto: #78350f; --t-aviso-borde: #fcd34d;
+}
+
+[x-cloak] { display: none !important; }
+
+/* Las citas [n] de la respuesta redactada las arma estaticos/redaccion.js, así que su clase va aquí. */
+.cita { @apply text-liga underline decoration-dotted underline-offset-2 hover:text-acento; }

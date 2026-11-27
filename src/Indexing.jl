@@ -12,7 +12,7 @@ using ..DB: Database, open_database, close_database, put_author_profile!, put_to
             put_author_id_mapping!, normalize_author_name, rocksdb_handle, compact_all!, precompute_all_statistics!,
             put_consolidated_profile!
 using ..EngineIndex: DOCS_CONTENT, DOCS_REFS, AUTHORS_NAME, AUTHORS_PROFILE, engine_workdir, index_profile,
-                     build_text_project!, doc_key_of
+                     build_text_project!, doc_key_of, CTI_FOLLOWERS
 using ..AuthorConsolidation: build_and_persist, load_all, AUTHOR_NAME_CONFIG, assign_raw_ids
 using ..AuthorGrouping: group_authors
 
@@ -133,6 +133,7 @@ function _collect_documents(; data_dir=DEFAULT_DATA_DIR, repos::Union{Vector{Str
             clean_doc = Dict(
                 "id" => doc_id,
                 "repo" => repo,
+                "liga" => get(doc, "liga", ""),
                 "title" => get(doc, "title", ""),
                 "creator" => get(doc, "creator", ""),
                 "creators" => get(doc, "creators", String[]),
@@ -143,7 +144,10 @@ function _collect_documents(; data_dir=DEFAULT_DATA_DIR, repos::Union{Vector{Str
                 "subject" => get(doc, "subject", ""),
                 "publisher" => get(doc, "publisher", ""),
                 "keywords" => get(doc, "keywords", String[]),
-                "type" => get(doc, "type", "Documento"),
+                "type" => get(doc, "type", "Sin tipo"),
+                "areas" => get(doc, "areas", String[]),
+                "campos" => get(doc, "campos", String[]),
+                "disciplinas" => get(doc, "disciplinas", String[]),
                 "references" => doc_refs,
                 "reference_count" => length(doc_refs),
                 "file" => get(doc, "file", nothing),
@@ -464,7 +468,7 @@ function build_search_index(;
         println("  docs_content vocabulary pruned by min_ndocs=$DOCS_CONTENT_MIN_NDOCS: $(vocsize(refitted.model.voc)) -> $(vocsize(content_voc)) tokens")
         println("Building BM25 for Documents by Content ($(vocsize(content_voc)) tokens)..."); flush(stdout)
         build_text_project!(building, DOCS_CONTENT, index_profile(content_voc, refitted), docs_content_texts,
-                            keys, [doc_meta(d) for d in all_docs]; partition_by="repo")
+                            keys, [doc_meta(d) for d in all_docs]; partition_by="repo", followers=CTI_FOLLOWERS)
 
         println("Building BM25 for Documents by References..."); flush(stdout)
         refs_voc_full = Vocabulary(refitted.model.voc.textconfig, docs_refs_texts)

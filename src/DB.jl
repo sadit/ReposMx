@@ -733,18 +733,8 @@ function compute_detailed_statistics(docs, n_authors::Int, clean_repo::Union{Abs
         rcnt = get(doc, "reference_count", 0)
         total_refs += rcnt
 
-        raw_type = get(doc, "type", "Documento")
-        norm_type = if occursin(r"(?i)\btesis\b"i, raw_type) || occursin(r"(?i)\bthesis\b"i, raw_type)
-            "Tesis"
-        elseif occursin(r"(?i)\bart[ií]culo\b"i, raw_type) || occursin(r"(?i)\barticle\b"i, raw_type)
-            "Artículo"
-        elseif occursin(r"(?i)\blibro\b"i, raw_type) || occursin(r"(?i)\bbook\b"i, raw_type)
-            "Libro"
-        elseif occursin(r"(?i)\bconferencia\b"i, raw_type) || occursin(r"(?i)\bconference\b"i, raw_type) || occursin(r"(?i)\bponencia\b"i, raw_type)
-            "Conferencia / Ponencia"
-        else
-            "Documento Académico"
-        end
+        raw_type = get(doc, "type", "")
+        norm_type = isempty(strip(string(raw_type))) ? "Sin tipo" : string(raw_type)    # Corpus.normalize_doc_type
         types_count[norm_type] = get(types_count, norm_type, 0) + 1
         repos_count[r] = get(repos_count, r, 0) + 1
 
