@@ -1,0 +1,56 @@
+---
+title: "ReposMx"
+subtitle: "Búsqueda por similitud y organización basada en datos de la producción académica de los repositorios institucionales mexicanos"
+toc: false
+---
+
+ReposMx cosecha los repositorios institucionales mexicanos que publican sus metadatos por OAI-PMH, los reúne en un
+solo corpus y los hace buscables de formas que una búsqueda por metadatos no da: **por significado**, dentro de la
+**producción de un autor**, por las **obras que citan** los documentos, y por **meta-disciplinas** que salen de los
+propios datos. Un modelo de lenguaje redacta una respuesta corta con lo encontrado y **cita cada fuente** con la
+liga a su registro en el repositorio de origen.
+
+::: {.cifras}
+<div><strong>472,161</strong><span>registros de 94 repositorios institucionales</span></div>
+<div><strong>70,677</strong><span>con texto completo extraído (copia de trabajo, no se comparte)</span></div>
+<div><strong>3,972,939</strong><span>citas bibliográficas extraídas de los textos completos</span></div>
+<div><strong>234,624</strong><span>autores consolidados (de 447,279 formas de nombre)</span></div>
+<div><strong>701,588</strong><span>partes con vector (ficha, inicio y final) de 329,717 documentos</span></div>
+<div><strong>113</strong><span>meta-disciplinas encontradas en las palabras clave</span></div>
+:::
+
+## Qué hay en el sitio
+
+| Página | Contenido |
+|---|---|
+| [Datos](datos.qmd) | Los repositorios, qué trae cada registro, los tipos de documento, la clasificación CTI y lo que no se comparte |
+| [Cómo se hizo](metodo.qmd) | La tubería completa: cosecha, corpus, autores, búsqueda por palabras y por significado, meta-disciplinas y respuesta redactada; lo que se midió y lo que se descartó |
+| [Repositorio Nacional](repositorio-nacional.qmd) | Cómo extiende ReposMx al Repositorio Nacional de CTI y qué no es |
+| [Mapa](mapa.qmd) | Las meta-disciplinas como grafo interactivo, para navegarlas |
+
+## Lo principal, en corto
+
+::: {.sirve}
+**Búsqueda por significado sobre las partes que dicen de qué trata cada documento.** De cada documento se codifica
+su ficha y las primeras y últimas partes de su texto completo (resumen, introducción, discusión y conclusiones),
+con Qwen3-Embedding-0.6B. El índice cuantizado recupera lo mismo que la búsqueda exacta (los mismos 10 primeros
+en 30 consultas reales).
+:::
+
+::: {.sirve}
+**Meta-disciplinas a partir de las palabras clave.** Las palabras clave que los repositorios ya ponen se agrupan
+por el significado de los documentos que las usan, en español y en inglés a la vez; un modelo de lenguaje nombra y
+describe cada grupo. Sirven para segmentar la búsqueda y para navegar el acervo en un mapa.
+:::
+
+::: {.nosirve}
+**La clasificación CTI no sirve para aprender.** Sólo 29 % de los registros declara un área y 7 % una disciplina,
+y sólo la mitad de las disciplinas declaradas coincide con la de sus documentos vecinos. Se conserva como el
+metadato que es, para filtrar, pero no se infiere para los demás.
+:::
+
+::: {.nota}
+Los documentos son de sus repositorios. ReposMx guarda una copia de trabajo para analizarlos, pero no los comparte:
+cada resultado lleva a su registro en el repositorio de origen. El código está en
+[github.com/sadit/ReposMx](https://github.com/sadit/ReposMx).
+:::

@@ -9,7 +9,7 @@ decisión 15.
 |---|---|
 | `oficial.json` | los 113 grupos: `clave`, `nombre` y `nombre_en` y `descripcion` (de `qwen3.8-flash`), `palabras` (las más cercanas al centro), `documentos`; además `k` = 120, `margen` = 0.01 y `orden_centros` |
 | `centros.f32` | los centros, `Float32` de 1,024 × 113, por columnas en el orden de `orden_centros` |
-| `grafo.json` | el grafo del mapa: `nodos` y `enlaces` (3 vecinos por centro y 3 pares con más documentos compartidos por nodo) |
+| `grafo.json` | el grafo del mapa: `nodos` y `enlaces` (3 vecinos por centro y 3 pares con más documentos compartidos por nodo); cada nodo lleva `color` (su centro proyectado a 3 componentes principales, como RGB) y `plano` (las dos primeras, en [-1, 1]), de `experiments/rag_web/colorea_metadisciplinas.py` |
 | `vocabulario.json` | las 18,400 palabras clave limpias de las que salieron los grupos |
 
 La asignación de cada documento (`data/index/dense/metadisciplinas_documentos.jsonl`, fuera de git por su tamaño)

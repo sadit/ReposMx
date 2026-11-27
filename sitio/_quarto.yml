@@ -1,0 +1,33 @@
+project:
+  type: website
+  output-dir: _site
+  resources:
+    - "mapa/visor.js"
+    - "mapa/grafo.json"
+
+lang: es
+
+website:
+  title: "ReposMx"
+  site-url: "https://sadit.github.io/ReposMx/"
+  repo-url: "https://github.com/sadit/ReposMx"
+  navbar:
+    left:
+      - href: index.qmd
+        text: Inicio
+      - href: datos.qmd
+        text: Datos
+      - href: metodo.qmd
+        text: Cómo se hizo
+      - href: repositorio-nacional.qmd
+        text: Repositorio Nacional
+      - href: mapa.qmd
+        text: Mapa
+  page-footer: "ReposMx · estado al 26 de noviembre de 2026"
+
+format:
+  html:
+    theme:
+      light: [cosmo, sitio.scss]
+      dark: [darkly, sitio-oscuro.scss]
+    toc: true

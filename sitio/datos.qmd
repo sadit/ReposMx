@@ -1,0 +1,64 @@
+---
+title: "Datos"
+---
+
+## De dónde vienen
+
+Cada repositorio institucional publica los metadatos de sus documentos por **OAI-PMH** en **Dublin Core**
+(`oai_dc`): título, autores, colaboradores (asesores), fecha, resumen, materias, tipo, editor, derechos e
+identificadores. ReposMx los cosecha directamente de cada repositorio, de forma incremental (sólo lo publicado desde
+la última cosecha completa), y descarga el documento cuando la página del registro enlaza uno, para extraer su
+texto.
+
+```{=html}
+<p class="nota">Las cifras son del corpus al 26 de noviembre de 2026; las calcula <code>sitio/genera.py</code>.</p>
+```
+
+| Qué | Cantidad |
+|---|---:|
+| Repositorios con registros | 94 |
+| Registros | 472,161 |
+| Con resumen | 372,153 |
+| Con palabras clave | 406,877 |
+| Con texto completo extraído del PDF | 70,677 |
+| Citas bibliográficas extraídas de los textos | 3,972,939 |
+| Formas de nombre de autor | 447,279, agrupadas en 234,624 autores consolidados |
+| Con clasificación CTI declarada (área) | 136,363 (29 %); con disciplina, 33,412 (7 %) |
+
+## Qué se agrega a cada registro
+
+- **La liga a su registro** en el repositorio de origen (el primer identificador web, o el DOI): es a donde lleva
+  cada resultado. La trae el 94 % de los registros.
+- **El tipo de documento**, a partir de todos los valores `dc:type` del registro (los repositorios los escriben de
+  muchas formas: `info:eu-repo/semantics/masterThesis`, «Tesis de maestría», «thesis»…).
+- **La clasificación CTI** que declara el repositorio, con su camino en el árbol (área, campo y disciplina).
+- **Las citas** del texto completo, separadas una por una, y la sección de conclusiones.
+- **El autor consolidado**: las distintas formas de escribir un mismo nombre («Eric S. Tellez», «Tellez Avila, Eric
+  Sadit») reunidas en un perfil, con sus coautores y su producción.
+
+## Tipos de documento
+
+Cerca de una cuarta parte de los registros no es producción académica en texto: cartas y documentos de archivo,
+fotografías, sismos, conjuntos de datos. Esos se quedan sólo con sus metadatos (en la búsqueda por palabras), fuera
+de la búsqueda por significado y de lo que lee el modelo que redacta.
+
+{{< include _tablas/tipos.md >}}
+
+## Clasificación CTI
+
+Los catálogos de áreas del conocimiento del Repositorio Nacional de Ciencia, Tecnología e Innovación (de SECIHTI,
+antes CONACYT) forman un árbol: 7 áreas, 24 campos, unas 248 disciplinas y unas 3,600 subdisciplinas, y el código de
+cada nivel empieza con el de su nivel superior. Los repositorios lo ponen en `dc:subject` como
+`info:eu-repo/classification/cti/<código>`. ReposMx lo guarda tal como lo declara cada repositorio y deja filtrar por
+disciplina, pero no lo usa para aprender (ver [Cómo se hizo](metodo.qmd#la-clasificación-cti-no-se-aprende)).
+
+## Lo que no se comparte
+
+Los textos completos son una copia de trabajo para analizar los documentos (partirlos, codificarlos, extraer sus
+citas). **No se pueden descargar ni leer desde ReposMx**: la web muestra los metadatos públicos del registro (título,
+autores, resumen) y la liga al repositorio de origen. El modelo que redacta la respuesta lee partes del texto
+completo, pero la página no las muestra y se le pide que resuma con sus palabras.
+
+## Los repositorios
+
+{{< include _tablas/repositorios.md >}}

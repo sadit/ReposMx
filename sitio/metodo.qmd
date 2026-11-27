@@ -1,0 +1,123 @@
+---
+title: "Cómo se hizo"
+---
+
+ReposMx es un paquete de Julia (`src/`) con una línea de comandos (`reposmx`), una interfaz de terminal y un demo web
+(`web/`). Los índices son proyectos de [SimilaritySearchEngine.jl](https://github.com/sadit/SimilaritySearchEngine.jl),
+sobre [SimilaritySearch.jl](https://github.com/sadit/SimilaritySearch.jl) y
+[TextSearch.jl](https://github.com/sadit/TextSearch.jl); la base de relaciones (autores, citas, temas) es RocksDB.
+
+## La tubería
+
+| Paso | Qué hace | Comando |
+|---|---|---|
+| Cosecha | OAI-PMH de cada repositorio, incremental: la fecha de la última cosecha sólo avanza cuando se leyeron todas las páginas | `reposmx harvest` |
+| Descarga | El documento que enlaza la página de cada registro; cada registro se intenta una vez | `reposmx download` |
+| Texto | Extracción del texto de los PDF | `reposmx parse` |
+| Corpus | Un registro limpio por documento: autores separados, palabras clave, tipo, clasificación CTI, liga, conclusiones y citas | `reposmx build-corpus` |
+| Índices | La base RocksDB, los autores consolidados y cuatro índices de palabras (BM25) | `reposmx index` |
+| Partes | De cada documento, las partes que se codifican | `reposmx export-units` |
+| Vectores | Qwen3-Embedding-0.6B en Colab, desde la terminal | `colab/orquesta.sh` |
+| Índice denso | Las partes con su vector, cuantizado, con seguidores por clasificación | `Dense.build_dense_project` |
+
+## Búsqueda por palabras
+
+Cuatro índices BM25, con un perfil de texto en español ajustado al corpus:
+
+- **Documentos**: título, autores, colaboradores, palabras clave, resumen y conclusiones.
+- **Referencias**: las citas de cada documento, para encontrar quién cita una obra.
+- **Autores por nombre**: el nombre de cada autor consolidado y su forma con iniciales.
+- **Autores por perfil**: sus palabras clave, temas y citas, para encontrar autores parecidos.
+
+Todos están partidos por repositorio, y el de documentos también por la clasificación CTI declarada.
+
+## Autores consolidados
+
+Un mismo autor aparece con muchos nombres: con o sin segundo apellido, con iniciales, con acentos o sin ellos, en
+otro orden. Los nombres se agrupan por similitud de cadenas (q-gramas y distancia de edición, con índices métricos de
+SimilaritySearch) y por evidencia de coautoría; los casos dudosos se corrigen a mano en `author_overrides.toml`. De
+447,279 formas de nombre quedan 234,624 autores, cada uno con su producción, sus coautores y su red de citas.
+
+## Búsqueda por significado
+
+**Qué se codifica.** De cada documento, su ficha (título, autores, palabras clave y resumen) y, si tiene texto
+completo, las primeras 3 y las últimas 3 partes de su cuerpo: el resumen y la introducción, y la discusión y las
+conclusiones. Las partes se cortan en párrafos de hasta 2,000 caracteres, a partir de los encabezados de sección
+(«Resumen», «Introducción», «Conclusiones»…) cuando se encuentran, y fuera la bibliografía. Son 701,588 partes de
+329,717 documentos.
+
+**Con qué.** [Qwen3-Embedding-0.6B](https://huggingface.co/Qwen/Qwen3-Embedding-0.6B), un codificador multilingüe de
+pesos abiertos: los documentos sin instrucción y las consultas con una instrucción en español. Los documentos se
+codificaron en Colab (una A100, unas dos horas), desde la terminal con `google-colab-cli`; antes de codificar se
+compara con 64 vectores hechos con Ollama, que es el que codifica las consultas: coseno mínimo 1.00000.
+
+**El índice.** Vectores de 8 bits con rotación QR, comparados exhaustivamente, partido por repositorio. Contra la
+búsqueda exacta sobre los mismos vectores en Float32, en 30 consultas reales, el índice recupera los mismos 10
+primeros (recuperación 1.0), en 116 ms por consulta contra 67 ms de la exacta (la diferencia es leer los
+metadatos de los resultados).
+
+**Dentro de la producción de un autor.** Se toman las partes de sus documentos y se comparan exactamente con la
+consulta.
+
+## Meta-disciplinas
+
+Las palabras clave son la clasificación más fina que ya traen los datos: la pone el 74 % de los documentos de texto,
+contra el 29 % que declara un área CTI. Pero vienen sucias, en dos idiomas y con miles de variantes.
+
+1. **Vocabulario.** Se normalizan (minúsculas, sin acentos), se quitan los nombres y rutas CTI escritos como texto,
+   se reparan los acentos rotos («M?xico») y se dejan las que aparecen en al menos 5 documentos de al menos 2
+   repositorios (eso quita nombres de edificios y campus): 18,400 palabras.
+2. **Vector de cada palabra.** El promedio de los vectores de los documentos que la usan. Como el codificador es
+   multilingüe, «machine learning» y «aprendizaje automático» quedan juntas. Se quitan las palabras dispersas, cuyos
+   documentos apuntan a todos lados («mexico», «maestria», «general»).
+3. **Grupos.** k-means esférico sobre las palabras, con 120 centros sembrados por recorrido del más lejano (`fft` de
+   SimilaritySearch).
+4. **Nombres.** `qwen3.8-flash` lee las palabras de cada grupo y los títulos de sus documentos más cercanos, lo nombra
+   en español y en inglés, lo describe y dice si es un tema de investigación; los genéricos o administrativos y los
+   de menos de 200 documentos se quitan. Quedan 113.
+5. **Documentos.** Cada documento va a la meta-disciplina más cercana a su ficha y, si la segunda está casi igual de
+   cerca, también a ésa (18 % de los documentos).
+
+**Mapa.** Cada meta-disciplina se colorea con su centro proyectado a sus tres primeras componentes principales, leídas
+como rojo, verde y azul, y se acomoda cerca del plano de las dos primeras: las que se parecen quedan cerca y con
+colores parecidos. En el demo, ese mapa es la entrada: se elige ahí la meta-disciplina en la que se pregunta o se
+lista.
+
+La corrida del 26 de noviembre de 2026 quedó como la oficial (`metadisciplinas/` en el repositorio); la lista
+completa está al final de esta página y en el [mapa](mapa.qmd).
+
+## La respuesta redactada
+
+Con los primeros 6 resultados, `qwen3.6-flash` (por la API de Qwen Cloud) redacta uno o dos párrafos y pone después
+de cada afirmación el número de la fuente que la dice; cada fuente se le da entre marcas, con su número, y se le pide
+no usar conocimiento de fuera, no copiar pasajes y decir cuando las fuentes no bastan. Propone además preguntas para
+seguir, que la página ofrece como botones. Es la misma máquina del
+[RAG de normas ambientales](https://legistlan.github.io/RAG-Ambiental/). La pregunta y los fragmentos se envían al
+servicio de Qwen; no se guarda el texto de las consultas.
+
+## Lo que se probó y no sirvió
+
+### La clasificación CTI no se aprende
+
+Se intentó inferir el área, el campo y la disciplina de los documentos que no la declaran, con los que sí como
+entrenamiento: votación de los 15 vecinos más cercanos por coseno, y luego sólo con **prototipos limpios** (los
+documentos cuyo vecindario coincide con su etiqueta y tiene entropía baja). Acierto en un 10 % apartado:
+
+| Nivel | Vecinos | Prototipos consistentes | 50 % más limpio | 25 % más limpio |
+|---|---:|---:|---:|---:|
+| Área (7) | 0.77 | 0.76 | 0.73 | 0.71 |
+| Campo (24) | 0.70 | 0.69 | 0.65 | 0.61 |
+| Disciplina (236) | 0.50 | 0.47 | 0.40 | 0.32 |
+
+Sólo el 51 % de las disciplinas declaradas coincide con la de sus vecinos, y quien publica no siempre sabe dónde
+poner su investigación; muchos trabajos mezclan disciplinas. La CTI se queda como metadato para filtrar.
+
+### Palabras clave por prototipos
+
+Predecir las palabras clave de los documentos que no las traen con el mismo método da precisión@5 de 0.20 y
+recuperación@5 de 0.43 contra sus palabras propias, y otra vez filtrar a los prototipos limpios lo empeora. La medida
+exige la palabra idéntica y penaliza sinónimos y traducciones; por eso se pasó a agrupar las palabras.
+
+## Meta-disciplinas oficiales
+
+{{< include _tablas/metadisciplinas.md >}}

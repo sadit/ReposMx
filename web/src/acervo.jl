@@ -35,10 +35,14 @@ struct Acervo
     disciplinas::Vector{@NamedTuple{nombre::String, items::Int, area::String, campo::String}}   # para elegir, por su camino
     metas::Vector{Dict{String,Any}}         # las meta-disciplinas (metadisciplinas.json), por nombre
     meta_docs::Dict{String,Set{String}}     # clave => documentos, para filtrar la búsqueda por palabras
+    doc_metas::Dict{String,Vector{String}}  # documento => claves, para mostrarlas en cada resultado
     grafo::Union{Nothing,Dict{String,Any}}  # metadisciplinas_grafo.json, para el mapa
+    colores::Dict{String,String}            # clave => "#rrggbb" (grafo.json, experiments/rag_web/colorea_metadisciplinas.py)
+    centros::Dict{String,Vector{Float32}}   # clave => centro (centros.f32), para listar lo más representativo
 end
 tiene_metas(a::Acervo) = !isempty(a.metas)
 nombre_meta(a::Acervo, clave) = (i = findfirst(g -> g["clave"] == clave, a.metas); i === nothing ? clave : string(a.metas[i]["nombre"]))
+color_meta(a::Acervo, clave) = get(a.colores, clave, "")
 
 # La clasificación CTI (catálogos de SECIHTI) tal como la declaran los repositorios, por nivel
 # (EngineIndex.CTI_FOLLOWERS): se busca en la partición de un seguidor del proyecto, con el mismo puntaje que la
@@ -79,8 +83,6 @@ function abre(; data_dir::AbstractString, index_dir::AbstractString, cod::Dense.
     end
     # los valores de cada nivel, del proyecto en el que se busca por omisión (el denso, sin los tipos que se
     # quedan sólo como metadatos; si no está, el de palabras)
-    # los valores de cada nivel, del proyecto en el que se busca por omisión (el denso, sin los tipos que se
-    # quedan sólo como metadatos; si no está, el de palabras)
     h = denso === nothing ? motor.docs : denso.handle
     cti = [nivel => Dense.cti_values(h, nivel) for (nivel, _) in NIVELES_CTI]
     avisa("  clasificación CTI declarada: " * join(("$(length(v)) $(n)s" for (n, v) in cti), ", "))
@@ -93,19 +95,36 @@ function abre(; data_dir::AbstractString, index_dir::AbstractString, cod::Dense.
     # cae en una o dos. La densa tiene su seguidor; la de palabras se filtra aquí.
     dd = Dense.dense_dir(index_dir)
     metas, meta_docs, grafo = Dict{String,Any}[], Dict{String,Set{String}}(), nothing
+    doc_metas = Dict{String,Vector{String}}()
+    colores, centros = Dict{String,String}(), Dict{String,Vector{Float32}}()
     if isfile(joinpath(metas_dir, "oficial.json")) && isfile(joinpath(dd, "metadisciplinas_documentos.jsonl"))
         metas = sort!([Dict{String,Any}(String(k) => v for (k, v) in g) for g in JSON.parsefile(joinpath(metas_dir, "oficial.json"))["grupos"]];
                       by=g -> sin_tilde(string(g["nombre"])))
         for l in eachline(joinpath(dd, "metadisciplinas_documentos.jsonl"))
             r = JSON.parse(l)
+            doc_metas[string(r["documento"])] = String[string(c) for c in r["metadisciplinas"]]
             for c in r["metadisciplinas"]; push!(get!(Set{String}, meta_docs, string(c)), string(r["documento"])); end
         end
         f = joinpath(metas_dir, "grafo.json")
         isfile(f) && (grafo = Dict{String,Any}(String(k) => v for (k, v) in JSON.parsefile(f)))
+        grafo === nothing || for n in grafo["nodos"]
+            c = get(n, "color", nothing)
+            c isa AbstractString && (colores[string(n["id"])] = String(c))
+        end
+        f = joinpath(metas_dir, "centros.f32")
+        if isfile(f)
+            orden = String.(JSON.parsefile(joinpath(metas_dir, "oficial.json"))["orden_centros"])
+            C = reinterpret(Float32, read(f))
+            dim = length(C) ÷ length(orden)
+            for (i, c) in enumerate(orden)
+                v = Vector{Float32}(C[(i - 1) * dim + 1:i * dim])
+                centros[c] = v ./ sqrt(sum(abs2, v))
+            end
+        end
         avisa("  meta-disciplinas: $(length(metas))$(grafo === nothing ? "" : ", con grafo")")
     end
     Acervo(motor, denso, cod, sort!(ReposMx.Storage.list_repo_names(; data_dir)), unidades, documentos, cti, disciplinas,
-           metas, meta_docs, grafo)
+           metas, meta_docs, doc_metas, grafo, colores, centros)
 end
 
 function cierra(a::Acervo)
@@ -208,14 +227,7 @@ function busca(a::Acervo, consulta::AbstractString; modo::Symbol=:densa, repo::A
         ms["busca"] = 1000 * @elapsed hits = autor === nothing ?
             busca_densa(a, q, k, part, cti, meta, por_documento) :
             Dense.search_among_documents(a.denso, q, autor.documentos, k; per_document=por_documento)
-        ms["textos"] = 1000 * @elapsed begin
-            metas = Dict(something(it.doc_id, "") => it.meta for it in SSE.fetch_items(a.motor.docs, unique([h.document for h in hits])))
-            for h in hits
-                m = get(metas, h.document, nothing)
-                m === nothing && continue
-                push!(resultados, resultado(m, h.doc_id, h.document, h.similarity, h.similarity, nothing, h.seccion, h.texto))
-            end
-        end
+        ms["textos"] = 1000 * @elapsed append!(resultados, resultados_densos(a, hits))
     else
         # las cartas, fotografías, sismos y conjuntos de datos se quedan sólo como metadatos (Corpus.NON_TEXT_TYPES):
         # están en el índice de palabras pero no en esta colección ni en lo que lee el modelo
@@ -239,6 +251,54 @@ function busca(a::Acervo, consulta::AbstractString; modo::Symbol=:densa, repo::A
         end
     end
     Respuesta(String(consulta), modo, String(repo), cti, String(meta), autor, resultados, ms)
+end
+
+const LISTA_MAX = 100
+
+"""
+    lista(acervo, consulta; modo, repo, cti, meta, k) -> (resultados, orden)
+
+Sólo listar, sin respuesta redactada: hasta `k` documentos (uno por documento) con los filtros.
+- Con consulta: los de la búsqueda (`modo`), como `busca`.
+- Sin consulta y con meta-disciplina: los más cercanos a su centro (los más representativos), con los demás
+  filtros.
+- Sin consulta, sin meta-disciplina y con disciplina: los más cercanos al nombre de la disciplina (por palabras si
+  no hay denso).
+- Sin consulta ni una de esas dos: `ErrorLista`, porque un repositorio solo no da un orden con sentido.
+"""
+function lista(a::Acervo, consulta::AbstractString; modo::Symbol=:densa, repo::AbstractString="",
+               cti::Union{Nothing,Pair{String,String}}=nothing, meta::AbstractString="", k::Int=LISTA_MAX)
+    k = clamp(k, 1, LISTA_MAX)
+    if !isempty(consulta)
+        r = busca(a, consulta; modo, repo, cti, meta, k, por_documento=1)
+        return r.resultados, "por su parecido con «$(consulta)» ($(modo == :densa ? "por significado" : "por palabras"))"
+    end
+    part = isempty(repo) ? nothing : String(repo)
+    if !isempty(meta) && tiene_denso(a) && haskey(a.centros, meta)
+        hits = busca_densa(a, a.centros[meta], k, part, cti, meta, 1)
+        return resultados_densos(a, hits), "los más cercanos al centro de la meta-disciplina (los más representativos)"
+    elseif cti !== nothing
+        nombre = bonito(last(cti))
+        r = busca(a, nombre; modo=tiene_denso(a) ? :densa : :bm25, repo, cti, meta, k, por_documento=1)
+        return r.resultados, "los más cercanos al nombre de la disciplina, «$(nombre)»"
+    end
+    throw(ErrorLista("Para listar sin pregunta, elige una meta-disciplina o una disciplina."))
+end
+
+struct ErrorLista <: Exception
+    msg::String
+end
+
+"Los resultados de la densa con sus metadatos."
+function resultados_densos(a::Acervo, hits)
+    metas = Dict(something(it.doc_id, "") => it.meta for it in SSE.fetch_items(a.motor.docs, unique([h.document for h in hits])))
+    out = Resultado[]
+    for h in hits
+        m = get(metas, h.document, nothing)
+        m === nothing && continue
+        push!(out, resultado(m, h.doc_id, h.document, h.similarity, h.similarity, nothing, h.seccion, h.texto))
+    end
+    out
 end
 
 "La densa con los filtros: la meta-disciplina por su seguidor y, si además hay disciplina, ésta como filtro del meta."

@@ -1,0 +1,30 @@
+---
+title: "Mapa de meta-disciplinas"
+toc: false
+page-layout: full
+include-in-header:
+  text: |
+    <script src="https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js"></script>
+include-after-body:
+  text: |
+    <script src="mapa/visor.js"></script>
+---
+
+Cada nodo es una meta-disciplina: un grupo de palabras clave que el acervo usa para lo mismo, en español o en inglés.
+El tamaño es el número de documentos; una línea une a las que se parecen (centros cercanos) o comparten documentos.
+El color es la proyección del centro de cada una a tres dimensiones (rojo, verde y azul) y la posición sigue a las
+dos primeras: las que se parecen quedan cerca y con colores parecidos, como un mapa de gradiente.
+Rueda para acercar, arrastra para moverte, pasa el cursor para ver el nombre y haz clic para ver de qué trata y sus
+vecinas.
+
+```{=html}
+<div id="mapa-sitio">
+  <input type="search" class="mapa-filtro" id="mapa-filtro" placeholder="Resalta por nombre o palabra: robótica, agua, poesía…" aria-label="Resaltar meta-disciplinas">
+  <div class="mapa-cuerpo">
+    <div class="mapa-lienzo"><canvas id="mapa" aria-label="Grafo de meta-disciplinas"></canvas><div class="mapa-punta" id="mapa-punta"></div></div>
+    <aside class="mapa-panel" id="mapa-panel"><p class="nota">Elige una meta-disciplina en el mapa.</p></aside>
+  </div>
+</div>
+```
+
+La lista completa, con sus palabras más representativas, está en [Cómo se hizo](metodo.qmd#meta-disciplinas-oficiales).

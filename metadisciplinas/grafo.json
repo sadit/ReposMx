@@ -2030,6 +2030,11 @@
     "minas",
     "aguardiente",
     "novillos"
+   ],
+   "color": "#6783ca",
+   "plano": [
+    -0.3139,
+    0.0104
    ]
   },
   {
@@ -2051,6 +2056,11 @@
     "plantulas",
     "floracion",
     "plagas y enfermedades"
+   ],
+   "color": "#bbc98e",
+   "plano": [
+    0.6758,
+    0.8351
    ]
   },
   {
@@ -2072,6 +2082,11 @@
     "bienes",
     "articulos",
     "propiedad"
+   ],
+   "color": "#4a7bc0",
+   "plano": [
+    -0.6632,
+    -0.0803
    ]
   },
   {
@@ -2093,6 +2108,11 @@
     "profesores",
     "planificacion curricular",
     "escuela"
+   ],
+   "color": "#4f5b38",
+   "plano": [
+    -0.5967,
+    -0.4563
    ]
   },
   {
@@ -2114,6 +2134,11 @@
     "estrategias didacticas",
     "estrategias de ensenanza",
     "proceso educativo"
+   ],
+   "color": "#654a33",
+   "plano": [
+    -0.3448,
+    -0.6605
    ]
   },
   {
@@ -2135,6 +2160,11 @@
     "literatura argentina siglo xx",
     "literatura cubana siglo xx",
     "cervantes saavedra miguel de 1547 1616 critica e interpretacion"
+   ],
+   "color": "#3860d7",
+   "plano": [
+    -0.8749,
+    -0.399
    ]
   },
   {
@@ -2156,6 +2186,11 @@
     "mexico historia dominacion espanola 1517 1821",
     "mexico siglo xx",
     "colonia"
+   ],
+   "color": "#2d80b2",
+   "plano": [
+    -1.0,
+    -0.0269
    ]
   },
   {
@@ -2177,6 +2212,11 @@
     "nutricion animal",
     "condicion corporal",
     "pastoreo"
+   ],
+   "color": "#abd771",
+   "plano": [
+    0.4876,
+    1.0
    ]
   },
   {
@@ -2198,6 +2238,11 @@
     "metaphysics",
     "voluntad",
     "realidad"
+   ],
+   "color": "#4d5093",
+   "plano": [
+    -0.6248,
+    -0.5888
    ]
   },
   {
@@ -2219,6 +2264,11 @@
     "polinizacion",
     "filogenia",
     "variacion genetica"
+   ],
+   "color": "#94ce9c",
+   "plano": [
+    0.214,
+    0.8899
    ]
   },
   {
@@ -2240,6 +2290,11 @@
     "e learning",
     "aprendizaje en linea",
     "aprendizaje combinado"
+   ],
+   "color": "#76302d",
+   "plano": [
+    -0.1457,
+    -0.9698
    ]
   },
   {
@@ -2261,6 +2316,11 @@
     "parasitoides",
     "parasitismo",
     "botany"
+   ],
+   "color": "#add795",
+   "plano": [
+    0.5099,
+    1.0
    ]
   },
   {
@@ -2282,6 +2342,11 @@
     "genetic resources",
     "triticum aestivum",
     "grain"
+   ],
+   "color": "#c1c07f",
+   "plano": [
+    0.7356,
+    0.7241
    ]
   },
   {
@@ -2303,6 +2368,11 @@
     "produccion agricola",
     "agroindustria",
     "economic situation"
+   ],
+   "color": "#7dbb5c",
+   "plano": [
+    -0.0566,
+    0.668
    ]
   },
   {
@@ -2324,6 +2394,11 @@
     "depredacion",
     "ecosistemas costeros",
     "fishery"
+   ],
+   "color": "#95c68f",
+   "plano": [
+    0.2192,
+    0.7951
    ]
   },
   {
@@ -2345,6 +2420,11 @@
     "literatura comparada",
     "literatura mexicana historia y critica",
     "literatura mexicana siglo xx historia y critica"
+   ],
+   "color": "#3359bd",
+   "plano": [
+    -0.9327,
+    -0.4836
    ]
   },
   {
@@ -2366,6 +2446,11 @@
     "urbanization",
     "ciudades",
     "urbanizacion aspectos sociales"
+   ],
+   "color": "#4d7956",
+   "plano": [
+    -0.6291,
+    -0.1113
    ]
   },
   {
@@ -2387,6 +2472,11 @@
     "extractos",
     "metabolitos secundarios",
     "bioactive compounds"
+   ],
+   "color": "#c5c8a0",
+   "plano": [
+    0.792,
+    0.8271
    ]
   },
   {
@@ -2408,6 +2498,11 @@
     "modelo de negocios",
     "estrategias de mercadotecnia",
     "planeacion estrategica"
+   ],
+   "color": "#746c30",
+   "plano": [
+    -0.1614,
+    -0.2644
    ]
   },
   {
@@ -2429,6 +2524,11 @@
     "causas",
     "contaduria",
     "mision"
+   ],
+   "color": "#547c92",
+   "plano": [
+    -0.5388,
+    -0.0717
    ]
   },
   {
@@ -2450,6 +2550,11 @@
     "mujer",
     "incorporacion de la perspectiva de genero",
     "women"
+   ],
+   "color": "#378d5c",
+   "plano": [
+    -0.888,
+    0.1252
    ]
   },
   {
@@ -2471,6 +2576,11 @@
     "tradiciones",
     "ethnology",
     "oaxaca"
+   ],
+   "color": "#398e96",
+   "plano": [
+    -0.8606,
+    0.1441
    ]
   },
   {
@@ -2492,6 +2602,11 @@
     "gestion integrada de recursos hidricos",
     "desarrollo de recursos hidrologicos",
     "abastecimiento"
+   ],
+   "color": "#85966e",
+   "plano": [
+    0.0405,
+    0.2382
    ]
   },
   {
@@ -2513,6 +2628,11 @@
     "carbohidratos",
     "elaboracion",
     "granos"
+   ],
+   "color": "#bbbf89",
+   "plano": [
+    0.667,
+    0.7234
    ]
   },
   {
@@ -2534,6 +2654,11 @@
     "ecosistemas",
     "especies nativas",
     "conservacion de la biodiversidad"
+   ],
+   "color": "#88c27f",
+   "plano": [
+    0.073,
+    0.7519
    ]
   },
   {
@@ -2555,6 +2680,11 @@
     "textos",
     "comedia",
     "cortometrajes"
+   ],
+   "color": "#3d5bb1",
+   "plano": [
+    -0.8161,
+    -0.4583
    ]
   },
   {
@@ -2576,6 +2706,11 @@
     "participacion politica mexico",
     "voto",
     "participacion politica"
+   ],
+   "color": "#3e786b",
+   "plano": [
+    -0.7997,
+    -0.1231
    ]
   },
   {
@@ -2597,6 +2732,11 @@
     "recursos naturales",
     "politica ambiental mexico",
     "environmental degradation"
+   ],
+   "color": "#6c9756",
+   "plano": [
+    -0.2616,
+    0.2482
    ]
   },
   {
@@ -2618,6 +2758,11 @@
     "adolescente",
     "adolescents",
     "aspectos psicologicos"
+   ],
+   "color": "#568c3a",
+   "plano": [
+    -0.5131,
+    0.1178
    ]
   },
   {
@@ -2639,6 +2784,11 @@
     "bioremediation",
     "contaminacion del agua",
     "contaminacion ambiental"
+   ],
+   "color": "#bcab85",
+   "plano": [
+    0.6804,
+    0.4813
    ]
   },
   {
@@ -2660,6 +2810,11 @@
     "bioinformatica",
     "agentes antiinfecciosos",
     "patogenos"
+   ],
+   "color": "#b7cf7b",
+   "plano": [
+    0.6238,
+    0.9075
    ]
   },
   {
@@ -2681,6 +2836,11 @@
     "datos",
     "sistemas de informacion en administracion",
     "computadoras"
+   ],
+   "color": "#932e3d",
+   "plano": [
+    0.1971,
+    -0.9874
    ]
   },
   {
@@ -2702,6 +2862,11 @@
     "administracion de proyectos",
     "control de la produccion",
     "optimizacion de procesos"
+   ],
+   "color": "#925836",
+   "plano": [
+    0.1916,
+    -0.4966
    ]
   },
   {
@@ -2723,6 +2888,11 @@
     "paciente",
     "cuidados",
     "hospitales"
+   ],
+   "color": "#70ae2d",
+   "plano": [
+    -0.2069,
+    0.517
    ]
   },
   {
@@ -2744,6 +2914,11 @@
     "iglesias",
     "milagros",
     "provincias"
+   ],
+   "color": "#3e79ce",
+   "plano": [
+    -0.7978,
+    -0.1095
    ]
   },
   {
@@ -2765,6 +2940,11 @@
     "ecotecnias",
     "infraestructura",
     "habitabilidad"
+   ],
+   "color": "#616e6b",
+   "plano": [
+    -0.3826,
+    -0.2297
    ]
   },
   {
@@ -2786,6 +2966,11 @@
     "recursos humanos",
     "estructura organizacional",
     "comunicacion en las organizaciones"
+   ],
+   "color": "#64612d",
+   "plano": [
+    -0.3571,
+    -0.3897
    ]
   },
   {
@@ -2807,6 +2992,11 @@
     "sol gel",
     "nanoparticulas",
     "synthesis"
+   ],
+   "color": "#d774a8",
+   "plano": [
+    1.0,
+    -0.1651
    ]
   },
   {
@@ -2828,6 +3018,11 @@
     "comprension lectora",
     "lectoescritura",
     "lengua extranjera"
+   ],
+   "color": "#574e61",
+   "plano": [
+    -0.5003,
+    -0.6076
    ]
   },
   {
@@ -2849,6 +3044,11 @@
     "welfare economics",
     "economic growth",
     "economia aspectos sociologicos"
+   ],
+   "color": "#628a45",
+   "plano": [
+    -0.3784,
+    0.092
    ]
   },
   {
@@ -2870,6 +3070,11 @@
     "oxidation",
     "sintesis organica",
     "quimica computacional"
+   ],
+   "color": "#cc83a4",
+   "plano": [
+    0.8711,
+    0.0067
    ]
   },
   {
@@ -2891,6 +3096,11 @@
     "bibliotecas universitarias",
     "bibliotecarios",
     "bibliotecas digitales"
+   ],
+   "color": "#584159",
+   "plano": [
+    -0.4945,
+    -0.7633
    ]
   },
   {
@@ -2912,6 +3122,11 @@
     "pintores mexicanos",
     "blanco",
     "surrealismo"
+   ],
+   "color": "#3e5ca3",
+   "plano": [
+    -0.7945,
+    -0.4437
    ]
   },
   {
@@ -2933,6 +3148,11 @@
     "condiciones de vida",
     "tenencia de la tierra",
     "comunidades"
+   ],
+   "color": "#4f9d61",
+   "plano": [
+    -0.5984,
+    0.3193
    ]
   },
   {
@@ -2954,6 +3174,11 @@
     "hydrolysis",
     "purificacion",
     "hidrolisis"
+   ],
+   "color": "#cab78e",
+   "plano": [
+    0.8432,
+    0.6183
    ]
   },
   {
@@ -2975,6 +3200,11 @@
     "divulgacion cientifica",
     "interdisciplinariedad",
     "interdisciplina"
+   ],
+   "color": "#5d574d",
+   "plano": [
+    -0.4408,
+    -0.506
    ]
   },
   {
@@ -2996,6 +3226,11 @@
     "international migration",
     "migracion internacional",
     "politica migratoria"
+   ],
+   "color": "#399565",
+   "plano": [
+    -0.8624,
+    0.2289
    ]
   },
   {
@@ -3017,6 +3252,11 @@
     "subjectivity",
     "semiotics",
     "aesthetics"
+   ],
+   "color": "#4a507b",
+   "plano": [
+    -0.6638,
+    -0.5932
    ]
   },
   {
@@ -3038,6 +3278,11 @@
     "socialismo",
     "nacionalismo",
     "state"
+   ],
+   "color": "#356570",
+   "plano": [
+    -0.9013,
+    -0.3413
    ]
   },
   {
@@ -3059,6 +3304,11 @@
     "poesia espanola siglo xx",
     "octavio paz",
     "women authors"
+   ],
+   "color": "#3d5ed7",
+   "plano": [
+    -0.8098,
+    -0.424
    ]
   },
   {
@@ -3080,6 +3330,11 @@
     "organizaciones no gubernamentales",
     "marginacion social",
     "estructura social"
+   ],
+   "color": "#448739",
+   "plano": [
+    -0.7352,
+    0.0565
    ]
   },
   {
@@ -3101,6 +3356,11 @@
     "templo",
     "maya",
     "monte"
+   ],
+   "color": "#577ec3",
+   "plano": [
+    -0.5063,
+    -0.0473
    ]
   },
   {
@@ -3122,6 +3382,11 @@
     "perro",
     "clinica",
     "esterilizacion"
+   ],
+   "color": "#8dd769",
+   "plano": [
+    0.1338,
+    1.0
    ]
   },
   {
@@ -3143,6 +3408,11 @@
     "derecho fiscal mexico",
     "fiscal",
     "amparo"
+   ],
+   "color": "#4d706b",
+   "plano": [
+    -0.6255,
+    -0.2094
    ]
   },
   {
@@ -3164,6 +3434,11 @@
     "rheology",
     "polimerizacion",
     "reologia"
+   ],
+   "color": "#d78097",
+   "plano": [
+    1.0,
+    -0.0214
    ]
   },
   {
@@ -3185,6 +3460,11 @@
     "representaciones sociales",
     "relaciones sociales",
     "significacion"
+   ],
+   "color": "#34725b",
+   "plano": [
+    -0.9143,
+    -0.1875
    ]
   },
   {
@@ -3206,6 +3486,11 @@
     "prototipo",
     "instrumentacion",
     "manufactura aditiva"
+   ],
+   "color": "#b93f5c",
+   "plano": [
+    0.6488,
+    -0.7898
    ]
   },
   {
@@ -3227,6 +3512,11 @@
     "marcadores bioquimicos uso para el diagnostico",
     "ninos enfermedades",
     "sintomas"
+   ],
+   "color": "#9ebf59",
+   "plano": [
+    0.3323,
+    0.7215
    ]
   },
   {
@@ -3248,6 +3538,11 @@
     "analisis de contenido",
     "medios masivos de comunicacion",
     "tecnologias de la informacion y la comunicacion"
+   ],
+   "color": "#574f43",
+   "plano": [
+    -0.5083,
+    -0.6057
    ]
   },
   {
@@ -3269,6 +3564,11 @@
     "mercado laboral",
     "mercado de trabajo mexico",
     "empleo precario"
+   ],
+   "color": "#548344",
+   "plano": [
+    -0.5439,
+    0.0085
    ]
   },
   {
@@ -3290,6 +3590,11 @@
     "politicas publicas mexico",
     "finanzas publicas",
     "transparencia en el gobierno"
+   ],
+   "color": "#4a7943",
+   "plano": [
+    -0.6633,
+    -0.1032
    ]
   },
   {
@@ -3311,6 +3616,11 @@
     "apoptosis",
     "oxidative stress",
     "pathology"
+   ],
+   "color": "#bac37b",
+   "plano": [
+    0.6599,
+    0.7676
    ]
   },
   {
@@ -3332,6 +3642,11 @@
     "ecuaciones de maxwell",
     "holography",
     "concave"
+   ],
+   "color": "#d03c9e",
+   "plano": [
+    0.9141,
+    -0.8244
    ]
   },
   {
@@ -3353,6 +3668,11 @@
     "agronomy",
     "sustainable agriculture",
     "research projects"
+   ],
+   "color": "#b2ae5a",
+   "plano": [
+    0.5657,
+    0.5181
    ]
   },
   {
@@ -3374,6 +3694,11 @@
     "aritmetica",
     "logica simbolica y matematica",
     "pensamiento estadistico"
+   ],
+   "color": "#833b67",
+   "plano": [
+    0.0108,
+    -0.839
    ]
   },
   {
@@ -3395,6 +3720,11 @@
     "silicio",
     "cristales fotonicos",
     "celdas solares"
+   ],
+   "color": "#d459b2",
+   "plano": [
+    0.9641,
+    -0.4844
    ]
   },
   {
@@ -3416,6 +3746,11 @@
     "mass transfer",
     "dinamica molecular",
     "cfd"
+   ],
+   "color": "#cb5188",
+   "plano": [
+    0.8542,
+    -0.5774
    ]
   },
   {
@@ -3437,6 +3772,11 @@
     "politica monetaria",
     "inclusion financiera",
     "estados financieros"
+   ],
+   "color": "#797650",
+   "plano": [
+    -0.1085,
+    -0.1402
    ]
   },
   {
@@ -3458,6 +3798,11 @@
     "deportes",
     "sports",
     "cine mexicano"
+   ],
+   "color": "#2d7794",
+   "plano": [
+    -1.0,
+    -0.1295
    ]
   },
   {
@@ -3479,6 +3824,11 @@
     "interculturalidad",
     "grupos etnicos",
     "ethnicity"
+   ],
+   "color": "#2d866c",
+   "plano": [
+    -0.9968,
+    0.052
    ]
   },
   {
@@ -3500,6 +3850,11 @@
     "equality",
     "derecho a la salud",
     "bioetica"
+   ],
+   "color": "#3c7e5f",
+   "plano": [
+    -0.8229,
+    -0.0488
    ]
   },
   {
@@ -3521,6 +3876,11 @@
     "violencia aspectos sociales",
     "violencia politica",
     "seguridad publica mexico"
+   ],
+   "color": "#338b68",
+   "plano": [
+    -0.9247,
+    0.1072
    ]
   },
   {
@@ -3542,6 +3902,11 @@
     "mecanica de suelos",
     "durabilidad",
     "materiales de construccion"
+   ],
+   "color": "#a2698f",
+   "plano": [
+    0.3819,
+    -0.2999
    ]
   },
   {
@@ -3558,6 +3923,11 @@
     "soldadura",
     "corrosion y anticorrosivos",
     "finite element analysis"
+   ],
+   "color": "#d66a9e",
+   "plano": [
+    0.9825,
+    -0.2819
    ]
   },
   {
@@ -3579,6 +3949,11 @@
     "graphic arts",
     "creative ability",
     "industrial design"
+   ],
+   "color": "#643452",
+   "plano": [
+    -0.3582,
+    -0.9229
    ]
   },
   {
@@ -3594,6 +3969,11 @@
     "energia eolica",
     "solar energy",
     "energy efficiency"
+   ],
+   "color": "#c24b79",
+   "plano": [
+    0.7492,
+    -0.6472
    ]
   },
   {
@@ -3615,6 +3995,11 @@
     "national security",
     "public policy",
     "foreign policy"
+   ],
+   "color": "#3d8079",
+   "plano": [
+    -0.8142,
+    -0.0179
    ]
   },
   {
@@ -3636,6 +4021,11 @@
     "obesity",
     "ninos nutricion",
     "estilo de vida"
+   ],
+   "color": "#87cc38",
+   "plano": [
+    0.0598,
+    0.8681
    ]
   },
   {
@@ -3657,6 +4047,11 @@
     "diabeticos",
     "diabetes mellitus tipo 2",
     "complicaciones"
+   ],
+   "color": "#9cc549",
+   "plano": [
+    0.3033,
+    0.7841
    ]
   },
   {
@@ -3678,6 +4073,11 @@
     "energia electrica",
     "energias limpias",
     "mercados"
+   ],
+   "color": "#8b6569",
+   "plano": [
+    0.1089,
+    -0.3462
    ]
   },
   {
@@ -3699,6 +4099,11 @@
     "actividad politica",
     "pueblos originarios",
     "condiciones sociales"
+   ],
+   "color": "#2d837b",
+   "plano": [
+    -1.0,
+    0.0073
    ]
   },
   {
@@ -3720,6 +4125,11 @@
     "statistical analysis",
     "model",
     "principal component analysis"
+   ],
+   "color": "#a96956",
+   "plano": [
+    0.4622,
+    -0.2946
    ]
   },
   {
@@ -3741,6 +4151,11 @@
     "desarrollo local",
     "ecotourism",
     "hoteles"
+   ],
+   "color": "#528c4f",
+   "plano": [
+    -0.5618,
+    0.1161
    ]
   },
   {
@@ -3762,6 +4177,11 @@
     "pediatrics",
     "sangre",
     "tabaquismo"
+   ],
+   "color": "#a0c85c",
+   "plano": [
+    0.3567,
+    0.8261
    ]
   },
   {
@@ -3778,6 +4198,11 @@
     "cosmologia",
     "espacio y tiempo",
     "astrofisica"
+   ],
+   "color": "#a73f9b",
+   "plano": [
+    0.4361,
+    -0.7904
    ]
   },
   {
@@ -3799,6 +4224,11 @@
     "analgesia",
     "dolor postoperatorio tratamiento",
     "anestesia complicaciones"
+   ],
+   "color": "#acac6f",
+   "plano": [
+    0.4933,
+    0.4971
    ]
   },
   {
@@ -3820,6 +4250,11 @@
     "breast cancer",
     "cancer cervicouterino",
     "biopsia"
+   ],
+   "color": "#a0c368",
+   "plano": [
+    0.3527,
+    0.7596
    ]
   },
   {
@@ -3841,6 +4276,11 @@
     "personas adultas mayores salud e higiene",
     "ancianos",
     "older people"
+   ],
+   "color": "#77b935",
+   "plano": [
+    -0.126,
+    0.6453
    ]
   },
   {
@@ -3862,6 +4302,11 @@
     "home gardens",
     "alimentos tradicionales",
     "huertos familiares"
+   ],
+   "color": "#60b971",
+   "plano": [
+    -0.4031,
+    0.6465
    ]
   },
   {
@@ -3883,6 +4328,11 @@
     "imagenes por resonancia magnetica",
     "trastorno cerebrovascular",
     "sistema nervioso"
+   ],
+   "color": "#b28364",
+   "plano": [
+    0.5693,
+    0.0064
    ]
   },
   {
@@ -3904,6 +4354,11 @@
     "maternidad",
     "anticonceptivos",
     "puerperio"
+   ],
+   "color": "#68c244",
+   "plano": [
+    -0.3045,
+    0.7547
    ]
   },
   {
@@ -3925,6 +4380,11 @@
     "robust control",
     "reinforcement learning",
     "sliding mode control"
+   ],
+   "color": "#c42d70",
+   "plano": [
+    0.7795,
+    -1.0
    ]
   },
   {
@@ -3946,6 +4406,11 @@
     "aparato respiratorio enfermedades",
     "infecciones respiratorias",
     "confinamiento"
+   ],
+   "color": "#7a9d45",
+   "plano": [
+    -0.0942,
+    0.3194
    ]
   },
   {
@@ -3967,6 +4432,11 @@
     "remote sensing",
     "uav",
     "unmanned aerial vehicles"
+   ],
+   "color": "#c6426a",
+   "plano": [
+    0.8041,
+    -0.7523
    ]
   },
   {
@@ -3988,6 +4458,11 @@
     "ciudades inteligentes",
     "gps",
     "agricultura de precision"
+   ],
+   "color": "#c53061",
+   "plano": [
+    0.7843,
+    -0.9645
    ]
   },
   {
@@ -4004,6 +4479,11 @@
     "america historia",
     "america descubrimiento y exploracion espanoles",
     "comercio historia"
+   ],
+   "color": "#3f6cd7",
+   "plano": [
+    -0.794,
+    -0.2538
    ]
   },
   {
@@ -4025,6 +4505,11 @@
     "enfermedad periodontal",
     "prevalencia",
     "caso clinico"
+   ],
+   "color": "#94bd54",
+   "plano": [
+    0.208,
+    0.6905
    ]
   },
   {
@@ -4046,6 +4531,11 @@
     "realidad virtual",
     "realidad aumentada",
     "multimedia"
+   ],
+   "color": "#8d2d3e",
+   "plano": [
+    0.1267,
+    -1.0
    ]
   },
   {
@@ -4067,6 +4557,11 @@
     "north american free trade agreement 1992 december 17",
     "relaciones comerciales",
     "free trade north america"
+   ],
+   "color": "#57906f",
+   "plano": [
+    -0.508,
+    0.1597
    ]
   },
   {
@@ -4088,6 +4583,11 @@
     "support vector machines",
     "time series",
     "feature selection"
+   ],
+   "color": "#c63f53",
+   "plano": [
+    0.7961,
+    -0.785
    ]
   },
   {
@@ -4109,6 +4609,11 @@
     "predicacion",
     "vida religiosa",
     "seminarios"
+   ],
+   "color": "#386ca4",
+   "plano": [
+    -0.8671,
+    -0.2546
    ]
   },
   {
@@ -4126,6 +4631,11 @@
     "red",
     "networks",
     "telecommunications"
+   ],
+   "color": "#9b3e4a",
+   "plano": [
+    0.2986,
+    -0.8002
    ]
   },
   {
@@ -4147,6 +4657,11 @@
     "sincronizacion",
     "markov processes",
     "fractales"
+   ],
+   "color": "#b83180",
+   "plano": [
+    0.6349,
+    -0.951
    ]
   },
   {
@@ -4160,6 +4675,11 @@
     "teoria de conjuntos",
     "espacios topologicos",
     "procesos de levy"
+   ],
+   "color": "#9a3790",
+   "plano": [
+    0.2838,
+    -0.8802
    ]
   },
   {
@@ -4174,6 +4694,11 @@
     "mathematical optimization",
     "genetic algorithms",
     "costs"
+   ],
+   "color": "#c4395c",
+   "plano": [
+    0.7818,
+    -0.8617
    ]
   },
   {
@@ -4195,6 +4720,11 @@
     "social science",
     "canada",
     "20th century"
+   ],
+   "color": "#327b79",
+   "plano": [
+    -0.9424,
+    -0.0832
    ]
   },
   {
@@ -4210,6 +4740,11 @@
     "computer simulation",
     "filters",
     "cryptography"
+   ],
+   "color": "#d42d7a",
+   "plano": [
+    0.9676,
+    -1.0
    ]
   },
   {
@@ -4226,6 +4761,11 @@
     "artificial neural networks ann",
     "transmission lines",
     "microwave circuits"
+   ],
+   "color": "#d7307f",
+   "plano": [
+    1.0,
+    -0.9623
    ]
   },
   {
@@ -4240,6 +4780,11 @@
     "algoritmos geneticos",
     "teoria de grafos",
     "criptografia"
+   ],
+   "color": "#ab2e68",
+   "plano": [
+    0.4859,
+    -0.9938
    ]
   },
   {
@@ -4254,6 +4799,11 @@
     "information retrieval",
     "mineria de datos",
     "web semantica"
+   ],
+   "color": "#953656",
+   "plano": [
+    0.2189,
+    -0.8946
    ]
   },
   {
@@ -4270,6 +4820,11 @@
     "quimica cuantica",
     "quantum optics",
     "sistemas hamiltonianos"
+   ],
+   "color": "#b8339d",
+   "plano": [
+    0.6315,
+    -0.9284
    ]
   },
   {
@@ -4291,6 +4846,11 @@
     "gobernanza",
     "gobierno corporativo",
     "empresas familiares administracion"
+   ],
+   "color": "#5f6c44",
+   "plano": [
+    -0.417,
+    -0.2608
    ]
   },
   {
@@ -4312,6 +4872,11 @@
     "islamismo",
     "war on terrorism 2001 2009",
     "narrativa"
+   ],
+   "color": "#44709e",
+   "plano": [
+    -0.7308,
+    -0.2155
    ]
   }
  ]

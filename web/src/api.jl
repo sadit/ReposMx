@@ -29,8 +29,8 @@ function entero(v::AbstractString, nombre, rango)
     n
 end
 
-"Lee y valida `q`, `modo`, `repo`, `autor`, `k`, `por_documento` y `conv`."
-function peticion(req::HTTP.Request, s; k_def::Int=10)
+"Lee y valida `q`, `modo`, `repo`, `autor`, `k`, `por_documento` y `conv`; `sin_consulta` admite `q` vacía (para listar)."
+function peticion(req::HTTP.Request, s; k_def::Int=10, sin_consulta::Bool=false)
     q, repo, autor, k, pd, conv = "", "", "", k_def, 2, ""
     cti, meta = nothing, ""
     modo = first(modos(s.acervo))
@@ -57,7 +57,7 @@ function peticion(req::HTTP.Request, s; k_def::Int=10)
             conv = String(strip(v))
         end
     end
-    isempty(q) && throw(ErrorPeticion("falta la consulta (q)"))
+    isempty(q) && !sin_consulta && throw(ErrorPeticion("falta la consulta (q)"))
     length(q) > MAX_CONSULTA && throw(ErrorPeticion("la consulta pasa de $MAX_CONSULTA caracteres"))
     (isempty(repo) || repo in s.acervo.repos) || throw(ErrorPeticion("repositorio desconocido: $repo"))
     length(autor) > 200 && throw(ErrorPeticion("autor inválido"))

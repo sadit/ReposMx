@@ -11,6 +11,8 @@
 # sigue al sistema (Solarized claro u oscuro); la elección se recuerda en el navegador.
 
 const TITULO = "ReposMx"
+# El sitio del proyecto (sitio/, en GitHub Pages): metodología y datos. El demo liga al sitio; el sitio no liga al demo.
+const SITIO = "https://sadit.github.io/ReposMx/"
 const TEMAS = ["" => "Automático", "sol-claro" => "Solarized claro", "sol-oscuro" => "Solarized oscuro",
                "pizarra" => "Pizarra", "clasico" => "Clásico"]
 
@@ -37,6 +39,21 @@ const CLASE_LIGA = "text-liga underline decoration-dotted underline-offset-4 hov
 const CLASE_CAMPO = "w-full rounded-lg border border-borde bg-superficie px-4 py-3 text-base text-fuerte shadow-sm placeholder:text-tenue focus:border-liga focus:outline-none focus:ring-2 focus:ring-liga/30"
 const CLASE_BOTON = "shrink-0 rounded-lg bg-boton px-5 py-3 font-medium text-sobre-boton shadow-sm hover:opacity-90 focus:outline-none focus:ring-2 focus:ring-liga/50 disabled:cursor-not-allowed disabled:opacity-50"
 const CLASE_CHIP = "rounded-full bg-realce px-2 py-0.5 font-medium text-liga ring-1 ring-inset ring-liga/20"
+const CLASE_BOTON_2 = "shrink-0 rounded-lg border border-borde bg-superficie px-4 py-3 font-medium text-liga shadow-sm hover:bg-realce focus:outline-none focus:ring-2 focus:ring-liga/50 disabled:cursor-not-allowed disabled:opacity-50"
+
+# Dos caras de Documentos (indicación del usuario, 2026-11-27): la entrada (`/`), con el mapa de meta-disciplinas
+# como selector, y la interfaz alternativa (`/alternativa`), la tradicional, con las listas desplegables y la
+# búsqueda dentro de la producción de un autor.
+raiz(s, vista::Symbol) = vista == :alternativa ? "$(s.prefijo)/alternativa" : "$(s.prefijo)/"
+vista_de(req::HTTP.Request) = any(((k, v),) -> k == "vista" && v == "alternativa", pares(req)) ? :alternativa : :entrada
+
+"El punto del color de una meta-disciplina (experiments/rag_web/colorea_metadisciplinas.py)."
+function punto(s, m; tam="size-2.5")
+    c = color_meta(s.acervo, m)
+    occursin(r"^#[0-9a-fA-F]{6}$", c) || return ""
+    """<span aria-hidden="true" class="inline-block $tam shrink-0 rounded-full" style="background:$c"></span>"""
+end
+chip_meta(s, m) = """<span class="inline-flex items-center gap-1.5 $CLASE_CHIP">$(punto(s, m; tam="size-2"))$(esc(nombre_meta(s.acervo, m)))</span>"""
 
 function barra(s, actual::Symbol)
     pestaña(clave, texto, ruta) = clave == actual ?
@@ -51,6 +68,7 @@ function barra(s, actual::Symbol)
         $(pestaña(:autores, "Autores", "/autores"))
         $(pestaña(:referencias, "Referencias", "/referencias"))
         $(tiene_metas(s.acervo) ? pestaña(:mapa, "Mapa", "/mapa") : "")
+        <a href="$SITIO" target="_blank" rel="noopener" class="rounded px-2 py-1 text-sobre-barra/75 hover:text-sobre-barra">Cómo se hizo ↗</a>
         <label class="ml-auto inline-flex items-center gap-2 text-xs text-sobre-barra/75" x-data="tema()">
           <span>Tema</span>
           <select x-model="valor" @change="cambia()" class="rounded border border-sobre-barra/30 bg-barra px-1.5 py-1 text-xs text-sobre-barra">$opciones</select>
@@ -108,7 +126,7 @@ function selector_meta(s, meta::AbstractString)
             <label class="flex cursor-pointer items-baseline gap-2 rounded px-1 py-0.5 hover:bg-realce">
               <input type="radio" name="meta" value="$(esc(string(g["clave"])))" $(g["clave"] == meta ? "checked" : "")
                      @change="elegida = '$(esc(replace(nombre, "'" => "\\'")))'; abierto = false" class="accent-liga">
-              <span><span class="text-fuerte">$(esc(nombre))</span>
+              <span><span class="inline-flex items-center gap-1.5 text-fuerte">$(punto(s, string(g["clave"])))$(esc(nombre))</span>
                 <span class="block text-xs text-tenue">$(miles(Int(g["documentos"]))) · $(esc(palabras))</span></span>
             </label>
           </li>
@@ -116,6 +134,24 @@ function selector_meta(s, meta::AbstractString)
     end
     print(io, "        </ul>\n      </div>\n    </div>\n")
     String(take!(io))
+end
+
+"""
+La meta-disciplina en la entrada: la elegida (con su color) y las ligas para abrir el mapa o quitarla. El estado
+vive en el componente de la página (vista_entrada); el mapa de la derecha lo cambia (selector.js).
+"""
+function selector_meta_mapa(s, meta::AbstractString)
+    tiene_metas(s.acervo) || return ""
+    """
+    <span class="flex w-full flex-wrap items-center gap-x-3 gap-y-1">
+      <input type="hidden" name="meta" :value="meta" value="$(esc(meta))">
+      <span class="text-tenue">Meta-disciplina</span>
+      <span x-show="meta" x-cloak class="inline-flex items-center gap-1.5 $CLASE_CHIP"><span aria-hidden="true" class="inline-block size-2.5 rounded-full" :style="'background:' + color"></span><span x-text="nombre"></span></span>
+      <span x-show="!meta" class="text-fuerte">todas</span>
+      <button type="button" @click="abierto = true" class="text-xs $CLASE_LIGA" x-text="meta ? 'cambiar en el mapa' : 'elegir en el mapa'">elegir en el mapa</button>
+      <button type="button" x-show="meta" x-cloak @click="quita()" class="text-xs $CLASE_LIGA">quitar</button>
+    </span>
+    """
 end
 
 """
@@ -191,8 +227,9 @@ function pagina(s, actual::Symbol, titulo::AbstractString, cuerpo::AbstractStrin
         <footer class="mt-10 border-t border-borde pt-4 text-xs leading-relaxed text-tenue">
           Demo de investigación sobre los repositorios institucionales mexicanos que publican por OAI-PMH. Cada resultado
           lleva a su registro en el repositorio de origen; este sitio no comparte los documentos.$(s.gen === nothing ? "" :
-          " La respuesta redactada es texto generado por un modelo y puede estar equivocada; para redactarla, la pregunta y los fragmentos encontrados se envían a un servicio externo.")
+          " La respuesta redactada es texto generado por un modelo y puede estar equivocada.")
           Las conversaciones no se guardan: se pierden al cerrar la página o al reiniciarse el servicio.
+          Los datos y la metodología están en <a href="$SITIO" target="_blank" rel="noopener" class="$CLASE_LIGA">el sitio de ReposMx</a>.
         </footer>
       </div>
     </body>
@@ -210,12 +247,12 @@ fallo_html(msg, status) = Oxygen.html(aviso(msg); status, headers=CABECERAS_HTML
 lento(g::Generador) = "Este demo tiene recursos limitados: redacta $(g.a_la_vez == 1 ? "una respuesta" : "$(g.a_la_vez) respuestas") a la vez."
 
 "El renglón donde se escribe la pregunta; se vuelve a mandar con cada paso (cuenta de preguntas, límite)."
-function entrada(s, pasos::Int; oob::Bool=false)
+function entrada(s, pasos::Int; oob::Bool=false, vista::Symbol=:entrada, listar::Bool=true)
     tope = s.convs.max_pasos
     attr = oob ? " hx-swap-oob=\"true\"" : ""
     pasos >= tope && return """
     <div id="entrada"$attr class="rounded-lg border border-borde bg-superficie px-4 py-3 text-sm text-texto">
-      Esta conversación llegó al límite de $tope preguntas. <a href="$(s.prefijo)/" class="$CLASE_LIGA">Empezar una conversación nueva</a>
+      Esta conversación llegó al límite de $tope preguntas. <a href="$(raiz(s, vista))" class="$CLASE_LIGA">Empezar una conversación nueva</a>
     </div>
     """
     sugerencia = pasos == 0 ? "Escribe una pregunta o un tema, por ejemplo: ¿qué se ha estudiado sobre la calidad del agua en acuíferos?" :
@@ -226,11 +263,14 @@ function entrada(s, pasos::Int; oob::Bool=false)
         <label for="q" class="sr-only">Pregunta</label>
         <input id="q" name="q" type="search" required maxlength="$MAX_CONSULTA" autocomplete="off" placeholder="$(esc(sugerencia))" class="$CLASE_CAMPO">
         <button type="submit" :disabled="ocupado" class="$CLASE_BOTON">$(pasos == 0 ? "Preguntar" : "Seguir")</button>
+        $(listar ? """<button type="button" hx-get="$(s.prefijo)/lista" hx-include="closest form" hx-target="#lista" hx-swap="innerHTML" hx-indicator="#espera" hx-disabled-elt="this"
+                title="Sólo listar, sin respuesta redactada: hasta $LISTA_MAX documentos de la pregunta o, sin pregunta, los más representativos de la meta-disciplina o la disciplina elegida"
+                class="$CLASE_BOTON_2">Listar</button>""" : "")
       </div>
       $(pasos == 0 ? "" : """<p class="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-tenue">
         <span>Pregunta $(pasos + 1) de $tope. Cada pregunta se busca por separado; para redactar, el modelo también lee las preguntas y respuestas anteriores.</span>
         <span x-show="ocupado" x-cloak>Espera a que termine la respuesta para seguir.</span>
-        <a href="$(s.prefijo)/" class="ml-auto $CLASE_LIGA">Conversación nueva</a>
+        <a href="$(raiz(s, vista))" class="ml-auto $CLASE_LIGA">Conversación nueva</a>
       </p>""")
     </div>
     """
@@ -238,7 +278,7 @@ end
 
 oculto(id, valor; oob::Bool=false) = """<input type="hidden" id="$id" name="$id" value="$(esc(valor))"$(oob ? " hx-swap-oob=\"true\"" : "")>"""
 
-function formulario(s, c::Union{Nothing,Conversacion}, autor::Union{Nothing,Autor}; meta_inicial::AbstractString="")
+function formulario(s, c::Union{Nothing,Conversacion}, autor::Union{Nothing,Autor}; meta_inicial::AbstractString="", vista::Symbol=:alternativa)
     pasos = c === nothing ? Paso[] : c.pasos
     ultimo = isempty(pasos) ? nothing : last(pasos)
     modo = ultimo === nothing ? first(modos(s.acervo)) : ultimo.modo
@@ -252,7 +292,8 @@ function formulario(s, c::Union{Nothing,Conversacion}, autor::Union{Nothing,Auto
           x-data="{ ocupado: false }" @redactando.window="ocupado = \$event.detail" class="mt-6 space-y-4">
       $(oculto("conv", c === nothing ? "" : c.id))
       $(oculto("autor", autor === nothing ? "" : autor.id))
-      $(entrada(s, length(pasos)))
+      $(vista == :alternativa ? oculto("vista", "alternativa") : "")
+      $(entrada(s, length(pasos); vista, listar=autor === nothing))
       <div class="flex flex-wrap items-center gap-x-4 gap-y-2 text-sm">
         <span class="text-tenue">Cómo</span>
     """)
@@ -264,7 +305,7 @@ function formulario(s, c::Union{Nothing,Conversacion}, autor::Union{Nothing,Auto
             </label>
         """)
     end
-    autor === nothing && print(io, """<span class="ml-auto flex flex-wrap gap-x-4 gap-y-2">$(selector_repo(s, repo))</span><span class="w-full">$(selector_meta(s, meta))</span><span class="w-full">$(selector_cti(s, cti))</span>""")
+    autor === nothing && print(io, """<span class="ml-auto flex flex-wrap gap-x-4 gap-y-2">$(selector_repo(s, repo))</span><span class="w-full">$(vista == :entrada ? selector_meta_mapa(s, meta) : selector_meta(s, meta))</span><span class="w-full">$(selector_cti(s, cti))</span>""")
     tiene_denso(s.acervo) || print(io, """<span class="w-full text-xs text-tenue">La búsqueda por significado estará disponible cuando termine la codificación de los documentos.</span>""")
     print(io, """
       </div>
@@ -273,8 +314,23 @@ function formulario(s, c::Union{Nothing,Conversacion}, autor::Union{Nothing,Auto
     String(take!(io))
 end
 
+"""
+Las meta-disciplinas del documento, cada una con dos salidas: la misma pregunta dentro de ella (una conversación
+nueva) y el mapa centrado en ella, para pasar a las parecidas.
+"""
+function metas_de(s, r::Resultado, p::Paso)
+    ms = get(s.acervo.doc_metas, r.documento, String[])
+    isempty(ms) && return ""
+    items = join(("""<span class="inline-flex flex-wrap items-baseline gap-x-2">
+          $(chip_meta(s, m))
+          <a href="$(s.prefijo)/buscar?$(qs("q" => p.consulta, "modo" => p.modo, "meta" => m))" class="$CLASE_LIGA" title="La misma pregunta, sólo en esta meta-disciplina">buscar aquí</a>
+          <a href="$(s.prefijo)/mapa?$(qs("m" => m))" class="$CLASE_LIGA" title="Esta meta-disciplina en el mapa, con sus vecinas">vecinas</a>
+        </span>""" for m in ms), "\n")
+    """<div class="mt-2 flex flex-wrap items-baseline gap-x-4 gap-y-1 text-xs"><span class="text-tenue">Meta-disciplina</span>$items</div>"""
+end
+
 "Un documento de la pregunta `n`, el número `num` de la conversación: el ancla `p{n}f{num}` es a donde lleva la cita [num]."
-function tarjeta(s, r::Resultado, n::Int, num::Int)
+function tarjeta(s, r::Resultado, n::Int, num::Int, p::Paso)
     medidas = String[]
     r.similitud === nothing || push!(medidas, "similitud " * string(round(r.similitud; digits=3)))
     r.bm25 === nothing || push!(medidas, "BM25 " * string(round(r.bm25; digits=1)))
@@ -296,6 +352,7 @@ function tarjeta(s, r::Resultado, n::Int, num::Int)
         $(isempty(r.cita) ? "" : "<p class=\"mt-0.5 text-xs text-tenue\">$(esc(r.cita))</p>")
         $(isempty(cuerpo) ? "" : """<p class="$(largo ? "line-clamp-4 " : "")mt-2 whitespace-pre-line text-sm leading-relaxed text-texto" $(largo ? ":class=\"{ 'line-clamp-4': !abierto }\"" : "")>$(esc(cuerpo))</p>""")
         $nota
+        $(metas_de(s, r, p))
         <div class="mt-3 flex flex-wrap gap-x-5 gap-y-1 text-sm">
           $(largo ? "<button type=\"button\" @click=\"abierto = !abierto\" class=\"$CLASE_LIGA\" x-text=\"abierto ? 'Ver menos' : 'Ver más'\">Ver más</button>" : "")
           $(liga_segura(r.liga) ? "<a href=\"$(esc(r.liga))\" target=\"_blank\" rel=\"noopener noreferrer\" class=\"text-liga underline underline-offset-4 hover:text-acento\">Ver el registro en el repositorio ↗</a>" : "")
@@ -335,6 +392,11 @@ function recuadro(s, conv::AbstractString, n::Int, base::Int, leidos::Int, hecha
     """
 end
 
+filtros_en_palabras(s, meta, cti, repo) =
+    string(isempty(meta) ? "" : " · meta-disciplina $(esc(nombre_meta(s.acervo, meta)))",
+           cti === nothing ? "" : " · $(esc(lowercase(Dict(NIVELES_CTI)[first(cti)]))) $(esc(bonito(last(cti)))) (declarada)",
+           isempty(repo) ? "" : " · en $(esc(repo))")
+
 "Un paso de la conversación: la pregunta, la respuesta y sus fuentes plegables (abiertas sólo en el último)."
 function paso_html(s, conv::AbstractString, n::Int, p::Paso; ultimo::Bool, base::Int)
     io = IOBuffer()
@@ -360,10 +422,7 @@ function paso_html(s, conv::AbstractString, n::Int, p::Paso; ultimo::Bool, base:
             print(io, """<p class="mt-3 text-sm text-tenue">Esta pregunta quedó sin respuesta redactada.</p>\n""")
         end
     end
-    donde = p.autor !== nothing ? " · en la producción de $(esc(p.autor.nombre))" :
-            string(isempty(p.meta) ? "" : " · meta-disciplina $(esc(nombre_meta(s.acervo, p.meta)))",
-                   p.cti === nothing ? "" : " · $(esc(lowercase(Dict(NIVELES_CTI)[first(p.cti)]))) $(esc(bonito(last(p.cti)))) (declarada)",
-                   isempty(p.repo) ? "" : " · en $(esc(p.repo))")
+    donde = p.autor !== nothing ? " · en la producción de $(esc(p.autor.nombre))" : filtros_en_palabras(s, p.meta, p.cti, p.repo)
     tiempos = String[]
     haskey(p.ms, "codifica") && push!(tiempos, "codificar $(round(Int, p.ms["codifica"])) ms")
     haskey(p.ms, "busca") && push!(tiempos, "buscar $(round(Int, p.ms["busca"])) ms")
@@ -374,7 +433,7 @@ function paso_html(s, conv::AbstractString, n::Int, p::Paso; ultimo::Bool, base:
           <span class="text-xs"> · $(length(p.resultados)) · $(esc(lowercase(NOMBRE_MODO[p.modo])))$donde$(isempty(tiempos) ? "" : " · " * join(tiempos, ", "))</span>
         </summary>
         <ol class="mt-3 space-y-3">
-        $(join((tarjeta(s, x, n, base + i) for (i, x) in enumerate(p.resultados)), "\n"))
+        $(join((tarjeta(s, x, n, base + i, p) for (i, x) in enumerate(p.resultados)), "\n"))
         </ol>
       </details>
     </section>
@@ -382,20 +441,25 @@ function paso_html(s, conv::AbstractString, n::Int, p::Paso; ultimo::Bool, base:
     String(take!(io))
 end
 
-function encabezado_documentos(s, autor::Union{Nothing,Autor})
+function encabezado_documentos(s, autor::Union{Nothing,Autor}; vista::Symbol=:alternativa)
     a = s.acervo
     total = a.documentos > 0 ? " $(miles(a.documentos)) documentos de $(length(a.repos)) repositorios." : " Documentos de $(length(a.repos)) repositorios."
     produccion = autor === nothing ? "" : """
       <p class="mt-3 rounded-lg border border-liga/30 bg-realce px-4 py-2 text-sm text-texto">Se busca sólo en la producción de
         <span class="font-medium text-acento">$(esc(autor.nombre))</span>: $(miles(length(autor.documentos))) $(length(autor.documentos) == 1 ? "documento" : "documentos").
-        <a href="$(s.prefijo)/" class="ml-1 $CLASE_LIGA">Buscar en todo</a></p>"""
+        <a href="$(s.prefijo)/alternativa" class="ml-1 $CLASE_LIGA">Buscar en todo</a></p>"""
     """
     <header class="mb-6">
-      <h1 class="text-2xl font-semibold tracking-tight text-acento sm:text-3xl"><a href="$(s.prefijo)/">Documentos</a></h1>
-      <p class="mt-2 text-sm leading-relaxed text-texto">Tesis, artículos, libros y reportes de los repositorios institucionales mexicanos.$total$(s.gen === nothing ? "" :
+      <h1 class="text-2xl font-semibold tracking-tight text-acento sm:text-3xl"><a href="$(raiz(s, vista))">Documentos</a></h1>
+      <p class="mt-2 text-sm leading-relaxed text-texto">Tesis, artículos, libros y reportes de los repositorios institucionales mexicanos.$total$(vista == :entrada && tiene_metas(a) ?
+        " Elige en el mapa una meta-disciplina (un tema que sale de las palabras clave de los propios documentos) para preguntar dentro de ella o listar sus documentos más representativos." : "")$(s.gen === nothing ? "" :
         " Un modelo de lenguaje redacta una respuesta con lo encontrado y cita cada documento; se puede seguir preguntando, hasta $(s.convs.max_pasos) preguntas por conversación.")</p>
       $(s.gen === nothing ? "" : """<p class="mt-2 text-xs leading-relaxed text-tenue">$(lento(s.gen)) Si hay otras personas usándolo, la tuya espera su turno.</p>""")
       $produccion
+      <p class="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs">$(vista == :entrada ?
+        """<button type="button" x-show="!abierto" x-cloak @click="abierto = true" class="$CLASE_LIGA">Ver el mapa</button>
+           <a href="$(s.prefijo)/alternativa" class="$CLASE_LIGA">Interfaz alternativa</a>""" :
+        autor === nothing && tiene_metas(a) ? """<a href="$(s.prefijo)/" class="$CLASE_LIGA">Volver a la entrada con el mapa</a>""" : "")</p>
     </header>
     """
 end
@@ -411,15 +475,132 @@ function vista_documentos(s, c::Union{Nothing,Conversacion}, autor::Union{Nothin
     <div id="avisos" class="mt-4">$avisos</div>
     $(formulario(s, c, autor; meta_inicial=meta))
     <p id="espera" class="htmx-indicator mt-4 text-sm text-tenue">Buscando…</p>
+    <div id="lista" class="mt-8"></div>
     """
     pagina(s, :documentos, titulo, cuerpo; encabezado=encabezado_documentos(s, autor))
+end
+
+"""
+La entrada: la conversación a la izquierda y, a la derecha, el mapa de meta-disciplinas en grande para elegir
+una (selector.js, sobre grafo.js). Al elegir, al preguntar o al listar, el mapa se pliega y deja el ancho a los
+resultados; «cambiar en el mapa» o «Ver el mapa» lo vuelve a abrir. Empieza plegado si ya hay meta-disciplina
+o conversación.
+"""
+function vista_entrada(s, c::Union{Nothing,Conversacion}, avisos::AbstractString=""; meta::AbstractString="")
+    pasos = c === nothing ? Paso[] : c.pasos
+    conv = c === nothing ? "" : c.id
+    titulo = isempty(pasos) ? "" : first(pasos).consulta
+    m = isempty(pasos) ? String(meta) : last(pasos).meta
+    abierto = isempty(pasos) && isempty(m) && tiene_metas(s.acervo)
+    estado = JSON.json(Dict("abierto" => abierto, "meta" => m, "nombre" => isempty(m) ? "" : nombre_meta(s.acervo, m),
+                            "color" => color_meta(s.acervo, m)))
+    datos = string(chop(estado), ", elige(d) { this.meta = d.id; this.nombre = d.nombre; this.color = d.color; this.abierto = false; ",
+                   "this.\$nextTick(() => document.getElementById('q')?.focus()) }, ",
+                   "quita() { this.meta = ''; this.nombre = ''; this.color = ''; window.dispatchEvent(new CustomEvent('meta-quitada')) } }")
+    mapa = !tiene_metas(s.acervo) ? "" : """
+      <aside x-show="abierto" $(abierto ? "" : "x-cloak") id="selector-mapa" data-prefijo="$(s.prefijo)" data-meta="$(esc(m))"
+             aria-label="Mapa de meta-disciplinas" class="order-1 w-full shrink-0 lg:sticky lg:top-4 lg:order-2 lg:w-[56%]">
+        <div class="flex items-center gap-3">
+          <input type="search" id="selector-filtro" placeholder="Resalta por nombre o palabra: robótica, agua, poesía…" aria-label="Resaltar meta-disciplinas"
+                 class="min-w-0 flex-1 rounded-lg border border-borde bg-superficie px-3 py-2 text-sm text-fuerte placeholder:text-tenue focus:border-liga focus:outline-none focus:ring-2 focus:ring-liga/30">
+          <button type="button" @click="abierto = false" class="shrink-0 text-sm $CLASE_LIGA">Plegar el mapa</button>
+        </div>
+        <div class="relative mt-2">
+          <canvas id="selector-lienzo" class="h-[60vh] w-full rounded-xl border border-borde bg-superficie lg:h-[calc(100vh-9rem)]" aria-label="Mapa de meta-disciplinas: haz clic en una para elegirla"></canvas>
+          <div id="selector-punta" class="pointer-events-none absolute hidden max-w-xs rounded bg-barra px-2 py-1 text-xs leading-snug text-sobre-barra"></div>
+        </div>
+        <p class="mt-1 text-xs leading-relaxed text-tenue">Haz clic en una meta-disciplina para elegirla. Cada color es la proyección de su centro
+          a tres dimensiones (rojo, verde y azul) y la posición sigue a las dos primeras: las que se parecen quedan cerca y con colores parecidos.
+          <a href="$(SITIO)metodo.html#meta-disciplinas" target="_blank" rel="noopener" class="$CLASE_LIGA">Cómo se hicieron</a>.</p>
+      </aside>"""
+    cuerpo = """
+    <div x-data="$(esc(datos))" @meta-elegida.window="elige(\$event.detail)" @mapa-pliega.window="abierto = false"
+         class="flex flex-col gap-6 lg:flex-row lg:items-start">
+      <div class="order-2 min-w-0 flex-1 lg:order-1" :class="abierto ? '' : 'mx-auto w-full max-w-4xl'">
+        $(encabezado_documentos(s, nothing; vista=:entrada))
+        <main id="pasos" class="space-y-8">
+        $(join((paso_html(s, conv, i, p; ultimo=i == length(pasos), base=antes(c, i)) for (i, p) in enumerate(pasos)), "\n"))
+        </main>
+        <div id="avisos" class="mt-4">$avisos</div>
+        $(formulario(s, c, nothing; meta_inicial=m, vista=:entrada))
+        <p id="espera" class="htmx-indicator mt-4 text-sm text-tenue">Buscando…</p>
+        <div id="lista" class="mt-8"></div>
+      </div>
+      $mapa
+    </div>
+    """
+    pagina(s, :documentos, titulo, cuerpo; ancho="max-w-[96rem]", scripts=tiene_metas(s.acervo) ? ["d3.min.js", "grafo.js", "selector.js"] : String[])
+end
+
+"""
+Sólo listar (`/lista`): hasta LISTA_MAX documentos con los filtros del formulario, sin respuesta redactada ni
+conversación (`lista` en acervo.jl). Con htmx devuelve la lista para `#lista`; sin htmx, la página con ella.
+"""
+function pagina_lista(req::HTTP.Request)
+    s = SERVICIO[]
+    vista = vista_de(req)
+    html = try
+        p = peticion(req, s; sin_consulta=true)
+        isempty(p.autor) || throw(ErrorPeticion("La lista no se hace dentro de la producción de un autor; escribe una pregunta."))
+        t = @elapsed rs, orden = Base.acquire(s.cupo) do
+            lista(s.acervo, p.q; modo=p.modo, repo=p.repo, cti=p.cti, meta=p.meta)
+        end
+        bitacora("lista modo=", p.modo, isempty(p.q) ? " sin consulta" : "", " resultados=", length(rs), " ms=", round(Int, 1000t))
+        lista_html(s, rs, orden, filtros_en_palabras(s, p.meta, p.cti, p.repo))
+    catch e
+        e isa ErrorLista || e isa ErrorPeticion || e isa ErrorCodificador || rethrow()
+        aviso(e isa ErrorCodificador ? "El codificador de consultas no está disponible. Prueba la búsqueda por palabras." : e.msg)
+    end
+    con_htmx(req) && return Oxygen.html(html; headers=CABECERAS_HTML)
+    d = Dict(pares(req))
+    meta = get(d, "meta", "")
+    haskey(s.acervo.meta_docs, meta) || (meta = "")
+    pag = vista == :alternativa ? vista_documentos(s, nothing, nothing; meta) : vista_entrada(s, nothing; meta)
+    Oxygen.html(replace(pag, """<div id="lista" class="mt-8"></div>""" => """<div id="lista" class="mt-8">$html</div>"""; count=1); headers=CABECERAS_HTML)
+end
+
+"La lista: un renglón por documento, con su liga al repositorio de origen y sus meta-disciplinas."
+function lista_html(s, rs::Vector{Resultado}, orden::AbstractString, filtros::AbstractString)
+    isempty(rs) && return aviso("No hubo documentos con esos filtros.")
+    io = IOBuffer()
+    print(io, """
+    <section aria-label="Lista de documentos" class="rounded-xl border border-borde bg-superficie p-4 shadow-sm">
+      <div class="flex flex-wrap items-baseline gap-x-3 gap-y-1 border-b border-borde pb-2">
+        <h2 class="font-medium text-acento">Lista · $(length(rs)) documentos</h2>
+        <span class="text-xs text-tenue">$(esc(orden))$filtros</span>
+        <button type="button" onclick="this.closest('#lista').innerHTML = ''" class="ml-auto text-xs $CLASE_LIGA">Cerrar la lista</button>
+      </div>
+      <p class="mt-2 text-xs text-tenue">Sin respuesta redactada; a lo más $LISTA_MAX, uno por documento. Cada título lleva a su registro en el repositorio de origen.</p>
+      <ol class="mt-2 divide-y divide-borde">
+    """)
+    for (i, r) in enumerate(rs)
+        titulo = esc(isempty(r.titulo) ? r.documento : r.titulo)
+        t = liga_segura(r.liga) ? """<a href="$(esc(r.liga))" target="_blank" rel="noopener noreferrer" class="font-medium text-fuerte hover:text-acento hover:underline">$titulo</a>""" :
+            """<span class="font-medium text-fuerte">$titulo</span>"""
+        chips = join((chip_meta(s, m) for m in get(s.acervo.doc_metas, r.documento, String[])), " ")
+        print(io, """
+        <li class="flex gap-3 py-2 text-sm">
+          <span class="w-7 shrink-0 pt-0.5 text-right font-mono text-xs text-tenue">$i</span>
+          <div class="min-w-0">
+            <p class="leading-snug">$t</p>
+            <p class="mt-0.5 text-xs text-tenue">$(esc(r.repo))$(isempty(r.cita) ? "" : " · " * esc(r.cita))</p>
+            $(isempty(chips) ? "" : """<p class="mt-1 flex flex-wrap gap-1 text-xs">$chips</p>""")
+          </div>
+        </li>
+        """)
+    end
+    print(io, "  </ol>\n</section>\n")
+    String(take!(io))
 end
 
 const SIN_CONVERSACION = "Esa conversación ya no está en la memoria del servidor (se pierden al reiniciarlo o cuando llevan mucho sin usarse)."
 otra(s) = """<p role="alert" class="rounded-lg border border-aviso-borde bg-aviso-fondo px-4 py-3 text-sm text-aviso-texto">$(esc(SIN_CONVERSACION)) <a href="$(s.prefijo)/" class="underline underline-offset-4">Empezar una conversación nueva</a></p>"""
 
-"La portada, una conversación viva (`?conv=`) o la portada dentro de la producción de un autor (`?autor=`)."
-function pagina_inicio(req::HTTP.Request)
+"""
+Documentos en la `vista` (:entrada o :alternativa): la portada, una conversación viva (`?conv=`) o, sólo en la
+alternativa, la producción de un autor (`?autor=`; en la entrada también lleva a la alternativa).
+"""
+function pagina_documentos(req::HTTP.Request, vista::Symbol)
     s = SERVICIO[]
     d = Dict(pares(req))
     c, aviso_, status = nothing, "", 200
@@ -434,8 +615,11 @@ function pagina_inicio(req::HTTP.Request)
     end
     meta = String(strip(get(d, "meta", "")))
     haskey(s.acervo.meta_docs, meta) || (meta = "")
-    Oxygen.html(vista_documentos(s, c, au, aviso_; meta); status, headers=CABECERAS_HTML)
+    pag = vista == :entrada && au === nothing ? vista_entrada(s, c, aviso_; meta) : vista_documentos(s, c, au, aviso_; meta)
+    Oxygen.html(pag; status, headers=CABECERAS_HTML)
 end
+pagina_inicio(req::HTTP.Request) = pagina_documentos(req, :entrada)
+pagina_alternativa(req::HTTP.Request) = pagina_documentos(req, :alternativa)
 
 """
 Una pregunta: añade el paso a la conversación (`conv`) o a una nueva. Con htmx devuelve sólo el paso, más lo que
@@ -444,13 +628,15 @@ cambia fuera de él; sin htmx manda a la página de la conversación, para que r
 function pagina_buscar(req::HTTP.Request)
     s = SERVICIO[]
     htmx = con_htmx(req)
+    vista = vista_de(req)
     msg, status = "", 200
     try
         p = peticion(req, s)
         c, n = paso_nuevo!(s, p)             # la redacción no empieza aquí: la pide la página al abrir el flujo
-        donde = "$(s.prefijo)/?conv=$(c.id)"
+        donde = "$(raiz(s, vista))?conv=$(c.id)"
         htmx || return HTTP.Response(303, ["Location" => donde * "#p$n", CABECERAS_HTML...])
-        cuerpo = string(paso_html(s, c.id, n, c.pasos[n]; ultimo=true, base=antes(c, n)), entrada(s, n; oob=true), oculto("conv", c.id; oob=true),
+        cuerpo = string(paso_html(s, c.id, n, c.pasos[n]; ultimo=true, base=antes(c, n)),
+                        entrada(s, n; oob=true, vista, listar=isempty(p.autor)), oculto("conv", c.id; oob=true),
                         """<div id="avisos" hx-swap-oob="true" class="mt-4"></div>""")
         return Oxygen.html(cuerpo; headers=[CABECERAS_HTML..., (isempty(p.conv) ? "HX-Push-Url" : "HX-Replace-Url") => donde])
     catch e
@@ -468,7 +654,7 @@ function pagina_buscar(req::HTTP.Request)
     end
     # htmx no cambia la página con respuestas 4xx o 5xx: los avisos van con 200 y a su lugar
     htmx ? Oxygen.html(msg; headers=[CABECERAS_HTML..., "HX-Retarget" => "#avisos", "HX-Reswap" => "innerHTML"]) :
-           Oxygen.html(vista_documentos(s, nothing, nothing, msg); status, headers=CABECERAS_HTML)
+           Oxygen.html(vista == :alternativa ? vista_documentos(s, nothing, nothing, msg) : vista_entrada(s, nothing, msg); status, headers=CABECERAS_HTML)
 end
 
 # ---------------------------------------------------------------------------------------------------------
@@ -518,7 +704,7 @@ function pagina_autores(req::HTTP.Request)
               <p class="mt-2 flex flex-wrap gap-1 text-xs">$(chips(a["repos"]))</p>
               $(isempty(a["keywords"]) ? "" : """<p class="mt-2 text-xs leading-relaxed text-texto"><span class="text-tenue">Temas:</span> $(esc(join(first(a["keywords"], 10), " · ")))</p>""")
               $(isempty(a["coauthors"]) ? "" : """<p class="mt-1 text-xs leading-relaxed text-texto"><span class="text-tenue">Coautores:</span> $(esc(join(first(a["coauthors"], 8), " · ")))</p>""")
-              <p class="mt-3 text-sm"><a href="$(s.prefijo)/?$(qs("autor" => a["consolidated_id"]))" class="$CLASE_LIGA">Buscar en su producción</a></p>
+              <p class="mt-3 text-sm"><a href="$(s.prefijo)/alternativa?$(qs("autor" => a["consolidated_id"]))" class="$CLASE_LIGA">Buscar en su producción</a></p>
             </li>
             """)
         end
@@ -579,7 +765,8 @@ function pagina_mapa(req::HTTP.Request)
       <h1 class="text-2xl font-semibold tracking-tight text-acento sm:text-3xl">Mapa de meta-disciplinas</h1>
       <p class="mt-2 text-sm leading-relaxed text-texto">Grupos de palabras clave que el acervo usa para lo mismo, en español o en inglés, encontrados
         por el significado de los documentos y nombrados por un modelo de lenguaje. El tamaño es el número de documentos; una línea une a las
-        que se parecen o comparten documentos. Rueda para acercar, arrastra para moverte, clic para ver una y buscar dentro de ella.</p>
+        que se parecen o comparten documentos. Rueda para acercar, arrastra para moverte, clic para ver una y buscar dentro de ella.
+        <a href="$(SITIO)metodo.html#meta-disciplinas" target="_blank" rel="noopener" class="$CLASE_LIGA">Cómo se hicieron</a>.</p>
     </header>
     """
     cuerpo = """
@@ -596,7 +783,7 @@ function pagina_mapa(req::HTTP.Request)
     </div>
     <noscript>$(aviso("El mapa necesita JavaScript; las meta-disciplinas también se eligen en Documentos."))</noscript>
     """
-    Oxygen.html(pagina(s, :mapa, "Mapa", cuerpo; encabezado, scripts=["d3.min.js", "mapa.js"], ancho="max-w-6xl"); headers=CABECERAS_HTML)
+    Oxygen.html(pagina(s, :mapa, "Mapa", cuerpo; encabezado, scripts=["d3.min.js", "grafo.js", "mapa.js"], ancho="max-w-6xl"); headers=CABECERAS_HTML)
 end
 
 # ---------------------------------------------------------------------------------------------------------

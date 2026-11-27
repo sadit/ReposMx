@@ -1,0 +1,34 @@
+---
+title: "Relación con el Repositorio Nacional"
+---
+
+El [Repositorio Nacional de Ciencia, Tecnología e Innovación](https://www.repositorionacionalcti.mx/) reúne los
+metadatos de los repositorios institucionales del país, con la clasificación de áreas del conocimiento de SECIHTI
+(antes CONACYT), y ofrece consultas estructuradas de web semántica sobre ellos. ReposMx trabaja con la misma red de
+repositorios, pero los cosecha directamente y los organiza de otra forma. **No lo sustituye: lo extiende.**
+
+## Qué agrega ReposMx
+
+| | Qué es | Para qué sirve |
+|---|---|---|
+| **Texto completo** | Extrae el texto de los documentos (70,677) y lo parte en sus secciones | Buscar por lo que dice el documento, no sólo por su ficha |
+| **Búsqueda por significado** | Vectores de la ficha y de las primeras y últimas partes de cada documento (Qwen3-Embedding) | Encontrar documentos que tratan lo mismo con otras palabras, o en otro idioma |
+| **Búsqueda por palabras** | BM25 sobre título, autores, palabras clave, resumen y conclusiones | Precisión cuando se conocen los términos |
+| **Autores consolidados** | Las formas de un mismo nombre reunidas en un perfil, con coautores y red de citas | Buscar a una persona sin mezclarla con sus documentos, y buscar **dentro de su producción** por contenido |
+| **Citas** | Las referencias de cada texto completo, una por una (3,972,939) | Saber qué documentos citan una obra |
+| **Meta-disciplinas** | Grupos de palabras clave por significado, nombrados por un modelo de lenguaje | Segmentar la búsqueda y navegar el acervo por temas que salen de los propios datos |
+| **Mapa** | Las meta-disciplinas como grafo: cuáles se parecen y cuáles comparten documentos | Ver cómo se organiza la producción y pasar de un tema a sus vecinos |
+| **Respuesta redactada** | Un modelo de lenguaje resume lo encontrado y cita cada fuente | Una primera lectura rápida, siempre con la liga al registro original |
+| **Tipos limpios** | El tipo de documento a partir de todos sus `dc:type` | Separar tesis por nivel, artículos, libros, y dejar fuera de la búsqueda por significado lo que no es texto académico |
+
+## Qué no es
+
+- **No tiene consultas de web semántica.** No publica los metadatos como datos enlazados ni responde consultas
+  estructuradas sobre ellos; para eso está el Repositorio Nacional.
+- **No es un repositorio ni comparte los documentos.** Los documentos son de sus repositorios: ReposMx guarda una copia
+  de trabajo para analizarlos, pero sólo muestra los metadatos públicos y lleva a cada registro en su repositorio.
+- **No corrige la clasificación de los repositorios.** La clasificación CTI se muestra y se filtra tal como la declara
+  cada repositorio; no se infiere para los documentos que no la traen. Las meta-disciplinas son una organización
+  aparte, basada en los datos, que no pretende reemplazarla.
+- **No es una fuente oficial.** Es un demo de investigación: la respuesta redactada es texto generado por un modelo y
+  puede estar equivocada, y la cobertura depende de lo que cada repositorio publica por OAI-PMH.
