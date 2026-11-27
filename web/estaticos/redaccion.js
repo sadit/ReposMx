@@ -18,12 +18,16 @@ window.sinAcentos = x => (x || '').normalize('NFD').replace(/[\u0300-\u036f]/g, 
   const lista = x => (Array.isArray(x) ? x : []).filter(q => typeof q === 'string' && q.trim()).slice(0, 5);
 
   document.addEventListener('alpine:init', () => {
-    // El tema de colores (estilo.css): se guarda en el navegador; vacío sigue al sistema.
+    // El tema de colores (estilo.css): se guarda en el navegador. Sin elección vale el de <html data-tema-defecto>
+    // (pizarra); «auto» quita data-tema y sigue al sistema.
     Alpine.data('tema', () => ({
-      valor: (() => { try { return localStorage.getItem('tema') || ''; } catch (_) { return ''; } })(),
+      valor: (() => {
+        const defecto = document.documentElement.dataset.temaDefecto || 'auto';
+        try { return localStorage.getItem('tema') || defecto; } catch (_) { return defecto; }
+      })(),
       cambia() {
-        if (this.valor) document.documentElement.dataset.tema = this.valor; else delete document.documentElement.dataset.tema;
-        try { this.valor ? localStorage.setItem('tema', this.valor) : localStorage.removeItem('tema'); } catch (_) { /* sin almacenamiento */ }
+        if (this.valor === 'auto') delete document.documentElement.dataset.tema; else document.documentElement.dataset.tema = this.valor;
+        try { localStorage.setItem('tema', this.valor); } catch (_) { /* sin almacenamiento */ }
       },
     }));
     Alpine.data('redaccion', (url, hasta) => ({

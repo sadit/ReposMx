@@ -7,14 +7,16 @@
 # también dentro de la producción de un autor), autores y referencias (listas).
 #
 # Los colores son tokens (bg-fondo, text-tenue, ...) que define estilo.css para cada tema: Solarized claro y
-# oscuro, pizarra y clásico, para probarlos y decidir (indicación del usuario, 2026-11-26). Sin elección, el tema
-# sigue al sistema (Solarized claro u oscuro); la elección se recuerda en el navegador.
+# oscuro, pizarra y clásico (indicación del usuario, 2026-11-26). Sin elección, el tema es pizarra (indicación del
+# usuario, 2026-11-27): va en <html data-tema> desde el servidor, para que no parpadee. «Automático» (`auto`) sigue al
+# sistema (Solarized claro u oscuro). La elección se recuerda en el navegador.
 
 const TITULO = "ReposMx"
 # El sitio del proyecto (sitio/, en GitHub Pages): metodología y datos. El demo liga al sitio; el sitio no liga al demo.
 const SITIO = "https://sadit.github.io/ReposMx/"
-const TEMAS = ["" => "Automático", "sol-claro" => "Solarized claro", "sol-oscuro" => "Solarized oscuro",
-               "pizarra" => "Pizarra", "clasico" => "Clásico"]
+const TEMA_DEFECTO = "pizarra"
+const TEMAS = ["pizarra" => "Pizarra", "sol-claro" => "Solarized claro", "sol-oscuro" => "Solarized oscuro",
+               "clasico" => "Clásico", "auto" => "Automático (del sistema)"]
 
 function esc(s::AbstractString)
     io = IOBuffer()
@@ -205,14 +207,14 @@ function pagina(s, actual::Symbol, titulo::AbstractString, cuerpo::AbstractStrin
                 scripts::Vector{String}=String[], ancho::String="max-w-3xl")
     """
     <!doctype html>
-    <html lang="es">
+    <html lang="es" data-tema="$TEMA_DEFECTO" data-tema-defecto="$TEMA_DEFECTO">
     <head>
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width, initial-scale=1">
       <meta name="referrer" content="no-referrer">
       <meta name="robots" content="noindex">
       <title>$(isempty(titulo) ? "" : esc(first(titulo, 60)) * " · ")$TITULO</title>
-      <script>try { const t = localStorage.getItem('tema'); if (t) document.documentElement.dataset.tema = t; } catch (_) {}</script>
+      <script>try { const t = localStorage.getItem('tema'); if (t === 'auto') delete document.documentElement.dataset.tema; else if (t) document.documentElement.dataset.tema = t; } catch (_) {}</script>
       <link rel="stylesheet" href="$(estatico(s, "estilo.css"))">
       <script defer src="$(estatico(s, "htmx.min.js"))"></script>
       <script defer src="$(estatico(s, "redaccion.js"))"></script>

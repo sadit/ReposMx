@@ -4,7 +4,8 @@
    Los colores son tokens: src/paginas.jl usa bg-fondo, text-tenue, border-borde, ... y cada tema les da valor.
    Cuatro temas para probar y decidir (indicación del usuario, 2026-11-26): Solarized claro y oscuro (la paleta
    de Ethan Schoonover, con los acentos de texto un poco más oscuros en el claro para que se lean), pizarra (la
-   escala slate de Tailwind, oscura) y clásico (los colores de AmbientalWeb). Sin elección, sigue al sistema. */
+   escala slate de Tailwind, oscura) y clásico (los colores de AmbientalWeb). Sin elección es pizarra
+   (src/paginas.jl la pone en <html data-tema>); «Automático» quita data-tema y sigue al sistema. */
 @import "tailwindcss" source(none);
 @source "./src/paginas.jl";
 @source "./estaticos/mapa.js";
