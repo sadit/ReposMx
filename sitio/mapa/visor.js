@@ -62,11 +62,14 @@
       (!activo && !resaltados && n.r * t.k > 9));
     candidatos.sort((a, b) => ((b === activo) - (a === activo)) || (b.r - a.r));
     for (const n of candidatos) {
-      const w = ctx.measureText(n.nombre).width, x0 = n.x - w / 2, y0 = n.y + n.r + 2 / t.k;
+      // dentro del lienzo: si el nombre se saldría por un lado, se recorre hacia adentro
+      const w = ctx.measureText(n.nombre).width, ws = w * t.k;
+      const sx = Math.min(Math.max(t.x + n.x * t.k, ws / 2 + 4), ancho - ws / 2 - 4);
+      const lx = (sx - t.x) / t.k, x0 = lx - w / 2, y0 = n.y + n.r + 2 / t.k;
       if (n !== activo && puestos.some(c => x0 < c.x1 && c.x0 < x0 + w && y0 < c.y1 && c.y0 < y0 + h)) continue;
       puestos.push({ x0, x1: x0 + w, y0, y1: y0 + h });
       ctx.lineWidth = 3 / t.k; ctx.strokeStyle = cFondo; ctx.fillStyle = n === activo ? cTexto : cTenue;
-      ctx.strokeText(n.nombre, n.x, y0); ctx.fillText(n.nombre, n.x, y0);
+      ctx.strokeText(n.nombre, lx, y0); ctx.fillText(n.nombre, lx, y0);
     }
     ctx.restore();
   }
