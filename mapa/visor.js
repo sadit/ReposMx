@@ -1,6 +1,8 @@
 // El mapa de las meta-disciplinas del sitio (mapa.qmd): el grafo de mapa/grafo.json (copia de metadisciplinas/
 // grafo.json, sitio/genera.py) con una simulación de fuerzas de D3, dibujado en canvas. Es el de web/estaticos/
-// mapa.js, sin la búsqueda (el sitio no liga al demo); los colores salen del tema de Quarto.
+// mapa.js, sin la búsqueda (el sitio no liga al demo). Cada nodo lleva el color falso de su centro proyectado a 3D
+// (RGB) y se siembra en el plano de las dos primeras componentes (`color` y `plano`,
+// experiments/rag_web/colorea_metadisciplinas.py); el resto de los colores sale del tema de Quarto.
 (() => {
   const raiz = document.getElementById('mapa-sitio');
   const canvas = document.getElementById('mapa');
@@ -44,18 +46,27 @@
     for (const n of nodos) {
       const atenua = (activo && n !== activo && !(cerca && cerca.has(n.id))) || (resaltados && !resaltados.has(n.id));
       ctx.globalAlpha = atenua ? 0.25 : 1;
-      ctx.fillStyle = n === elegido ? cAcento : cLiga;
+      ctx.fillStyle = n.color || cLiga;
       ctx.beginPath(); ctx.arc(n.x, n.y, n.r, 0, 2 * Math.PI); ctx.fill();
       ctx.strokeStyle = cFondo; ctx.lineWidth = 1.5 / t.k; ctx.stroke();
+      if (n === elegido) {
+        ctx.strokeStyle = cTexto; ctx.lineWidth = 3 / t.k;
+        ctx.beginPath(); ctx.arc(n.x, n.y, n.r + 4 / t.k, 0, 2 * Math.PI); ctx.stroke();
+      }
     }
     ctx.globalAlpha = 1;
     ctx.font = `${12 / t.k}px system-ui, sans-serif`; ctx.textAlign = 'center'; ctx.textBaseline = 'top';
-    for (const n of nodos) {
-      const muestra = n === activo || (cerca && cerca.has(n.id)) || (resaltados && resaltados.has(n.id)) ||
-        (!activo && !resaltados && n.r * t.k > 14);
-      if (!muestra) continue;
+    // sin encimarse: primero el activo, luego por tamaño; se salta el que choca
+    const puestos = [], h = 14 / t.k;
+    const candidatos = nodos.filter(n => n === activo || (cerca && cerca.has(n.id)) || (resaltados && resaltados.has(n.id)) ||
+      (!activo && !resaltados && n.r * t.k > 9));
+    candidatos.sort((a, b) => ((b === activo) - (a === activo)) || (b.r - a.r));
+    for (const n of candidatos) {
+      const w = ctx.measureText(n.nombre).width, x0 = n.x - w / 2, y0 = n.y + n.r + 2 / t.k;
+      if (n !== activo && puestos.some(c => x0 < c.x1 && c.x0 < x0 + w && y0 < c.y1 && c.y0 < y0 + h)) continue;
+      puestos.push({ x0, x1: x0 + w, y0, y1: y0 + h });
       ctx.lineWidth = 3 / t.k; ctx.strokeStyle = cFondo; ctx.fillStyle = n === activo ? cTexto : cTenue;
-      ctx.strokeText(n.nombre, n.x, n.y + n.r + 2 / t.k); ctx.fillText(n.nombre, n.x, n.y + n.r + 2 / t.k);
+      ctx.strokeText(n.nombre, n.x, y0); ctx.fillText(n.nombre, n.x, y0);
     }
     ctx.restore();
   }
@@ -98,7 +109,11 @@
 
   fetch('mapa/grafo.json').then(r => r.json()).then(g => {
     const maxd = d3.max(g.nodos, n => n.documentos) || 1;
-    nodos = g.nodos.map(n => ({ ...n, r: 4 + 22 * Math.sqrt(n.documentos / maxd) }));
+    const R = 320;
+    nodos = g.nodos.map(n => {
+      const [px, py] = Array.isArray(n.plano) ? n.plano : [0, 0];
+      return { ...n, r: 4 + 22 * Math.sqrt(n.documentos / maxd), px: px * R, py: py * R, x: px * R, y: py * R };
+    });
     const porId = new Map(nodos.map(n => [n.id, n]));
     enlaces = g.enlaces.filter(e => porId.has(e.source) && porId.has(e.target)).map(e => ({ ...e }));
     for (const e of enlaces) {
@@ -109,12 +124,12 @@
     }
     mide();
     d3.forceSimulation(nodos)
-      .force('link', d3.forceLink(enlaces).id(n => n.id).distance(e => 40 + 160 * (1 - e.similitud)).strength(e => 0.2 + 0.8 * Math.min(1, e.jaccard * 20)))
-      .force('charge', d3.forceManyBody().strength(-90))
+      .force('link', d3.forceLink(enlaces).id(n => n.id).distance(e => 30 + 120 * (1 - e.similitud)).strength(e => 0.05 + 0.25 * Math.min(1, e.jaccard * 20)))
+      .force('charge', d3.forceManyBody().strength(-40))
       .force('collide', d3.forceCollide(n => n.r + 3))
-      .force('x', d3.forceX(0).strength(0.04)).force('y', d3.forceY(0).strength(0.04))
+      .force('x', d3.forceX(n => n.px).strength(0.18)).force('y', d3.forceY(n => n.py).strength(0.18))
       .on('tick', dibuja);
-    t = d3.zoomIdentity.translate(ancho / 2, alto / 2).scale(0.8);
+    t = d3.zoomIdentity.translate(ancho / 2, alto / 2).scale(Math.max(0.2, Math.min(ancho, alto) / (2 * R + 360)));
     d3.select(canvas).call(zoom).call(zoom.transform, t);
   }).catch(() => { panel.innerHTML = '<p>No se pudo cargar el mapa.</p>'; });
 
