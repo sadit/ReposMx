@@ -1,12 +1,10 @@
 // El mapa de las meta-disciplinas del sitio (mapa.qmd): el grafo de mapa/grafo.json (copia de metadisciplinas/
 // grafo.json, sitio/genera.py) con una simulación de fuerzas de D3, dibujado en canvas. Es el de web/estaticos/
-// mapa.js; los colores salen del tema de Quarto y la búsqueda va al demo (data-demo, la variable `demo`).
+// mapa.js, sin la búsqueda (el sitio no liga al demo); los colores salen del tema de Quarto.
 (() => {
   const raiz = document.getElementById('mapa-sitio');
   const canvas = document.getElementById('mapa');
   if (!raiz || !canvas || !window.d3) return;
-  const demo = (raiz.dataset.demo || '').replace(/\/?$/, '/');
-  const conDemo = /\/reposmx\/$/.test(demo);          // mientras el demo no esté abierto, la variable apunta al código
   const panel = document.getElementById('mapa-panel');
   const punta = document.getElementById('mapa-punta');
   const filtro = document.getElementById('mapa-filtro');
@@ -77,19 +75,12 @@
     if (!n) { panel.innerHTML = '<p class="nota">Elige una meta-disciplina en el mapa.</p>'; return; }
     const vs = [...(vecinos.get(n.id) || [])].map(id => nodos.find(x => x.id === id)).filter(Boolean)
       .sort((a, b) => b.documentos - a.documentos);
-    const busca = conDemo ? `
-      <form action="${esc(demo)}buscar" method="get" target="_blank">
-        <input type="hidden" name="meta" value="${esc(n.id)}">
-        <input type="search" name="q" required class="mapa-filtro" placeholder="Pregunta dentro de esta meta-disciplina" aria-label="Pregunta">
-        <button type="submit" class="btn btn-primary btn-sm">Buscar en el demo</button>
-      </form>` : '<p class="nota">La búsqueda dentro de cada meta-disciplina está en el demo, que se abrirá pronto.</p>';
     panel.innerHTML = `
       <h3 style="margin-top:0">${esc(n.nombre)}</h3>
       ${n.nombre_en ? `<p class="nota">${esc(n.nombre_en)}</p>` : ''}
       <p>${esc(n.descripcion)}</p>
       <p class="nota">${miles(n.documentos)} documentos</p>
       <p>${n.palabras.map(p => `<span class="etiqueta">${esc(p)}</span>`).join(' ')}</p>
-      ${busca}
       ${vs.length ? `<h4>Vecinas</h4><ul>${vs.map(v => `<li><a href="#" data-vecina="${esc(v.id)}">${esc(v.nombre)}</a> <span class="nota">${miles(v.documentos)}</span></li>`).join('')}</ul>` : ''}`;
     panel.querySelectorAll('[data-vecina]').forEach(a => a.addEventListener('click', ev => {
       ev.preventDefault(); elige(nodos.find(x => x.id === a.dataset.vecina), true);
