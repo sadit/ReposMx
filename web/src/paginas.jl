@@ -148,7 +148,7 @@ function selector_meta_mapa(s, meta::AbstractString)
       <span class="text-tenue">Meta-disciplina</span>
       <span x-show="meta" x-cloak class="inline-flex items-center gap-1.5 $CLASE_CHIP"><span aria-hidden="true" class="inline-block size-2.5 rounded-full" :style="'background:' + color"></span><span x-text="nombre"></span></span>
       <span x-show="!meta" class="text-fuerte">todas</span>
-      <button type="button" @click="abierto = true" class="text-xs $CLASE_LIGA" x-text="meta ? 'cambiar en el mapa' : 'elegir en el mapa'">elegir en el mapa</button>
+      <button type="button" @click="grande = true" class="text-xs $CLASE_LIGA" x-text="meta ? 'cambiar en el mapa' : 'elegir en el mapa'">elegir en el mapa</button>
       <button type="button" x-show="meta" x-cloak @click="quita()" class="text-xs $CLASE_LIGA">quitar</button>
     </span>
     """
@@ -392,6 +392,15 @@ function recuadro(s, conv::AbstractString, n::Int, base::Int, leidos::Int, hecha
     """
 end
 
+"Cuántos documentos de `rs` caen en cada meta-disciplina (JSON), para iluminarlas en el mapa (selector.js)."
+function cuenta_metas(s, rs::Vector{Resultado})
+    c = Dict{String,Int}()
+    for d in unique(r.documento for r in rs), m in get(s.acervo.doc_metas, d, String[])
+        c[m] = get(c, m, 0) + 1
+    end
+    JSON.json(c)
+end
+
 filtros_en_palabras(s, meta, cti, repo) =
     string(isempty(meta) ? "" : " · meta-disciplina $(esc(nombre_meta(s.acervo, meta)))",
            cti === nothing ? "" : " · $(esc(lowercase(Dict(NIVELES_CTI)[first(cti)]))) $(esc(bonito(last(cti)))) (declarada)",
@@ -401,7 +410,7 @@ filtros_en_palabras(s, meta, cti, repo) =
 function paso_html(s, conv::AbstractString, n::Int, p::Paso; ultimo::Bool, base::Int)
     io = IOBuffer()
     print(io, """
-    <section id="p$n" data-paso class="scroll-mt-4">
+    <section id="p$n" data-paso data-metas="$(esc(cuenta_metas(s, p.resultados)))" class="scroll-mt-4">
       <h2 class="flex items-baseline gap-3 border-b border-borde pb-2">
         <span class="shrink-0 font-mono text-xs font-medium uppercase tracking-wide text-tenue">Pregunta $n</span>
         <span class="text-lg font-medium leading-snug text-fuerte">$(esc(p.consulta))</span>
@@ -457,8 +466,7 @@ function encabezado_documentos(s, autor::Union{Nothing,Autor}; vista::Symbol=:al
       $(s.gen === nothing ? "" : """<p class="mt-2 text-xs leading-relaxed text-tenue">$(lento(s.gen)) Si hay otras personas usándolo, la tuya espera su turno.</p>""")
       $produccion
       <p class="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs">$(vista == :entrada ?
-        """<button type="button" x-show="!abierto" x-cloak @click="abierto = true" class="$CLASE_LIGA">Ver el mapa</button>
-           <a href="$(s.prefijo)/alternativa" class="$CLASE_LIGA">Interfaz alternativa</a>""" :
+        """<a href="$(s.prefijo)/alternativa" class="$CLASE_LIGA">Interfaz alternativa</a>""" :
         autor === nothing && tiene_metas(a) ? """<a href="$(s.prefijo)/" class="$CLASE_LIGA">Volver a la entrada con el mapa</a>""" : "")</p>
     </header>
     """
@@ -481,42 +489,65 @@ function vista_documentos(s, c::Union{Nothing,Conversacion}, autor::Union{Nothin
 end
 
 """
-La entrada: la conversación a la izquierda y, a la derecha, el mapa de meta-disciplinas en grande para elegir
-una (selector.js, sobre grafo.js). Al elegir, al preguntar o al listar, el mapa se pliega y deja el ancho a los
-resultados; «cambiar en el mapa» o «Ver el mapa» lo vuelve a abrir. Empieza plegado si ya hay meta-disciplina
-o conversación.
+La entrada: la conversación a la izquierda y, a la derecha, el mapa de meta-disciplinas (selector.js, sobre
+grafo.js). Siempre en dos columnas: el mapa está en grande para elegir y, al elegir, preguntar o listar, se hace
+pequeño (sin ocultarse) y deja el ancho a los resultados; «Agrandar el mapa» o «cambiar en el mapa» lo vuelven a
+agrandar. Debajo del mapa, la ficha de la elegida: descripción, palabras clave y vecinas (para cambiar a una de
+ellas). Tras cada pregunta o lista se iluminan las meta-disciplinas en las que cayeron sus documentos
+(`data-metas` del paso o de la lista). Empieza pequeño si ya hay meta-disciplina o conversación.
 """
 function vista_entrada(s, c::Union{Nothing,Conversacion}, avisos::AbstractString=""; meta::AbstractString="")
     pasos = c === nothing ? Paso[] : c.pasos
     conv = c === nothing ? "" : c.id
     titulo = isempty(pasos) ? "" : first(pasos).consulta
     m = isempty(pasos) ? String(meta) : last(pasos).meta
-    abierto = isempty(pasos) && isempty(m) && tiene_metas(s.acervo)
-    estado = JSON.json(Dict("abierto" => abierto, "meta" => m, "nombre" => isempty(m) ? "" : nombre_meta(s.acervo, m),
+    grande = isempty(pasos) && isempty(m)
+    estado = JSON.json(Dict("grande" => grande, "meta" => m, "nombre" => isempty(m) ? "" : nombre_meta(s.acervo, m),
                             "color" => color_meta(s.acervo, m)))
-    datos = string(chop(estado), ", elige(d) { this.meta = d.id; this.nombre = d.nombre; this.color = d.color; this.abierto = false; ",
+    datos = string(chop(estado), ", elige(d) { this.meta = d.id; this.nombre = d.nombre; this.color = d.color; this.grande = false; ",
                    "this.\$nextTick(() => document.getElementById('q')?.focus()) }, ",
                    "quita() { this.meta = ''; this.nombre = ''; this.color = ''; window.dispatchEvent(new CustomEvent('meta-quitada')) } }")
-    mapa = !tiene_metas(s.acervo) ? "" : """
-      <aside x-show="abierto" $(abierto ? "" : "x-cloak") id="selector-mapa" data-prefijo="$(s.prefijo)" data-meta="$(esc(m))"
-             aria-label="Mapa de meta-disciplinas" class="order-1 w-full shrink-0 lg:sticky lg:top-4 lg:order-2 lg:w-[56%]">
+    # las clases de los dos tamaños van completas aquí para que Tailwind las encuentre, y sólo en :class: Alpine
+    # agrega y quita las de :class pero deja siempre las del atributo class
+    ancho_g, ancho_p = "lg:w-[56%]", "lg:w-1/3"
+    alto_g, alto_p = "h-[60vh] lg:h-[calc(100vh-9rem)]", "h-[34vh] lg:h-[58vh]"
+    if !tiene_metas(s.acervo)
+        cuerpo = """
+        $(encabezado_documentos(s, nothing; vista=:entrada))
+        <main id="pasos" class="space-y-8">
+        $(join((paso_html(s, conv, i, p; ultimo=i == length(pasos), base=antes(c, i)) for (i, p) in enumerate(pasos)), "\n"))
+        </main>
+        <div id="avisos" class="mt-4">$avisos</div>
+        $(formulario(s, c, nothing; meta_inicial=m, vista=:alternativa))
+        <p id="espera" class="htmx-indicator mt-4 text-sm text-tenue">Buscando…</p>
+        <div id="lista" class="mt-8"></div>
+        """
+        return pagina(s, :documentos, titulo, cuerpo)
+    end
+    mapa = """
+      <aside id="selector-mapa" data-prefijo="$(s.prefijo)" data-meta="$(esc(m))" aria-label="Mapa de meta-disciplinas"
+             class="order-1 w-full shrink-0 transition-[width] duration-300 lg:sticky lg:top-4 lg:order-2"
+             :class="grande ? '$ancho_g' : '$ancho_p'">
         <div class="flex items-center gap-3">
           <input type="search" id="selector-filtro" placeholder="Resalta por nombre o palabra: robótica, agua, poesía…" aria-label="Resaltar meta-disciplinas"
                  class="min-w-0 flex-1 rounded-lg border border-borde bg-superficie px-3 py-2 text-sm text-fuerte placeholder:text-tenue focus:border-liga focus:outline-none focus:ring-2 focus:ring-liga/30">
-          <button type="button" @click="abierto = false" class="shrink-0 text-sm $CLASE_LIGA">Plegar el mapa</button>
+          <button type="button" @click="grande = !grande" class="shrink-0 text-sm $CLASE_LIGA" x-text="grande ? 'Achicar el mapa' : 'Agrandar el mapa'">$(grande ? "Achicar el mapa" : "Agrandar el mapa")</button>
         </div>
         <div class="relative mt-2">
-          <canvas id="selector-lienzo" class="h-[60vh] w-full rounded-xl border border-borde bg-superficie lg:h-[calc(100vh-9rem)]" aria-label="Mapa de meta-disciplinas: haz clic en una para elegirla"></canvas>
+          <canvas id="selector-lienzo" class="w-full rounded-xl border border-borde bg-superficie" :class="grande ? '$alto_g' : '$alto_p'"
+                  aria-label="Mapa de meta-disciplinas: haz clic en una para elegirla"></canvas>
           <div id="selector-punta" class="pointer-events-none absolute hidden max-w-xs rounded bg-barra px-2 py-1 text-xs leading-snug text-sobre-barra"></div>
         </div>
-        <p class="mt-1 text-xs leading-relaxed text-tenue">Haz clic en una meta-disciplina para elegirla. Cada color es la proyección de su centro
+        <p id="selector-leyenda" class="mt-1 hidden text-xs leading-relaxed text-texto"></p>
+        <div id="selector-ficha" class="mt-3 hidden rounded-xl border border-borde bg-superficie p-4 text-sm"></div>
+        <p x-show="grande" $(grande ? "" : "x-cloak") class="mt-1 text-xs leading-relaxed text-tenue">Haz clic en una meta-disciplina para elegirla. Cada color es la proyección de su centro
           a tres dimensiones (rojo, verde y azul) y la posición sigue a las dos primeras: las que se parecen quedan cerca y con colores parecidos.
           <a href="$(SITIO)metodo.html#meta-disciplinas" target="_blank" rel="noopener" class="$CLASE_LIGA">Cómo se hicieron</a>.</p>
       </aside>"""
     cuerpo = """
-    <div x-data="$(esc(datos))" @meta-elegida.window="elige(\$event.detail)" @mapa-pliega.window="abierto = false"
+    <div x-data="$(esc(datos))" @meta-elegida.window="elige(\$event.detail)" @mapa-achica.window="grande = false"
          class="flex flex-col gap-6 lg:flex-row lg:items-start">
-      <div class="order-2 min-w-0 flex-1 lg:order-1" :class="abierto ? '' : 'mx-auto w-full max-w-4xl'">
+      <div class="order-2 min-w-0 flex-1 lg:order-1">
         $(encabezado_documentos(s, nothing; vista=:entrada))
         <main id="pasos" class="space-y-8">
         $(join((paso_html(s, conv, i, p; ultimo=i == length(pasos), base=antes(c, i)) for (i, p) in enumerate(pasos)), "\n"))
@@ -529,7 +560,7 @@ function vista_entrada(s, c::Union{Nothing,Conversacion}, avisos::AbstractString
       $mapa
     </div>
     """
-    pagina(s, :documentos, titulo, cuerpo; ancho="max-w-[96rem]", scripts=tiene_metas(s.acervo) ? ["d3.min.js", "grafo.js", "selector.js"] : String[])
+    pagina(s, :documentos, titulo, cuerpo; ancho="max-w-[96rem]", scripts=["d3.min.js", "grafo.js", "selector.js"])
 end
 
 """
@@ -564,7 +595,7 @@ function lista_html(s, rs::Vector{Resultado}, orden::AbstractString, filtros::Ab
     isempty(rs) && return aviso("No hubo documentos con esos filtros.")
     io = IOBuffer()
     print(io, """
-    <section aria-label="Lista de documentos" class="rounded-xl border border-borde bg-superficie p-4 shadow-sm">
+    <section aria-label="Lista de documentos" data-metas="$(esc(cuenta_metas(s, rs)))" class="rounded-xl border border-borde bg-superficie p-4 shadow-sm">
       <div class="flex flex-wrap items-baseline gap-x-3 gap-y-1 border-b border-borde pb-2">
         <h2 class="font-medium text-acento">Lista · $(length(rs)) documentos</h2>
         <span class="text-xs text-tenue">$(esc(orden))$filtros</span>
