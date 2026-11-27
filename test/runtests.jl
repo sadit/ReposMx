@@ -1022,6 +1022,30 @@ using JSON3
         @test forced_id in used_forced  # assign_id mutates used_ids with the id it returns
     end
 
+    @testset "Cited-author index: written from ref[\"authors\"], deleted per repo (isolated)" begin
+        # put_reference! read ref["cited_authors"], which the corpus never writes (it writes
+        # "authors"), so no cited_auth: key existed and the author network had no citation edges.
+        mktempdir() do dir
+            DB = ReposMx.DB
+            db = DB.open_database(joinpath(dir, "rocksdb"); create_if_missing=true)
+            try
+                ref(repo, doc, n, authors) = Dict{String,Any}("ref_id" => "$repo:$doc#$n", "repo" => repo,
+                                                              "doc_id" => doc, "text" => "x", "authors" => authors)
+                DB.put_reference!(db, ref("alfa", "d1", 1, ["Giménez, Gilberto"]))
+                DB.put_reference!(db, ref("beta", "d2", 1, ["Giménez, Gilberto", "Wu, J."]))
+                citing = sort([e["cited_in"] for e in DB.get_documents_citing_author(db, "Gilberto Giménez")])
+                @test citing == ["alfa:d1", "beta:d2"]
+                @test DB.delete_cited_author_index!(db; repos=["beta"]) == 2
+                @test [e["cited_in"] for e in DB.get_documents_citing_author(db, "Giménez, Gilberto")] == ["alfa:d1"]
+                @test isempty(DB.get_documents_citing_author(db, "Wu, J."))
+                @test DB.get_reference(db, "beta:d2#1") !== nothing       # only cited_auth: keys go
+                @test DB.delete_cited_author_index!(db) == 1
+            finally
+                DB.close_database(db)
+            end
+        end
+    end
+
     @testset "Engine indices from a fixture corpus (isolated)" begin
         # Builds the four engine projects and the RocksDB of ReposMx from a small corpus written
         # to a temporary directory, and checks the search layer against what the corpus says.

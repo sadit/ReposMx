@@ -107,6 +107,10 @@ de `Indexing.jl`.
   los perfiles nombran a los autores crudos por sus ids, y los ids dependen de todos los nombres.
 - `reposmx consolidate-authors` (`Indexing.rebuild_authors_index`) agrupa otra vez los autores y
   reconstruye solo `authors_name` y `authors_profile`, en `data/index/engine.authors`.
+- `reposmx reindex-refs` (`Indexing.reindex_references`) reescribe en la base que ya existe las
+  claves de referencias (`ref:`, `doc_refs:` y `cited_auth:`), sin tocar lo demás. Antes borra las
+  `cited_auth:` de los repositorios que reescribe. `docs_refs` no cambia: indexa el texto de las
+  citas.
 - Las estadísticas (`stat:global`, `stat:repo:<repo>`) se calculan durante la construcción, con
   todos los documentos en memoria. El motor no tiene una operación que lea todos sus elementos.
 - `populate-db` y `split-index` se eliminaron. `index` hace el trabajo de los dos.

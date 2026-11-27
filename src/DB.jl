@@ -8,7 +8,8 @@ export Database, open_database, close_database,
        put_author_profile!, get_author_profile, get_author_documents, get_coauthors, normalize_author_name,
        put_consolidated_profile!, get_consolidated_profile, get_consolidated_id_for_raw,
        get_author_documents_for_group, get_coauthors_for_group,
-       put_reference!, get_reference, get_document_references, get_documents_citing_author,
+       put_reference!, get_reference, set_document_references!, get_document_references, get_documents_citing_author,
+       delete_cited_author_index!,
        put_topics!, get_topic_docs, get_topic_authors, intersect_topic_repo_docs, intersect_topic_repo_authors,
        put_stats!, get_stats, compute_detailed_statistics, precompute_all_statistics!,
        DEFAULT_ROCKSDB_DIR, rocksdb_handle, compact_all!
@@ -413,7 +414,9 @@ end
 """
     put_reference!(db::Database, ref_dict; batch=nothing)
 
-Saves a reference record in the `references` column family.
+Saves a reference record in the `references` column family, and one `cited_auth:<name>:<ref_id>`
+key per author the corpus inferred for it (`ref["authors"]`, see
+`Corpus.extract_document_references`), so `get_documents_citing_author` can find who cites a name.
 """
 function put_reference!(d::Database, ref::AbstractDict; batch=nothing)
     ref_id = get(ref, "ref_id", "")
@@ -429,8 +432,7 @@ function put_reference!(d::Database, ref::AbstractDict; batch=nothing)
     end
     
     # Also index cited authors for reverse lookup
-    cited_authors = get(ref, "cited_authors", String[])
-    for ca in cited_authors
+    for ca in get(ref, "authors", String[])
         nca = normalize_author_name(ca)
         !isempty(nca) && length(nca) >= 3 || continue
         cak = "cited_auth:$nca:$ref_id"
@@ -513,6 +515,35 @@ function get_documents_citing_author(d::Database, norm_author::AbstractString; l
     end
     
     return results
+end
+
+"""
+    delete_cited_author_index!(db::Database; repos=nothing) -> Int
+
+Deletes the `cited_auth:` keys of the `references` column family, all of them or only those of
+references from documents of `repos`, and returns how many it deleted. `Indexing.reindex_references`
+calls it before writing them again, so a name the corpus no longer infers leaves no key behind.
+"""
+function delete_cited_author_index!(d::Database; repos::Union{Nothing, AbstractVector{<:AbstractString}}=nothing)
+    prefix = "cited_auth:"
+    keep = repos === nothing ? nothing : Set(String.(repos))
+    cf = d.cfs["references"]
+    wb = RocksDB.WriteBatch()
+    n = 0
+    iter = DBIterator(d.db; cf="references")
+    seek!(iter, prefix)
+    while valid(iter)
+        k = String(key(iter))
+        startswith(k, prefix) || break
+        if keep === nothing || first(split(String(value(iter)), ":"; limit=2)) in keep
+            delete!(wb, k; cf)
+            n += 1
+            n % 100_000 == 0 && (RocksDB.write!(d.db, wb); empty!(wb))
+        end
+        advance!(iter)
+    end
+    RocksDB.write!(d.db, wb)
+    return n
 end
 
 # ====================================================================

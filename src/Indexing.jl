@@ -8,7 +8,7 @@ using ..Storage: get_repo_dir, load_corpus_records, list_repo_names
 using ..Corpus: build_repository_corpus, build_authors_index_data, repair_author_names!, split_into_paragraphs
 using ..TextModel: base_profile, refit_corpus_profile, create_textconfig, save_profile, load_profile
 using ..DB: Database, open_database, close_database, put_author_profile!, put_topics!,
-            put_reference!, set_document_references!, link_author_document!, add_coauthor_link!,
+            put_reference!, set_document_references!, delete_cited_author_index!, link_author_document!, add_coauthor_link!,
             put_author_id_mapping!, normalize_author_name, rocksdb_handle, compact_all!, precompute_all_statistics!,
             put_consolidated_profile!
 using ..EngineIndex: DOCS_CONTENT, DOCS_REFS, AUTHORS_NAME, AUTHORS_PROFILE, engine_workdir, index_profile,
@@ -16,7 +16,7 @@ using ..EngineIndex: DOCS_CONTENT, DOCS_REFS, AUTHORS_NAME, AUTHORS_PROFILE, eng
 using ..AuthorConsolidation: build_and_persist, load_all, AUTHOR_NAME_CONFIG, assign_raw_ids
 using ..AuthorGrouping: group_authors
 
-export build_search_index, rebuild_authors_index, doc_meta,
+export build_search_index, rebuild_authors_index, reindex_references, doc_meta,
        search_document_in_depth, extract_index_text
 
 # Minimum document frequency for a token to survive in the docs_refs vocabulary. Measured on
@@ -237,22 +237,74 @@ function _ingest_relations!(db::Database, rdb, all_docs, raw_id_of::AbstractDict
             add_coauthor_link!(db, all_auth_ids[x], all_auth_ids[y]; batch=wb)
         end
 
-        doc_refs = get(doc, "references", Dict{String, Any}[])
-        if !isempty(doc_refs)
-            ref_ids = String[]
-            for ref in doc_refs
-                ref_id = get(ref, "ref_id", "")
-                if !isempty(ref_id)
-                    push!(ref_ids, ref_id)
-                    put_reference!(db, ref; batch=wb)
-                end
-            end
-            set_document_references!(db, repo, doc_id, ref_ids; batch=wb)
-        end
+        _put_document_references!(db, repo, doc_id, get(doc, "references", Dict{String, Any}[]), wb)
 
         RocksDB.write!(rdb, wb)
         empty!(wb)
     end
+    return nothing
+end
+
+"""
+    _put_document_references!(db, repo, doc_id, doc_refs, wb) -> Int
+
+Adds to the batch `wb` the references of one document (`ref:` and their `cited_auth:` keys, see
+`DB.put_reference!`) and the list of their ids (`doc_refs:`). Returns how many it wrote.
+"""
+function _put_document_references!(db::Database, repo::AbstractString, doc_id::AbstractString, doc_refs, wb)
+    isempty(doc_refs) && return 0
+    ref_ids = String[]
+    for ref in doc_refs
+        ref_id = get(ref, "ref_id", "")
+        isempty(ref_id) && continue
+        push!(ref_ids, ref_id)
+        put_reference!(db, ref; batch=wb)
+    end
+    set_document_references!(db, repo, doc_id, ref_ids; batch=wb)
+    return length(ref_ids)
+end
+
+"""
+    reindex_references(; data_dir=DEFAULT_DATA_DIR, repos=nothing) -> Nothing
+
+Writes the references of the corpus again into the `references` column family of the existing
+RocksDB (`ref:`, `doc_refs:` and `cited_auth:`), without rebuilding the rest of the database or the
+text indices: `docs_refs` indexes the text of the references, which this does not change. Takes the
+same documents as `index` (`_collect_documents`'s filter: an id and something to index). The
+`cited_auth:` keys of those repositories are deleted first.
+"""
+function reindex_references(; data_dir=DEFAULT_DATA_DIR,
+                            repos::Union{Vector{String}, Nothing}=nothing)
+    db_path = joinpath(data_dir, "rocksdb")
+    isdir(db_path) || error("No hay base de datos en '$db_path'. Corre 'reposmx index' primero.")
+    target_repos = repos !== nothing ? repos : list_repo_names(; data_dir)
+    db = open_database(db_path; create_if_missing=false)
+    rdb = rocksdb_handle(db)
+    n_docs = n_refs = 0
+    try
+        n_old = delete_cited_author_index!(db; repos)
+        println("cited_auth: borradas $n_old claves anteriores"); flush(stdout)
+        wb = RocksDB.WriteBatch()
+        for r in target_repos
+            for doc in load_corpus_records(r; data_dir)
+                doc_id = get(doc, "id", "")
+                (isempty(doc_id) || isempty(strip(extract_index_text(doc)))) && continue
+                n = _put_document_references!(db, get(doc, "repo", r), doc_id,
+                                              get(doc, "references", Dict{String, Any}[]), wb)
+                n == 0 && continue
+                n_docs += 1
+                n_refs += n
+                n_docs % 1_000 == 0 && (RocksDB.write!(rdb, wb); empty!(wb))
+            end
+            RocksDB.write!(rdb, wb)
+            empty!(wb)
+            println("  $r: llevamos $n_refs referencias de $n_docs documentos"); flush(stdout)
+        end
+        RocksDB.compact!(rdb; cf="references")
+    finally
+        close_database(db)
+    end
+    println("Listo: $n_refs referencias de $n_docs documentos.")
     return nothing
 end
 

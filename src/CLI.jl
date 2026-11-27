@@ -7,7 +7,7 @@ using ..Downloader: download_all_files
 using ..Catalogs: fetch_cti_catalogs
 using ..Parser: parse_all_documents
 using ..Corpus: build_all_corpus
-using ..Indexing: build_search_index, rebuild_authors_index
+using ..Indexing: build_search_index, rebuild_authors_index, reindex_references
 using ..Dense: export_units
 using ..Search: SearchEngine, query_index, get_detailed_statistics
 using ..Server: start_server
@@ -45,6 +45,8 @@ SUBCOMANDOS INDIVIDUALES:
                              existen en lugar de agruparlos otra vez (unas 2 horas)
   consolidate-authors [repos...]  Re-agrupa perfiles de autor (tras editar author_overrides.toml),
                              sin re-tokenizar docs_content/docs_refs
+  reindex-refs [repos...]    Reescribe las referencias en la base RocksDB (citas de cada documento y
+                             el índice de autores citados), sin reconstruir lo demás
   export-units [repos...] [--force]
                              Escribe en data/index/dense/ las unidades a codificar en Colab (ficha y
                              partes del texto completo); --force reemplaza una exportación con vectores
@@ -339,6 +341,8 @@ function main_cli(args=ARGS)
         println("Unidades: $(s["unidades"]) $(s["por_seccion"]); textos distintos: $(s["textos_distintos"]) en $(s["lotes"]) lotes")
     elseif cmd == "consolidate-authors"
         Base.invokelatest(rebuild_authors_index; repos=target_repos)
+    elseif cmd == "reindex-refs"
+        Base.invokelatest(reindex_references; repos=target_repos)
     elseif cmd == "search"
         q = isempty(repos) ? (isempty(subargs) ? "" : subargs[1]) : join(repos, " ")
         if isempty(q)

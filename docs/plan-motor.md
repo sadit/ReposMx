@@ -261,6 +261,8 @@ Cada uno va en su propio commit, antes de la fase 2.
 - `put_reference!` lee `ref["cited_authors"]` (`DB.jl:491`), pero el corpus escribe `"authors"`
   (`Corpus.jl:323`). Por eso nunca se escribe `cited_auth:`, y la red de autores no tiene aristas
   de citas.
+  Corregido el 2026-11-27: `put_reference!` lee `ref["authors"]` y `reposmx reindex-refs`
+  reescribe las referencias sin reconstruir todo.
 - `populate-db` (`DB.ingest_repository_to_db!`) usa el nombre como clave de `auth_doc:` y
   `coauth:`, y `index` usa el id. Además escribe 1,000 documentos por lote aunque los conteos de
   coautoría se leen antes de escribirse. Propuesta: eliminar `populate-db`, porque `index` hace el
