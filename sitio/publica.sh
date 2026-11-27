@@ -2,15 +2,16 @@
 # Publica el sitio en GitHub Pages: sadit.github.io/ReposMx/ (el repositorio es público).
 #
 # Arma el sitio (quarto render) y lo deja en la rama gh-pages del mismo repositorio, con un git worktree en
-# sitio/_publica/ (fuera de git); hace commit y lo sube. En la configuración de Pages del repositorio, la fuente es
-# la rama gh-pages, carpeta raíz (se configura una vez). Las tablas y el grafo salen de sitio/genera.py, que hay que
-# correr antes si cambiaron los datos.
+# .gh-pages/ en la raíz (fuera de git). No va dentro de sitio/: los patrones de `resources` de _quarto.yml
+# coinciden a cualquier profundidad y Quarto copiaría el worktree al sitio. Hace commit y lo sube. En la
+# configuración de Pages del repositorio, la fuente es la rama gh-pages, carpeta raíz (se configura una vez). Las
+# tablas y el grafo salen de sitio/genera.py, que hay que correr antes si cambiaron los datos.
 #
 # Uso: sitio/publica.sh ["mensaje del commit"]
 set -euo pipefail
 AQUI="$(cd "$(dirname "$0")" && pwd)"
 RAIZ="$(dirname "$AQUI")"
-DESTINO="$AQUI/_publica"
+DESTINO="$RAIZ/.gh-pages"
 MENSAJE="${1:-Sitio del $(date +%F)}"
 
 quarto render "$AQUI"
